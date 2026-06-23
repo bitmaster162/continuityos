@@ -55,7 +55,9 @@ def main():
         data = json.load(sys.stdin)
     except Exception:
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
-              "permissionDecision": "allow"}})); return 0
+              "permissionDecision": "deny",
+              "permissionDecisionReason": "ContinuityOS: failed to parse hook payload (fail-closed)"}}))
+        return 2
     tool_name = data.get("tool_name", "")
     spec = _extract(tool_name, data.get("tool_input", {}))
     home = os.path.expanduser("~/.continuityos")

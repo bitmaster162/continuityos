@@ -5,6 +5,20 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 build/
+dist/
 pip/
-build/
-pip/
+
+# Runtime databases
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Backups
+backups/
+
+# Environment
+.env
+.env.*

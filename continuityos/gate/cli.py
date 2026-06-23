@@ -84,7 +84,7 @@ def main(argv=None):
         _print(r)
         d = r["decision"]
         if d == "ALLOW":
-            return subprocess.call(cmd, shell=True)
+            return subprocess.call(shlex.split(cmd))
         if d == "DRY_RUN_ONLY":
             print("\n⟂ DRY-RUN: command NOT executed (protected). Re-run with explicit approval if intended.")
             return 0
@@ -93,14 +93,14 @@ def main(argv=None):
             return 1
         if d == "WARN":
             print("\n⚠ WARN — proceeding (logged). Review the reasons above.")
-            return subprocess.call(cmd, shell=True)
+            return subprocess.call(shlex.split(cmd))
         if d == "REQUIRE_CONFIRMATION":
             if not sys.stdin.isatty():
                 print("\n⛔ HELD (REQUIRE_CONFIRMATION, non-interactive). NOT executed."); return 1
             ans = input("\nRequires confirmation. Execute anyway? [y/N] ").strip().lower()
             if ans == "y":
                 Ledger(LEDGER).append("override", {"command": cmd, "by": "human"})
-                return subprocess.call(cmd, shell=True)
+                return subprocess.call(shlex.split(cmd))
             print("aborted by user."); return 1
     return 0
 

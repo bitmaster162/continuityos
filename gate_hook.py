@@ -37,7 +37,8 @@ def main():
     try:
         payload = json.load(sys.stdin)
     except Exception:
-        # Can't parse → allow (don't block on parse errors)
+        # Can't parse → DENY (fail-closed for governance)
+        print(json.dumps({"decision": "block", "reason": "⛔ ContinuityOS GATE: failed to parse hook payload (fail-closed)"}))
         return
 
     tool = payload.get("tool_name", "")
@@ -79,10 +80,12 @@ def main():
             return
 
     except subprocess.TimeoutExpired:
-        # Gate timeout → fail open (don't block everything if gate is slow)
+        # Gate timeout → fail-closed (block if gate is unreachable)
+        print(json.dumps({"decision": "block", "reason": "⛔ ContinuityOS GATE: preflight timeout (fail-closed)"}))
         return
-    except Exception:
-        # Any error → fail open
+    except Exception as e:
+        # Any error → fail-closed
+        print(json.dumps({"decision": "block", "reason": f"⛔ ContinuityOS GATE: error (fail-closed): {e}"}))
         return
 
 if __name__ == "__main__":

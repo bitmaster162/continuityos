@@ -17,6 +17,7 @@ from .continuity import Continuity
 from .twin import Twin
 from .control import ControlPlane
 from .gate import ActionSpec as _AS, preflight as _preflight, Ledger as _Ledger
+from . import __version__
 
 PROTOCOL = "2024-11-05"
 
@@ -116,7 +117,7 @@ def main():
             _send({"jsonrpc":"2.0","id":mid,"result":{
                 "protocolVersion":PROTOCOL,
                 "capabilities":{"tools":{}},
-                "serverInfo":{"name":"continuityos","version":"0.1.0"}}})
+                "serverInfo":{"name":"continuityos","version":__version__}}})
         elif method == "notifications/initialized":
             continue
         elif method == "tools/list":

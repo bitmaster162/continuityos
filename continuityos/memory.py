@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Callable
 from .store import Store, unpack_vec
 from .index import rank as _rank
-from .embed import HashingEmbedder, cosine
+from .embed import HashingEmbedder
 
 # Conventional folder-like namespaces (free to invent your own)
 CORE_NAMESPACES = ["identity", "projects", "rules", "facts", "events", "notes"]

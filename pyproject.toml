@@ -13,10 +13,23 @@ authors = [{ name = "ContinuityOS contributors" }]
 keywords = ["memory","ai-agents","mcp","semantic-search","vector","rag","llm","continuity"]
 dependencies = []          # core is stdlib-only
 
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+]
+
 [project.optional-dependencies]
-st = ["sentence-transformers>=2.2"]        # widest model choice
-fast = ["fastembed>=0.3"]                  # ONNX, no torch — recommended real embedder
-dev = ["pytest>=7"]
+sentence-transformers = ["sentence-transformers>=2.2"]
+fastembed = ["fastembed>=0.3"]
+dev = ["pytest>=7", "pytest-cov>=4"]
 
 [project.scripts]
 cos = "continuityos.cli:main"
@@ -24,7 +37,7 @@ continuity = "continuityos.gate.cli:main"
 
 [project.urls]
 Homepage = "https://sovereign-arena-site.vercel.app/continuityos"
-Source = "https://github.com/"
+Source = "https://github.com/bitmaster162/continuityos"
 
 [tool.setuptools.packages.find]
 include = ["continuityos*"]

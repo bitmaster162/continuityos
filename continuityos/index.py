@@ -14,13 +14,6 @@ try:
 except Exception:
     _np = None
 
-def best_backend() -> str:
-    try:
-        import hnswlib  # noqa
-        return "hnswlib"
-    except Exception:
-        return "numpy" if _np is not None else "python"
-
 def rank(query_vec: List[float], rows: List[dict], top: int = 50) -> List[Tuple[float, dict]]:
     """rows: [{'vec': [..], ...}] -> [(cosine, row)] sorted desc, top-k. Vectors are L2-normalized."""
     if not rows:
