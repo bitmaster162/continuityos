@@ -1,0 +1,85 @@
+"""ContinuityOS CLI.
+Memory:     cos remember | recall | namespaces
+Continuity: cos canon | frontier | loop | checkpoint | doctor | handoff
+Serve:      cos serve (MCP stdio) | cos api (HTTP)
+"""
+from __future__ import annotations
+import argparse, os, json, sys
+from .memory import Memory
+from .continuity import Continuity
+
+def _db(a): return a.db or os.path.expanduser("~/.continuityos/memory.db")
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="cos", description="ContinuityOS — durable memory + continuity for agents & humans")
+    ap.add_argument("--db", default=None)
+    s = ap.add_subparsers(dest="cmd", required=True)
+    r = s.add_parser("remember"); r.add_argument("text"); r.add_argument("-n","--namespace",default="notes"); r.add_argument("-t","--tags",default="")
+    q = s.add_parser("recall"); q.add_argument("query"); q.add_argument("-k",type=int,default=5); q.add_argument("-n","--namespace",default=None)
+    s.add_parser("namespaces")
+    cn = s.add_parser("canon"); cn.add_argument("text", nargs="?"); 
+    fr = s.add_parser("frontier"); fr.add_argument("kind", nargs="?", choices=["trunk","cash","lab","parked"]); fr.add_argument("item", nargs="?")
+    lp = s.add_parser("loop"); lp.add_argument("text", nargs="?"); lp.add_argument("--close", type=int, default=None)
+    cp = s.add_parser("checkpoint"); cp.add_argument("--summary",required=True); cp.add_argument("--next",required=True,dest="nxt"); cp.add_argument("--proof",default="")
+    s.add_parser("doctor")
+    s.add_parser("handoff")
+    s.add_parser("boot")
+    bc = s.add_parser("close"); bc.add_argument("--summary",required=True); bc.add_argument("--next",required=True,dest="nxt"); bc.add_argument("--proof",default="")
+    s.add_parser("compress")
+    s.add_parser("serve")
+    pa = s.add_parser("api"); pa.add_argument("--host",default="127.0.0.1"); pa.add_argument("--port",type=int,default=8077)
+    a = ap.parse_args(argv)
+
+    if a.cmd == "serve":
+        from . import mcp_server; sys.argv = ["mcp","--db",_db(a)]; return mcp_server.main()
+    if a.cmd == "api":
+        from . import api; return api.run(_db(a), a.host, a.port)
+
+    db = _db(a); m = Memory(db); c = Continuity(memory=m)
+    if a.cmd == "remember":
+        tags=[t.strip() for t in a.tags.split(",") if t.strip()]
+        print("stored #%d in [%s]" % (m.remember(a.text,namespace=a.namespace,tags=tags), a.namespace))
+    elif a.cmd == "recall":
+        for h in m.recall(a.query,k=a.k,namespace=a.namespace):
+            print("%.3f [%s] %s  (%s)" % (h.score,h.namespace,h.text,h.why))
+    elif a.cmd == "namespaces":
+        print(json.dumps(m.namespaces(),ensure_ascii=False,indent=2))
+    elif a.cmd == "canon":
+        if a.text: print("canon #%d" % c.add_canon(a.text))
+        else:
+            for r in c._dump("canon"): print("- "+r["text"])
+    elif a.cmd == "frontier":
+        if a.kind and a.item: print("set %s -> %s (#%d)" % (a.kind,a.item,c.set_frontier(a.kind,a.item)))
+        else: print(json.dumps(c.frontiers(),ensure_ascii=False,indent=2))
+    elif a.cmd == "loop":
+        if a.close is not None: c.close_loop(a.close); print("closed loop #%d" % a.close)
+        elif a.text: print("loop #%d opened" % c.add_loop(a.text))
+        else:
+            for l in c.open_loops(): print("[#%d] %s" % (l["id"],l["text"]))
+    elif a.cmd == "checkpoint":
+        print("checkpoint #%d" % c.checkpoint(summary=a.summary,next_action=a.nxt,proof=a.proof))
+    elif a.cmd == "doctor":
+        d=c.doctor(); print("%s  %d/%d" % ("✅ healthy" if d["healthy"] else "⚠ drift", d["passed"], d["total"]))
+        for ch in d["checks"]: print("  %s %s — %s" % ("✓" if ch["ok"] else "✗", ch["check"], ch["detail"]))
+    elif a.cmd == "handoff":
+        print(c.handoff())
+    elif a.cmd == "boot":
+        # start of session: show handoff + doctor (the boot ritual)
+        print(c.handoff()); print("\n--- doctor ---")
+        d=c.doctor(); print("%s %d/%d" % ("OK" if d["healthy"] else "DRIFT", d["passed"], d["total"]))
+        for ch in d["checks"]:
+            if not ch["ok"]: print("  ! %s — %s" % (ch["check"], ch["detail"]))
+    elif a.cmd == "close":
+        # end of session: checkpoint + doctor (closure beats branching)
+        cid=c.checkpoint(summary=a.summary, next_action=a.nxt, proof=a.proof)
+        print("checkpoint #%d" % cid); d=c.doctor()
+        print("doctor: %s %d/%d" % ("OK" if d["healthy"] else "DRIFT", d["passed"], d["total"]))
+    elif a.cmd == "compress":
+        # weekly compression: report counts per namespace to spot bloat
+        print("namespace sizes (compress candidates):")
+        for ns in m.namespaces(): print("  %-12s %d" % (ns["namespace"], ns["count"]))
+        ol=c.open_loops()
+        print("open loops: %d (close stale ones with: cos loop --close <id>)" % len(ol))
+
+if __name__ == "__main__":
+    main()

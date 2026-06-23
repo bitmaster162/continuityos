@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "continuityos"
+version = "0.7.0"
+description = "Durable, hybrid (structural + semantic) memory for AI agents and humans. Local-first, zero external services."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{ name = "ContinuityOS contributors" }]
+keywords = ["memory","ai-agents","mcp","semantic-search","vector","rag","llm","continuity"]
+dependencies = []          # core is stdlib-only
+
+[project.optional-dependencies]
+st = ["sentence-transformers>=2.2"]        # widest model choice
+fast = ["fastembed>=0.3"]                  # ONNX, no torch — recommended real embedder
+dev = ["pytest>=7"]
+
+[project.scripts]
+cos = "continuityos.cli:main"
+continuity = "continuityos.gate.cli:main"
+
+[project.urls]
+Homepage = "https://sovereign-arena-site.vercel.app/continuityos"
+Source = "https://github.com/"
+
+[tool.setuptools.packages.find]
+include = ["continuityos*"]

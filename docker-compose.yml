@@ -1,0 +1,9 @@
+services:
+  continuityos:
+    build: .
+    container_name: continuityos
+    ports:
+      - "8077:8077"          # HTTP API (POST /remember, GET /recall)
+    volumes:
+      - ./cos-data:/data     # durable local memory; nothing leaves the host
+    restart: unless-stopped
