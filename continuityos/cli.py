@@ -1,12 +1,14 @@
 """ContinuityOS CLI.
 Memory:     cos remember | recall | namespaces
 Continuity: cos canon | frontier | loop | checkpoint | doctor | handoff
+Twin:       cos predict | alignment
 Serve:      cos serve (MCP stdio) | cos api (HTTP)
 """
 from __future__ import annotations
 import argparse, os, json, sys
 from .memory import Memory
 from .continuity import Continuity
+from .twin import Twin
 
 def _db(a): return a.db or os.path.expanduser("~/.continuityos/memory.db")
 
@@ -28,6 +30,10 @@ def main(argv=None):
     s.add_parser("compress")
     s.add_parser("serve")
     pa = s.add_parser("api"); pa.add_argument("--host",default="127.0.0.1"); pa.add_argument("--port",type=int,default=8077)
+    pr = s.add_parser("predict", help="Digital-twin: likely stance on a situation, grounded in recorded rules and precedent")
+    pr.add_argument("situation")
+    al = s.add_parser("alignment", help="Check a proposed action against canon/rules; flags conflicts with non-negotiable rules")
+    al.add_argument("action")
     a = ap.parse_args(argv)
 
     if a.cmd == "serve":
@@ -42,6 +48,7 @@ def main(argv=None):
     except Exception:
         m = Memory(db)
     c = Continuity(memory=m)
+    t = Twin(memory=m)
     if a.cmd == "remember":
         tags=[t.strip() for t in a.tags.split(",") if t.strip()]
         print("stored #%d in [%s]" % (m.remember(a.text,namespace=a.namespace,tags=tags), a.namespace))
@@ -86,6 +93,10 @@ def main(argv=None):
         for ns in m.namespaces(): print("  %-12s %d" % (ns["namespace"], ns["count"]))
         ol=c.open_loops()
         print("open loops: %d (close stale ones with: cos loop --close <id>)" % len(ol))
+    elif a.cmd == "predict":
+        print(json.dumps(t.predict(a.situation), ensure_ascii=False, indent=2))
+    elif a.cmd == "alignment":
+        print(json.dumps(t.alignment(a.action), ensure_ascii=False, indent=2))
 
 if __name__ == "__main__":
     main()

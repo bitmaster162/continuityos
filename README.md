@@ -96,8 +96,23 @@ ContinuityOS ships an MCP stdio server so an agent can `remember` and `recall` o
 }
 ```
 
-Tools exposed: `remember`, `recall`, `context`, `forget`, `list_namespaces`.
-Now the agent pulls relevant memory automatically before answering — and writes new facts back as it learns them.
+Tools exposed: `remember`, `recall`, `context`, `forget`, `list_namespaces`, `checkpoint`, `handoff`, `doctor`, `set_frontier`, `predict`, `alignment`, `preflight_action` — **12 tools**.
+Now the agent pulls relevant memory automatically before answering — and writes new facts back as it learns it.
+
+**Recommended:** use the cross-platform bridge instead of `cos serve`:
+
+```json
+{
+  "mcpServers": {
+    "continuityos": {
+      "command": "python",
+      "args": ["/path/to/mcp_bridge.py"]
+    }
+  }
+}
+```
+
+See [docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md) for Hermes, Claude Desktop, and Cursor setup.
 
 ### Over HTTP (optional)
 
@@ -231,7 +246,11 @@ The strongest 2026 agents don't win on a bigger context window — they win on *
 
 ## Status
 
-`v0.5` — unified core, 6 layers, all tested (numpy-accelerated recall, session rituals `boot/close/compress`, recall benchmark in `bench/`): **L1 Memory** (hybrid FTS+vector) · **L2 Continuity** (canon/frontiers/loops/checkpoints/doctor/handoff) · **L3 Council** (multi-agent, authority levels + roles) · **L4 Twin** (digital twin: profile/predict/alignment) · **L5 Control Plane** (correct/redact/rollback/export) · **L6 Autopoiesis** (self-maintenance doctor). CLI, MCP server (11 tools), HTTP API. Roadmap: incremental vector index for large stores, optional reranking, import adapters (chat exports, notes), web memory browser.
+`v0.7.0` — **6 layers, 12 MCP tools, 18/18 tests, full audit passed.** Unified core, all tested (FastEmbed-accelerated recall, session rituals `boot/close/compress`, recall benchmark in `bench/`): **L1 Memory** (hybrid FTS+vector, WAL mode) · **L2 Continuity** (canon/frontiers/loops/checkpoints/doctor/handoff) · **L3 Council** (multi-agent, authority levels + roles) · **L4 Twin** (digital twin: profile/predict/alignment — now in CLI too) · **L5 Control Plane** (correct/redact/rollback/export) · **L6 Autopoiesis** (self-maintenance doctor). CLI (`cos` + `continuity`), MCP server (**12 tools**, cross-platform `mcp_bridge.py`), HTTP API, Docker. CI via GitHub Actions.
+
+**Audit fixes applied:** WAL crash resilience · FastEmbed default + auto-fallback · Git-backed DB with daily backup cron · Gate enforcement via Hermes shell hooks · CANONICAL_TRUTH.md (3-store hierarchy) · predict/alignment in CLI · docs/ + quickstart example.
+
+Roadmap: incremental vector index for large stores, optional reranking, import adapters (chat exports, notes), web memory browser.
 
 ## License
 
