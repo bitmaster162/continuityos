@@ -35,7 +35,13 @@ def main(argv=None):
     if a.cmd == "api":
         from . import api; return api.run(_db(a), a.host, a.port)
 
-    db = _db(a); m = Memory(db); c = Continuity(memory=m)
+    db = _db(a); 
+    try:
+        from .embedders import FastEmbedEmbedder
+        m = Memory(db, embedder=FastEmbedEmbedder())
+    except Exception:
+        m = Memory(db)
+    c = Continuity(memory=m)
     if a.cmd == "remember":
         tags=[t.strip() for t in a.tags.split(",") if t.strip()]
         print("stored #%d in [%s]" % (m.remember(a.text,namespace=a.namespace,tags=tags), a.namespace))

@@ -57,7 +57,11 @@ TOOLS = [
 
 class Server:
     def __init__(self, db):
-        self.m = Memory(db)
+        try:
+            from .embedders import FastEmbedEmbedder
+            self.m = Memory(db, embedder=FastEmbedEmbedder())
+        except Exception:
+            self.m = Memory(db)  # fallback to HashingEmbedder
         self.c = Continuity(memory=self.m)
         self.t = Twin(memory=self.m)
         self.ctl = ControlPlane(memory=self.m)
