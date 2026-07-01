@@ -22,3 +22,9 @@ backups/
 # Environment
 .env
 .env.*
+canon/
+AUDIT_*.md
+CANONICAL_TRUTH.md
+BUILD_GATE_STATUS.md
+RESEARCH_PROMPTS.md
+SHIP.md

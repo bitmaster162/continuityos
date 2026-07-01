@@ -9,5 +9,6 @@ from .continuity import Continuity
 from .agents import Council, Actor
 from .twin import Twin
 from .control import ControlPlane
-__all__ = ["Memory", "MemoryItem", "Continuity", "Council", "Actor", "Twin", "ControlPlane"]
+from . import fork
+__all__ = ["Memory", "MemoryItem", "Continuity", "Council", "Actor", "Twin", "ControlPlane", "fork"]
 __version__ = "0.7.0"
