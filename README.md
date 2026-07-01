@@ -1,5 +1,8 @@
 # ContinuityOS
 
+[![PyPI](https://img.shields.io/pypi/v/continuityos)](https://pypi.org/project/continuityos/) [![Python](https://img.shields.io/pypi/pyversions/continuityos)](https://pypi.org/project/continuityos/) [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
+
 > ## 🛡️ ContinuityOS — AI Agent Governance Gateway
 >
 > **No dangerous tool runs unless ContinuityOS approves it.** A local-first, MCP-native
