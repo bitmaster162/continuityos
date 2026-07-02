@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "continuityos"
-version = "0.7.0"
+version = "0.8.0"
 description = "Durable, hybrid (structural + semantic) memory for AI agents and humans. Local-first, zero external services."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -26,6 +26,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
+m2v = ["model2vec>=0.3"]
 sentence-transformers = ["sentence-transformers>=2.2"]
 fastembed = ["fastembed>=0.3"]
 dev = ["pytest>=7", "pytest-cov>=4"]

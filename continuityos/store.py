@@ -67,6 +67,12 @@ class Store:
     def get(self, rid: int) -> Optional[sqlite3.Row]:
         return self.con.execute("SELECT * FROM items WHERE id=?", (rid,)).fetchone()
 
+    def update_meta(self, rid: int, meta: Dict[str, Any]) -> None:
+        """Rewrite an item's meta JSON (used by bi-temporal supersede; text stays immutable)."""
+        self.con.execute("UPDATE items SET meta=?, updated_at=? WHERE id=?",
+                         (json.dumps(meta, ensure_ascii=False), _now(), rid))
+        self.con.commit()
+
     def delete(self, rid: int) -> bool:
         self.con.execute("DELETE FROM items WHERE id=?", (rid,))
         if self.fts:

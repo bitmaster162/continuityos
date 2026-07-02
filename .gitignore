@@ -28,3 +28,6 @@ CANONICAL_TRUTH.md
 BUILD_GATE_STATUS.md
 RESEARCH_PROMPTS.md
 SHIP.md
+
+# benchmark datasets (downloaded, not shipped)
+bench/data/

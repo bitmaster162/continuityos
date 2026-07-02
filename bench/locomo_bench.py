@@ -81,6 +81,11 @@ def evaluate(embedder, samples, ks=(1, 3, 5, 10)):
 
 EMBEDDERS = [("HashingEmbedder (default)", HashingEmbedder())]
 try:
+    from continuityos.embedders import Model2VecEmbedder
+    EMBEDDERS.append(("model2vec potion-base-8M [m2v]", Model2VecEmbedder()))
+except Exception:
+    pass
+try:
     from continuityos.embedders import FastEmbedEmbedder
     EMBEDDERS.append(("FastEmbed bge-small [fast]", FastEmbedEmbedder()))
 except Exception:

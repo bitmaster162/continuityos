@@ -101,6 +101,37 @@ def collect(items: List[Dict], max_tokens: int = 128000,
     return kept, report
 
 
+def compress_tool_output(text: str, max_chars: int = 4000) -> str:
+    """Headroom pattern (github.com/chopratejas/headroom): shrink tool/log/JSON output
+    before it reaches the LLM — same answers, far fewer tokens. Three passes:
+    JSON array-of-objects -> compact pipe table; JSON object -> drop empty fields;
+    anything long -> whitespace squeeze + head/tail slice with explicit elision marker."""
+    t = (text or "").strip()
+    if len(t) <= max_chars:
+        return t
+    import json as _json
+    try:
+        data = _json.loads(t)
+        if isinstance(data, list) and data and all(isinstance(r, dict) for r in data):
+            keys = list(data[0].keys())
+            rows = [" | ".join(str(r.get(k, ""))[:80] for k in keys) for r in data]
+            out = " | ".join(keys) + "\n" + "\n".join(rows)
+            if len(out) > max_chars:
+                out = out[:max_chars] + "\n… [compressed: %d rows, was %d chars]" % (len(data), len(t))
+            return out
+        if isinstance(data, dict):
+            slim = {k: v for k, v in data.items() if v not in (None, "", [], {})}
+            return _json.dumps(slim, ensure_ascii=False, separators=(",", ":"))[:max_chars]
+    except Exception:
+        pass
+    t = re.sub(r"[ \t]+", " ", t)
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    if len(t) <= max_chars:
+        return t
+    head, tail = t[:int(max_chars * 0.7)], t[-int(max_chars * 0.2):]
+    return head + "\n… [compressed: elided %d chars] …\n" % (len(t) - len(head) - len(tail)) + tail
+
+
 if __name__ == "__main__":
     demo = ([{"text": "INVARIANT: never delete checkpoints.", "kind": "checkpoint"}]
             + [{"text": f'Traceback (most recent call last)\n  File "x.py", line {n}\nWARNING: deprecated'} for n in range(8)]

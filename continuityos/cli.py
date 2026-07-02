@@ -18,6 +18,11 @@ def main(argv=None):
     s = ap.add_subparsers(dest="cmd", required=True)
     r = s.add_parser("remember"); r.add_argument("text"); r.add_argument("-n","--namespace",default="notes"); r.add_argument("-t","--tags",default="")
     q = s.add_parser("recall"); q.add_argument("query"); q.add_argument("-k",type=int,default=5); q.add_argument("-n","--namespace",default=None)
+    q.add_argument("--as-of",dest="as_of",default=None,help="ISO date/datetime: what was true THEN")
+    q.add_argument("--current-only",action="store_true",help="hide superseded/expired facts")
+    q.add_argument("--type",dest="mtype",default=None,help="filter by semantic type (fact/preference/decision/...)")
+    ex = s.add_parser("extract", help="Mem0-style ADD-only auto-extraction of memories from text/stdin")
+    ex.add_argument("text", nargs="?"); ex.add_argument("-n","--namespace",default="facts")
     s.add_parser("namespaces")
     cn = s.add_parser("canon"); cn.add_argument("text", nargs="?"); 
     fr = s.add_parser("frontier"); fr.add_argument("kind", nargs="?", choices=["trunk","cash","lab","parked"]); fr.add_argument("item", nargs="?")
@@ -53,8 +58,18 @@ def main(argv=None):
         tags=[t.strip() for t in a.tags.split(",") if t.strip()]
         print("stored #%d in [%s]" % (m.remember(a.text,namespace=a.namespace,tags=tags), a.namespace))
     elif a.cmd == "recall":
-        for h in m.recall(a.query,k=a.k,namespace=a.namespace):
+        as_of = None
+        if a.as_of:
+            import datetime as _dt
+            as_of = _dt.datetime.fromisoformat(a.as_of).timestamp()
+        for h in m.recall(a.query,k=a.k,namespace=a.namespace,as_of=as_of,
+                          current_only=a.current_only,mtype=a.mtype):
             print("%.3f [%s] %s  (%s)" % (h.score,h.namespace,h.text,h.why))
+    elif a.cmd == "extract":
+        txt = a.text or sys.stdin.read()
+        from .extract import extract_and_store
+        ids = extract_and_store(txt, m, namespace=a.namespace)
+        print("stored %d candidate(s): %s" % (len(ids), ids))
     elif a.cmd == "namespaces":
         print(json.dumps(m.namespaces(),ensure_ascii=False,indent=2))
     elif a.cmd == "canon":

@@ -33,6 +33,19 @@ class FastEmbedEmbedder:
         vec = list(next(iter(self._model.embed([text or ""]))))
         return _l2([float(x) for x in vec])
 
+class Model2VecEmbedder:
+    """Static embeddings via `model2vec` (30MB, no torch/onnx — lightest real embedder).
+    Default potion-base-8M (256-dim). pip install "continuityos[m2v]"."""
+    def __init__(self, model: str = "minishlab/potion-base-8M"):
+        try:
+            from model2vec import StaticModel
+        except Exception as e:
+            raise ImportError('Model2VecEmbedder needs:  pip install "continuityos[m2v]"') from e
+        self._model = StaticModel.from_pretrained(model)
+
+    def __call__(self, text: str) -> List[float]:
+        return _l2([float(x) for x in self._model.encode([text or ""])[0]])
+
 class SentenceTransformerEmbedder:
     """sentence-transformers embedder. Default all-MiniLM-L6-v2 (384-dim)."""
     def __init__(self, model: str = "all-MiniLM-L6-v2"):

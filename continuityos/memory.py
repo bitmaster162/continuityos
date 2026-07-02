@@ -9,7 +9,7 @@
 meaning. Returns ranked MemoryItem list.
 """
 from __future__ import annotations
-import json
+import json, time
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Callable
 from .store import Store, unpack_vec
@@ -49,6 +49,20 @@ class MemoryItem:
                 "tags": self.tags, "meta": self.meta,
                 "score": round(self.score, 4), "why": self.why}
 
+def _valid(meta: Dict[str, Any], created_at: float, as_of: Optional[float],
+           current_only: bool, mtype: Optional[str]) -> bool:
+    """Bi-temporal + type filter. valid_from defaults to created_at (a fact is assumed true
+    from the moment we learned it unless told otherwise); open valid_to = still true."""
+    if mtype and meta.get("type") != mtype:
+        return False
+    vf = meta.get("valid_from", created_at)
+    vt = meta.get("valid_to")
+    if as_of is not None:
+        return vf <= as_of and (vt is None or as_of < vt)
+    if current_only:
+        return vt is None and "superseded_by" not in meta
+    return True
+
 class Memory:
     def __init__(self, path: str = "continuityos.db",
                  embedder: Optional[Callable[[str], List[float]]] = None,
@@ -59,15 +73,47 @@ class Memory:
 
     # ---- write ----
     def remember(self, text: str, namespace: str = "notes",
-                 tags: Optional[List[str]] = None, meta: Optional[Dict[str, Any]] = None) -> int:
+                 tags: Optional[List[str]] = None, meta: Optional[Dict[str, Any]] = None,
+                 mtype: Optional[str] = None, valid_from: Optional[float] = None,
+                 valid_to: Optional[float] = None, supersedes: Optional[int] = None) -> int:
+        """Store a fact. Bi-temporal (Zep pattern): valid_from/valid_to bound when the fact
+        is TRUE in the world, distinct from created_at (= when we learned it). mtype = semantic
+        type (Memanto pattern: fact/preference/decision/goal/event/learning/error).
+        supersedes=<id> closes the old fact's validity now and links both ways — nothing is
+        ever deleted (append-only)."""
+        meta = dict(meta or {})
+        if mtype: meta["type"] = mtype
+        if valid_from is not None: meta["valid_from"] = float(valid_from)
+        if valid_to is not None: meta["valid_to"] = float(valid_to)
+        if supersedes is not None: meta["supersedes"] = int(supersedes)
         vec = self.embed(text)
-        return self.store.add(text, namespace=namespace, tags=tags, meta=meta, vec=vec)
+        rid = self.store.add(text, namespace=namespace, tags=tags, meta=meta, vec=vec)
+        if supersedes is not None:
+            old = self.store.get(int(supersedes))
+            if old is not None:
+                om = json.loads(old["meta"])
+                om.setdefault("valid_to", time.time())
+                om["superseded_by"] = rid
+                self.store.update_meta(int(supersedes), om)
+        return rid
+
+    def supersede(self, old_id: int, text: str, **kw) -> int:
+        """Replace a fact: the new version becomes current, the old one keeps history with a
+        closed validity window (Mem0 v3 ADD-only spirit: corrections never destroy)."""
+        old = self.store.get(old_id)
+        if old is not None and "namespace" not in kw:
+            kw["namespace"] = old["namespace"]
+        return self.remember(text, supersedes=old_id, **kw)
 
     def forget(self, item_id: int) -> bool:
         return self.store.delete(item_id)
 
     # ---- read ----
-    def recall(self, query: str, k: int = 5, namespace: Optional[str] = None) -> List[MemoryItem]:
+    def recall(self, query: str, k: int = 5, namespace: Optional[str] = None,
+               as_of: Optional[float] = None, current_only: bool = False,
+               mtype: Optional[str] = None) -> List[MemoryItem]:
+        """Hybrid recall + bi-temporal filters: as_of=<ts> answers what was true THEN;
+        current_only=True hides superseded/expired facts; mtype filters by semantic type."""
         sw = self.semantic_weight
         scores: Dict[int, Dict[str, Any]] = {}
 
@@ -87,13 +133,16 @@ class Memory:
         out: List[MemoryItem] = []
         for rid, d in scores.items():
             row = d["row"]
+            meta = json.loads(row["meta"])
+            if not _valid(meta, row["created_at"], as_of, current_only, mtype):
+                continue
             final = sw * d["sem"] + (1 - sw) * d["kw"]
             legs = []
             if d["sem"] > 0: legs.append("semantic %.2f" % d["sem"])
             if d["kw"] > 0:  legs.append("keyword")
             out.append(MemoryItem(
                 id=rid, text=row["text"], namespace=row["namespace"],
-                tags=json.loads(row["tags"]), meta=json.loads(row["meta"]),
+                tags=json.loads(row["tags"]), meta=meta,
                 score=final, why=" + ".join(legs)))
         out.sort(key=lambda x: x.score, reverse=True)
         return out[:k]
