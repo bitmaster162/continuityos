@@ -2,7 +2,8 @@
 
   continuity init                         # create ledger + default policy
   continuity preflight shell "<cmd>"      # decide without running
-  continuity run shell -- <cmd...>        # HARD mediation: preflight then run/refuse
+  continuity run exec  -- <cmd...>        # argv-only (safe); rejects shell operators
+  continuity run shell -- <cmd...>        # real shell (&&,|,>,$()) — mediated, stricter
   continuity audit                        # show + verify the audit ledger
 """
 from __future__ import annotations
@@ -79,12 +80,19 @@ def main(argv=None):
         if rest and rest[0] == "--": rest = rest[1:]
         cmd = " ".join(rest)
         if not cmd:
-            print("usage: continuity run shell -- <command>"); return 2
-        r, spec = _decide(cmd, tool=a.tool, agent="cli-run")
+            print("usage: continuity run [exec|shell] -- <command>"); return 2
+        # exec = argv-only (safe): reject shell operators instead of silently mis-running.
+        # shell = real shell semantics (&&, |, >, $()) but classified more strictly.
+        mode = a.tool if a.tool in ("exec", "shell") else "exec"
+        _SHELL_OPS = re.compile(r"&&|\|\||[|<>]|\$\(|`|;")
+        if mode == "exec" and _SHELL_OPS.search(cmd):
+            print("\n\u26d4 exec mode is argv-only and does not run shell operators (&&, |, >, $(), ;).")
+            print("   Use:  continuity run shell -- \"" + cmd + "\"   (mediated shell mode)"); return 2
+        r, spec = _decide(cmd, tool=("shell" if mode == "shell" else "exec"), agent="cli-run")
         _print(r)
         d = r["decision"]
         if d == "ALLOW":
-            return subprocess.call(shlex.split(cmd))
+            return subprocess.call(cmd, shell=True) if mode == "shell" else subprocess.call(shlex.split(cmd))
         if d == "DRY_RUN_ONLY":
             print("\n⟂ DRY-RUN: command NOT executed (protected). Re-run with explicit approval if intended.")
             return 0
@@ -100,7 +108,7 @@ def main(argv=None):
             ans = input("\nRequires confirmation. Execute anyway? [y/N] ").strip().lower()
             if ans == "y":
                 Ledger(LEDGER).append("override", {"command": cmd, "by": "human"})
-                return subprocess.call(shlex.split(cmd))
+                return subprocess.call(cmd, shell=True) if mode == "shell" else subprocess.call(shlex.split(cmd))
             print("aborted by user."); return 1
     return 0
 

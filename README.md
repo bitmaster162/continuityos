@@ -259,6 +259,23 @@ The strongest 2026 agents don't win on a bigger context window — they win on *
 
 **Cost-aware routing.** `estimate_cost(text, model_id, output_tokens)` prices a context block against a built-in `MODEL_REGISTRY` (Fable 5, Mythos 5, Opus 4.8, Haiku 4.5, GPT-5.5, Gemini 3.1 Pro / 3.5 Flash, Grok 4.3, DeepSeek V4 Pro — mid-2026 pricing). Same block costs ~28× more on Fable 5 than DeepSeek V4 Pro, so callers can route *commodity → interactive → high-stakes* tiers instead of always paying frontier price for trivial work.
 
+## Why continuity, not just memory
+
+**Models are the consumable. Continuity is the asset.** Every model upgrade (or vendor switch) normally resets your agent — it forgets your rules, your context, your decision history. ContinuityOS stores the agent *outside* the model: one SQLite file (canon + rules + bi-temporal facts + decision checkpoints + a behavioral twin). Swap the model underneath and `cos boot` brings back the *same* agent. Model-agnostic by design — vendor memory locks you to their model; this doesn't.
+
+## Honest limits (threat model)
+
+We'd rather tell you the edges than oversell. Full detail in [THREAT_MODEL.md](THREAT_MODEL.md).
+
+- **The gateway is not magic.** It stops known-dangerous shell/file/git *commands* (rm -rf, force-push, secret reads, curl|sh). It does **not** understand arbitrary application logic — a subtle bug inside a script it's allowed to run is out of scope. `exec` mode is argv-only and refuses shell operators; `shell` mode runs them but is classified more strictly.
+- **Rollback is local-only.** It reverts local file/DB state. It **cannot** undo irreversible external side effects (a bad API call to prod, a deleted GitHub repo, a sent transaction). Gate those actions upstream; don't rely on rollback.
+- **Default embedder is weak on purpose.** The zero-dependency `HashingEmbedder` is fast but semantically shallow. For real synonym/paraphrase recall install `continuityos[fast]` (ONNX, ~bge-small) or `[m2v]` (30MB static). We publish honest LoCoMo *retrieval* numbers in `BENCHMARKS.md` — not answer-graded marketing figures.
+- **Memory can go stale.** A fact true last week can be wrong today. Use bi-temporal `supersede()` / `recall(current_only=True)` so corrections hide stale facts instead of contradicting them. Don't hand an agent raw memory without the current-only filter for state-sensitive decisions.
+- **It asks for discipline.** Continuity relies on session-close rituals (`cos checkpoint`) and periodic `cos doctor`. Skip them and the store drifts toward a log dump. This is a feature (auditable thread), but it is real operator work.
+- **Prompt-cache hygiene.** If you inject memory into a system prompt, keep it deterministic — a dynamic value (e.g. `datetime.now()`) busts the cache and you pay full context cost every call. `context(..., compact=True)` returns cache-stable output; don't wrap it in per-call timestamps.
+
+Best fit today: **operators and teams that need auditable, governed continuity** (regulated internal ops, on-call/shift handoff, coding agents with rollback). Overkill if you just want Git-style backups and paste context by hand.
+
 ## Status
 
 `v0.8.2` — **6 layers, 12 MCP tools, 37/37 tests, full audit passed.** Unified core, all tested (FastEmbed-accelerated recall, session rituals `boot/close/compress`, recall benchmark in `bench/`): **L1 Memory** (hybrid FTS+vector, WAL + thread-safe store) · **L2 Continuity** (canon/frontiers/loops/checkpoints/doctor/handoff) · **L3 Council** (multi-agent, authority levels + roles) · **L4 Twin** (digital twin: profile/predict/alignment — now in CLI too) · **L5 Control Plane** (correct/redact/rollback/export) · **L6 Autopoiesis** (self-maintenance doctor). CLI (`cos` + `continuity`), MCP server (**12 tools**, cross-platform `mcp_bridge.py`), HTTP API, Docker. CI via GitHub Actions.

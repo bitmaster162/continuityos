@@ -60,3 +60,12 @@ def test_real_rollback_restores_file():
     open(f, "w").write("GONE")
     assert restore(sid)["restored"] == 1
     assert open(f).read() == "ORIG"
+
+
+def test_exec_mode_rejects_shell_operators():
+    # PR-3.5: exec is argv-only; shell operators are a hard reject with guidance
+    import subprocess, sys
+    r = subprocess.run([sys.executable, "-m", "continuityos.gate.cli", "run", "exec", "--", "ls && rm -rf x"],
+                       capture_output=True, text=True)
+    assert r.returncode == 2
+    assert "argv-only" in r.stdout or "shell operators" in r.stdout
