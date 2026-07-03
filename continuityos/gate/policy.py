@@ -17,7 +17,7 @@ DEFAULT_POLICY: Dict[str, Any] = {
     # if a write/delete touches a protected path -> this decision (takes the stricter of the two)
     "protected_path_decision": "REQUIRE_CONFIRMATION",
     # tools allowed to run at all (others -> HOLD for review)
-    "allowed_tools": ["shell", "file.read", "file.write", "file.delete", "git", "http"],
+    "allowed_tools": ["exec", "shell", "file.read", "file.write", "file.delete", "git", "http"],
     "default_decision": "ALLOW",
     # destructive shell with no detected pattern but on protected path can be forced to dry-run
     "dry_run_on_protected_delete": True,

@@ -6,8 +6,14 @@ def test_rm_rf_denied():
     assert r["decision"] == "DENY"
 
 def test_safe_command_allowed():
-    r = preflight(ActionSpec(tool="shell", command="ls -la && npm test"))
+    # truly safe single command (argv, no shell operators) stays ALLOW
+    r = preflight(ActionSpec(tool="shell", command="ls -la"))
     assert r["decision"] == "ALLOW"
+
+def test_shell_chain_warns():
+    # PR-3: shell chaining (&&) is no longer silently ALLOWed — it warns
+    r = preflight(ActionSpec(tool="shell", command="ls -la && npm test"))
+    assert r["decision"] in ("WARN", "REQUIRE_CONFIRMATION", "HOLD")
 
 def test_force_push_requires_confirmation():
     r = preflight(ActionSpec(tool="shell", command="git push origin main --force"))

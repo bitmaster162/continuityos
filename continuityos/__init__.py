@@ -17,4 +17,4 @@ try:
     __version__ = _pkg_version("continuityos")
 except PackageNotFoundError:
     # Source-tree fallback for tests or direct execution before installation.
-    __version__ = "0.8.2"
+    __version__ = "0.8.3"

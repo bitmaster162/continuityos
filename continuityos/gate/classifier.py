@@ -36,6 +36,10 @@ RULES = [
     ("cwe78_oscmd",    "critical", r"(os\.system|subprocess\.(call|run|Popen)|exec\(|eval\()\s*\([^\n]*(\+|%|\bformat\b|f[\"'])", "CWE-78: OS command built from input → injection"),
     ("cwe798_secret",  "high",     r"(api[_-]?key|secret|password|token|aws_secret)\s*[:=]\s*[\"'][A-Za-z0-9/\+_\-]{12,}[\"']", "CWE-798: hardcoded credential in code"),
     ("cwe502_deser",   "high",     r"\b(pickle\.loads|marshal\.loads)\b", "CWE-502: unsafe deserialization"),
+    ("shell_chain", "medium", r"&&|\|\||;", "shell chaining operator (&&, ||, ;)"),
+    ("shell_pipe", "medium", r"\|(?!\|)", "shell pipe"),
+    ("shell_redirect", "high", r">>|>|<", "shell redirect"),
+    ("shell_substitution", "high", r"\$\(|`", "shell command substitution"),
 ]
 
 def classify(command: str) -> List[Dict]:

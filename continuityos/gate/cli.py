@@ -26,7 +26,7 @@ def _context():
     try:
         from ..continuity import Continuity
         mdb = os.path.join(HOME, "memory.db")
-        return Continuity(db=mdb) if os.path.exists(mdb) or True else None
+        return Continuity(db=mdb) if os.path.exists(mdb) else None
     except Exception:
         return None
 
