@@ -50,7 +50,10 @@ Nothing leaves your machine. One SQLite file. No cloud, no account, no telemetry
 ```bash
 pip install continuityos          # core (stdlib-only)
 # optional, for production-grade embeddings:
-pip install "continuityos[embeddings]"
+pip install "continuityos[fast]"        # recommended: FastEmbed / ONNX
+pip install "continuityos[st]"          # sentence-transformers
+pip install "continuityos[m2v]"         # light static model2vec
+pip install "continuityos[embeddings]"  # all optional embedders
 ```
 
 Requires Python 3.10+.
@@ -120,9 +123,18 @@ See [docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md) for Hermes, Claude Deskto
 ### Over HTTP (optional)
 
 ```bash
-cos api --port 8077
+cos api --port 8077                       # local-only: 127.0.0.1
 curl -s "localhost:8077/recall?q=license&k=3"
 curl -s -XPOST localhost:8077/remember -d '{"text":"hello","namespace":"notes"}'
+```
+
+Remote bind is intentionally opt-in:
+
+```bash
+export CONTINUITYOS_ALLOW_REMOTE=1        # required for --host 0.0.0.0
+export CONTINUITYOS_TOKEN='change-me'     # optional bearer auth for HTTP API
+cos api --host 0.0.0.0 --port 8077
+curl -H "Authorization: Bearer $CONTINUITYOS_TOKEN" "localhost:8077/health"
 ```
 
 ### Real semantic recall (recommended)
@@ -249,9 +261,9 @@ The strongest 2026 agents don't win on a bigger context window — they win on *
 
 ## Status
 
-`v0.7.0` — **6 layers, 12 MCP tools, 18/18 tests, full audit passed.** Unified core, all tested (FastEmbed-accelerated recall, session rituals `boot/close/compress`, recall benchmark in `bench/`): **L1 Memory** (hybrid FTS+vector, WAL mode) · **L2 Continuity** (canon/frontiers/loops/checkpoints/doctor/handoff) · **L3 Council** (multi-agent, authority levels + roles) · **L4 Twin** (digital twin: profile/predict/alignment — now in CLI too) · **L5 Control Plane** (correct/redact/rollback/export) · **L6 Autopoiesis** (self-maintenance doctor). CLI (`cos` + `continuity`), MCP server (**12 tools**, cross-platform `mcp_bridge.py`), HTTP API, Docker. CI via GitHub Actions.
+`v0.8.2` — **6 layers, 12 MCP tools, 37/37 tests, full audit passed.** Unified core, all tested (FastEmbed-accelerated recall, session rituals `boot/close/compress`, recall benchmark in `bench/`): **L1 Memory** (hybrid FTS+vector, WAL + thread-safe store) · **L2 Continuity** (canon/frontiers/loops/checkpoints/doctor/handoff) · **L3 Council** (multi-agent, authority levels + roles) · **L4 Twin** (digital twin: profile/predict/alignment — now in CLI too) · **L5 Control Plane** (correct/redact/rollback/export) · **L6 Autopoiesis** (self-maintenance doctor). CLI (`cos` + `continuity`), MCP server (**12 tools**, cross-platform `mcp_bridge.py`), HTTP API, Docker. CI via GitHub Actions.
 
-**Audit fixes applied:** WAL crash resilience · FastEmbed default + auto-fallback · Git-backed DB with daily backup cron · Gate enforcement via Hermes shell hooks · CANONICAL_TRUTH.md (3-store hierarchy) · predict/alignment in CLI · docs/ + quickstart example.
+**Audit fixes applied:** FastEmbed default + auto-fallback · Gate enforcement via Hermes shell hooks · predict/alignment in CLI · docs/ + quickstart example.
 
 Roadmap: incremental vector index for large stores, optional reranking, import adapters (chat exports, notes), web memory browser.
 

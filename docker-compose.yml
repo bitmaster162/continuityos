@@ -3,7 +3,11 @@ services:
     build: .
     container_name: continuityos
     ports:
-      - "8077:8077"          # HTTP API (POST /remember, GET /recall)
+      - "127.0.0.1:8077:8077" # local-only HTTP API (POST /remember, GET /recall)
+    environment:
+      # Container must bind 0.0.0.0 internally, but the host exposure above stays localhost-only.
+      CONTINUITYOS_ALLOW_REMOTE: "1"
     volumes:
       - ./cos-data:/data     # durable local memory; nothing leaves the host
+    command: ["cos", "--db", "/data/memory.db", "api", "--host", "0.0.0.0", "--port", "8077"]
     restart: unless-stopped

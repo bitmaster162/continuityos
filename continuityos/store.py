@@ -5,7 +5,7 @@ and free-form `tags`. Keyword layer = FTS5. Semantic layer = float32 vectors.
 Everything local, single file, zero external services.
 """
 from __future__ import annotations
-import sqlite3, json, time, struct, os
+import sqlite3, json, time, struct, os, threading
 from typing import List, Optional, Dict, Any
 
 def _now() -> float:
@@ -22,8 +22,17 @@ class Store:
         self.path = path
         d = os.path.dirname(os.path.abspath(path))
         os.makedirs(d, exist_ok=True)
-        self.con = sqlite3.connect(path)
+        # check_same_thread=False + a write lock: the HTTP API serves from worker
+        # threads (ThreadingHTTPServer); WAL keeps readers non-blocking and adds
+        # crash resilience for the memory DB.
+        self.con = sqlite3.connect(path, check_same_thread=False)
         self.con.row_factory = sqlite3.Row
+        self._lock = threading.RLock()
+        try:
+            self.con.execute("PRAGMA journal_mode=WAL")
+            self.con.execute("PRAGMA synchronous=NORMAL")
+        except sqlite3.OperationalError:
+            pass  # e.g. some network filesystems; correctness unaffected
         self._init()
 
     def _init(self):
@@ -53,6 +62,10 @@ class Store:
             vec: Optional[List[float]] = None) -> int:
         tags = tags or []; meta = meta or {}
         ts = _now()
+        with self._lock:
+            return self._add_locked(text, namespace, tags, meta, vec, ts)
+
+    def _add_locked(self, text, namespace, tags, meta, vec, ts):
         cur = self.con.execute(
             "INSERT INTO items(namespace,text,tags,meta,vec,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
             (namespace, text, json.dumps(tags, ensure_ascii=False),
