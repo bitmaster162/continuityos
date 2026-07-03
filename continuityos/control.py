@@ -13,11 +13,17 @@ class ControlPlane:
         self.m = memory or Memory(db)
 
     def correct(self, item_id: int, new_text: str, namespace: str = "notes") -> int:
-        """Supersede a memory: forget the old, store the corrected one, log it."""
+        """Supersede a memory without deleting history.
+
+        Corrections are bi-temporal: the original item remains stored with a closed
+        validity window and a superseded_by pointer. The corrected item points back via
+        supersedes. This preserves auditability while making current_only recall hide
+        stale facts.
+        """
         old = self.m.store.get(item_id)
-        self.m.forget(item_id)
-        rid = self.m.remember(new_text, namespace=namespace, tags=["corrected"],
-                              meta={"corrects": item_id})
+        if old is None:
+            raise KeyError(f"memory item #{item_id} not found")
+        rid = self.m.supersede(item_id, new_text, namespace=namespace, tags=["corrected"])
         self.m.remember(f"correction of #{item_id} -> #{rid}", namespace="control",
                         tags=["control","correct"], meta={"ts": time.time()})
         return rid
