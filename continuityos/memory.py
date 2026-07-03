@@ -68,6 +68,13 @@ class Memory:
                  embedder: Optional[Callable[[str], List[float]]] = None,
                  semantic_weight: float = 0.6):
         self.store = Store(path)
+        if embedder is None:
+            import os as _os
+            if not _os.environ.get("CONTINUITYOS_SILENCE_EMBED_WARN"):
+                import sys as _sys
+                print("[continuityos] using zero-dep HashingEmbedder (weak semantic recall). "
+                      "For real synonym/paraphrase matching: pip install 'continuityos[fast]'. "
+                      "Silence: CONTINUITYOS_SILENCE_EMBED_WARN=1", file=_sys.stderr)
         self.embed = embedder or HashingEmbedder()
         self.semantic_weight = semantic_weight  # 0=keyword only, 1=semantic only
 
