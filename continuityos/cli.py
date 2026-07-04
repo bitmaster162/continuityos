@@ -2,6 +2,7 @@
 Memory:     cos remember | recall | namespaces | import
 Continuity: cos canon | frontier | loop | checkpoint | doctor | handoff | rules
 Twin:       cos predict | alignment
+RaaS:       cos usage (metering + plan quota)
 Setup:      cos setup (guided onboarding wizard)
 Serve:      cos serve (MCP stdio) | cos api (HTTP)
 """
@@ -36,6 +37,10 @@ def main(argv=None):
     ru.add_argument("--out", default=".", help="directory to write agent config files into")
     ru.add_argument("--stdout", action="store_true", help="print rendered rules instead of writing files")
     ru.add_argument("--dry-run", dest="dry_run", action="store_true")
+    us = s.add_parser("usage", help="RaaS metering: usage vs plan quota; set plan; simulate a metered call")
+    us.add_argument("--key", default="local", help="billing key / customer id")
+    us.add_argument("--set-plan", dest="set_plan", default=None, choices=["free","pro","team","enterprise"])
+    us.add_argument("--charge", dest="charge_event", default=None, help="simulate one metered event, e.g. gate.decision")
     s.add_parser("namespaces")
     cn = s.add_parser("canon"); cn.add_argument("text", nargs="?");
     fr = s.add_parser("frontier"); fr.add_argument("kind", nargs="?", choices=["trunk","cash","lab","parked"]); fr.add_argument("item", nargs="?")
@@ -72,6 +77,14 @@ def main(argv=None):
         from . import mcp_server; sys.argv = ["mcp","--db",_db(a)]; return mcp_server.main()
     if a.cmd == "api":
         from . import api; return api.run(_db(a), a.host, a.port)
+    if a.cmd == "usage":
+        from .metering import Meter
+        meter = Meter(os.path.expanduser("~/.continuityos/usage.db"))
+        if a.set_plan:
+            meter.set_plan(a.key, a.set_plan); print("plan[%s] = %s" % (a.key, a.set_plan))
+        if a.charge_event:
+            print(json.dumps(meter.charge(a.key, a.charge_event), ensure_ascii=False))
+        print(json.dumps(meter.report(a.key), ensure_ascii=False, indent=2)); return 0
 
     db = _db(a);
     try:
