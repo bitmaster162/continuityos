@@ -39,6 +39,7 @@ def make_handler(mem: Memory, token: str | None = None):
             b = json.dumps(obj, ensure_ascii=False).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(b)))
             for k, v in (headers or {}).items():
                 self.send_header(k, v)
@@ -75,6 +76,13 @@ def make_handler(mem: Memory, token: str | None = None):
         def log_message(self, *a):
             pass
 
+        def do_OPTIONS(self):
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+            self.end_headers()
+
         def do_GET(self):
             if not self._ensure_auth():
                 return
@@ -87,6 +95,9 @@ def make_handler(mem: Memory, token: str | None = None):
                 return self._j(200, {"namespaces": mem.namespaces(), "count": mem.count()})
             if u.path in ("/", "/health"):
                 return self._j(200, {"ok": True, "product": "ContinuityOS", "count": mem.count()})
+            if u.path == "/epoch/graph":
+                from .epochgraph import EpochGraph
+                return self._j(200, EpochGraph(mem).to_graph())
             self._j(404, {"error": "not found"})
 
         def do_POST(self):
@@ -108,6 +119,23 @@ def make_handler(mem: Memory, token: str | None = None):
                     return self._j(400, {"error": "tags must be a list"})
                 rid = mem.remember(text, namespace=namespace, tags=tags)
                 return self._j(200, {"id": rid})
+            if u.path == "/epoch/commit":
+                from .epochgraph import EpochGraph
+                g = EpochGraph(mem)
+                branch = body.get("branch") or "main"
+                metrics = body.get("metrics") or {}
+                if not isinstance(metrics, dict):
+                    return self._j(400, {"error": "metrics must be an object"})
+                clean = {k: float(v) for k, v in metrics.items() if isinstance(v, (int, float))}
+                cid = g.commit(str(branch), str(body.get("label", "")), clean)
+                return self._j(200, {"id": cid, "graph": g.to_graph()})
+            if u.path == "/epoch/branch":
+                from .epochgraph import EpochGraph
+                name = body.get("name")
+                if not name:
+                    return self._j(400, {"error": "name is required"})
+                bid = EpochGraph(mem).branch(str(name), str(body.get("from", "main")))
+                return self._j(200, {"id": bid})
             self._j(404, {"error": "not found"})
 
     return H
