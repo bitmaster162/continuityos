@@ -9,6 +9,39 @@ ContinuityOS is a local-first, MCP-native **durable memory + continuity + govern
 layer for AI agents and humans. Core is stdlib-only, stores everything in one SQLite
 file, and runs with zero external services. Apache-2.0.
 
+## [0.9.0] — 2026-07-05
+
+Focus: making ContinuityOS a portable, composable engine ready for open-source launch —
+migrate history in, export rules out, meter usage, and let cognitive layers build on top.
+
+### Added
+- **`cos import`** — migrate ChatGPT (`conversations.json`) and Claude (`conversations.json` /
+  `memories.json`) exports into memory. Bi-temporal: each memory's `valid_from` is the original
+  message time, so `recall --as-of` reconstructs what you knew then. Offline, no API keys;
+  `--extract` distills typed facts, `--dry-run` previews.
+- **`cos rules`** — export canon + rules to the config files coding agents auto-load: `CLAUDE.md`,
+  `AGENTS.md`, `.cursor/rules/continuityos.mdc`. One source of truth flows into every agent.
+- **`cos usage`** — RaaS metering: a durable usage ledger with plan-based quotas
+  (free/pro/team/enterprise) enforced fail-closed, plus a Stripe/Unkey billing seam. Foundation
+  for a hosted, metered governance API.
+- **`cos moneymap`** — build a tiered monetization map from your own data (`--from <dir>` +
+  optional `--from-memory`); heuristic price/offer extraction, local only. Added as step 6 of
+  the `cos setup` wizard.
+- **Key-based `find()` + `upsert()`** (contributed upstream from an independent cognitive-memory
+  integration) — `find(namespace, key)` is a deterministic point-read; `upsert(text, namespace,
+  key)` is create-or-update by semantic key (append-only: history kept via supersede). New `key`
+  column + `(namespace, key)` index. Exposed across the Python API, the CLI (`cos remember -K`,
+  `cos find`), and the MCP server (now 14 tools).
+
+### Changed
+- **`cos doctor` output is ASCII** (no emoji) so it never crashes cp1252 Windows consoles.
+- README gains a **"Composable — built on in the wild"** section (Sim-OS/Pandora bridge + the
+  cognitive-layer integration that fed `find`/`upsert` back upstream).
+
+### Fixed
+- **Packaging** — `[tool.setuptools.packages.find]` restored + `exclude` for `demo/bench/docs`
+  so `pip install -e .` succeeds; project version corrected to `0.9.0` (was mislabeled `0.8.8`).
+
 ## [Unreleased]
 
 ### v0.7.1 — DevOps integration fixes
