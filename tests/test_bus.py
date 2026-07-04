@@ -1,7 +1,7 @@
 import tempfile, os, threading, json, urllib.request, urllib.error
 os.environ["CONTINUITYOS_SILENCE_EMBED_WARN"]="1"
 from continuityos.memory import Memory
-from continuityos import a2a as A2A
+from continuityos import bus as A2A
 
 def _call(port, method, params, token):
     req=urllib.request.Request("http://127.0.0.1:%d/"%port,
@@ -27,3 +27,7 @@ def test_server_read_write():
         assert _call(8793,"memory.upsert",{"text":"x","namespace":"facts","key":"z"},wt)[0]==200
     finally:
         httpd.shutdown()
+
+def test_a2a_alias_still_imports():
+    from continuityos import a2a as legacy
+    assert legacy.mint_token is A2A.mint_token

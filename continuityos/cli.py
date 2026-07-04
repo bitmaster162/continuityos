@@ -94,9 +94,9 @@ def main(argv=None):
     ad.add_argument("claim"); ad.add_argument("--action", action="store_true"); ad.add_argument("-n","--namespace",default=None); ad.add_argument("--record", action="store_true")
     au = s.add_parser("audit", help="Full-system audit: inventory + invariants (--devil = adversarial pass; --json = raw)")
     au.add_argument("--devil", action="store_true"); au.add_argument("--json", dest="as_json", action="store_true")
-    aa = s.add_parser("a2a", help="Agent-to-agent server (JSON-RPC, HMAC capability tokens) — serve | token")
-    aa.add_argument("a2a_cmd", choices=["serve","token"]); aa.add_argument("--host",default="127.0.0.1"); aa.add_argument("--port",type=int,default=8079)
-    aa.add_argument("--secret",default=os.environ.get("COS_A2A_SECRET","")); aa.add_argument("--sub",default="agent"); aa.add_argument("--scope",default="read",choices=["read","write"])
+    aa = s.add_parser("bus", aliases=["a2a"], help="Capability-token message bus (JSON-RPC, HMAC tokens; NOT the LF A2A standard) — serve | token")
+    aa.add_argument("bus_cmd", choices=["serve","token"]); aa.add_argument("--host",default="127.0.0.1"); aa.add_argument("--port",type=int,default=8079)
+    aa.add_argument("--secret",default=os.environ.get("COS_BUS_SECRET", os.environ.get("COS_A2A_SECRET",""))); aa.add_argument("--sub",default="agent"); aa.add_argument("--scope",default="read",choices=["read","write"])
     sw = s.add_parser("setup", help="Guided onboarding wizard — sets up memory, frontiers, twin, agents, dashboard")
     sw.add_argument("--quick", action="store_true", help="accept all recommended defaults (non-interactive)")
     sw.add_argument("--dashboard-only", action="store_true", help="just (re)generate the ORCA dashboard")
@@ -269,13 +269,13 @@ def main(argv=None):
         from .audit import SystemAudit
         rep = SystemAudit(m, c, t).run(devil=a.devil)
         print(json.dumps(rep, ensure_ascii=False, indent=2) if a.as_json else SystemAudit(m).render(rep))
-    elif a.cmd == "a2a":
-        from . import a2a as _a2a
-        if a.a2a_cmd == "token":
-            print(_a2a.mint_token(a.secret, a.sub, a.scope))
+    elif a.cmd in ("bus","a2a"):
+        from . import bus as _bus
+        if a.bus_cmd == "token":
+            print(_bus.mint_token(a.secret, a.sub, a.scope))
         else:
-            httpd = _a2a.serve(m, secret=a.secret, host=a.host, port=a.port, twin=t, continuity=c)
-            print("cos a2a serving on http://%s:%d  (scopes: read|write; Ctrl-C to stop)" % (a.host, a.port))
+            httpd = _bus.serve(m, secret=a.secret, host=a.host, port=a.port, twin=t, continuity=c)
+            print("cos bus serving on http://%s:%d  (scopes: read|write; Ctrl-C to stop)" % (a.host, a.port))
             try: httpd.serve_forever()
             except KeyboardInterrupt: httpd.shutdown()
 

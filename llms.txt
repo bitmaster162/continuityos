@@ -1,0 +1,16 @@
+# ContinuityOS
+
+> Local-first, stdlib-only memory + governance layer for AI agents (Apache-2.0). Bi-temporal facts, a hard/soft governance gate, a built-in devil's advocate that challenges claims before you act, and a system auditor that emits an EU-AI-Act Article-12-style record. Built for the governance/audit era, not the LoCoMo leaderboard.
+
+## What it is
+ContinuityOS gives an AI agent durable local-first memory (SQLite) with bi-temporal facts (valid_from/valid_to, append-only supersede — nothing is deleted), a governance gate (ALLOW/HOLD/DENY with reasons + rollback), a devil's advocate (`cos advocate`) that flags contradictions, stale facts, overconfidence, dishonesty and irreversible actions, and a system auditor (`cos audit`) for integrity + compliance export. Import your existing history from ChatGPT, Claude, Gemini, Grok, Mistral and Perplexity with `cos import` (PAM content-hash dedup).
+
+## Key links
+- Repository: https://github.com/bitmaster162/continuityos
+- Package (PyPI): https://pypi.org/project/continuityos/
+- README: https://github.com/bitmaster162/continuityos/blob/master/README.md
+- Benchmarks (reproducible, honest): https://github.com/bitmaster162/continuityos/blob/master/bench/recall_bench.py
+- Devil's-advocate rubric: https://github.com/bitmaster162/continuityos/blob/master/ADVOCATE.md
+
+## Commands
+cos remember | recall | find | import | rules | usage | moneymap | advocate | audit | bus | scan | update
