@@ -15,6 +15,12 @@ from .twin import Twin
 def _db(a): return a.db or os.path.expanduser("~/.continuityos/memory.db")
 
 def main(argv=None):
+    # Windows consoles default to cp1252 and crash on Cyrillic/emoji memory output; force UTF-8.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     ap = argparse.ArgumentParser(prog="cos", description="ContinuityOS — durable memory + continuity for agents & humans")
     ap.add_argument("--db", default=None)
     s = ap.add_subparsers(dest="cmd", required=True)
