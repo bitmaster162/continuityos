@@ -43,6 +43,10 @@ MECW = {
     "gemini-3.5-flash": 920_000, "grok-4.3": 900_000, "deepseek-v4-pro": 105_000,
 }
 
+class Conflict(Exception):
+    """Raised by write_checked() on an optimistic-concurrency version mismatch."""
+
+
 @dataclass
 class MemoryItem:
     id: int
@@ -142,6 +146,28 @@ class Memory:
         if existing is not None and "superseded_by" not in json.loads(existing["meta"]):
             return self.supersede(existing["id"], text, namespace=namespace, key=key, **kw)
         return self.remember(text, namespace=namespace, key=key, **kw)
+
+    def pointer(self, namespace: str, key: str) -> Optional[Dict[str, Any]]:
+        """Pass-by-reference: return a lightweight {namespace,key,version} pointer to the current
+        value (no content), or None. Agents can hand each other pointers instead of copying whole
+        documents into context (A2A \"courier tax\" fix; keeps injected text out of the planner)."""
+        row = self.store.find_by_key(namespace, key)
+        if row is None or "superseded_by" in json.loads(row["meta"]):
+            return None
+        return {"namespace": namespace, "key": key, "version": row["version"]}
+
+    def resolve(self, ptr: Dict[str, Any]) -> Optional[MemoryItem]:
+        """Dereference a pointer to its current MemoryItem."""
+        return self.find(ptr["namespace"], ptr["key"])
+
+    def write_checked(self, text: str, namespace: str, key: str, expected_version: int, **kw) -> int:
+        """Optimistic-concurrency write: only succeeds if the current version equals
+        expected_version, else raises Conflict (the caller re-reads and retries). Prevents
+        lost updates / stale-read poisoning when multiple agents write the same key."""
+        cur = self.store.current_version(namespace, key)
+        if cur != expected_version:
+            raise Conflict("OCC conflict on %s/%s: current v%d, expected v%d" % (namespace, key, cur, expected_version))
+        return self.upsert(text, namespace=namespace, key=key, **kw)
 
     def forget(self, item_id: int) -> bool:
         return self.store.delete(item_id)

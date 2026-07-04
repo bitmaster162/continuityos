@@ -53,6 +53,9 @@ class Store:
         if "key" not in cols:
             c.execute("ALTER TABLE items ADD COLUMN key TEXT")
         c.execute("CREATE INDEX IF NOT EXISTS idx_items_key ON items(namespace, key)")
+        # v0.9 (A2A/MEMORY_BUS): per-(namespace,key) version for pass-by-reference pointers + OCC.
+        if "version" not in {r[1] for r in c.execute("PRAGMA table_info(items)").fetchall()}:
+            c.execute("ALTER TABLE items ADD COLUMN version INTEGER NOT NULL DEFAULT 0")
         # FTS5 mirror for keyword/structural search
         try:
             c.execute("CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5("
@@ -71,10 +74,14 @@ class Store:
             return self._add_locked(text, namespace, tags, meta, vec, ts, key)
 
     def _add_locked(self, text, namespace, tags, meta, vec, ts, key=None):
+        version = 0
+        if key is not None:
+            row = self.con.execute("SELECT MAX(version) v FROM items WHERE namespace=? AND key=?", (namespace, key)).fetchone()
+            version = ((row["v"] or 0) + 1) if row else 1
         cur = self.con.execute(
-            "INSERT INTO items(namespace,text,tags,meta,vec,created_at,updated_at,key) VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT INTO items(namespace,text,tags,meta,vec,created_at,updated_at,key,version) VALUES(?,?,?,?,?,?,?,?,?)",
             (namespace, text, json.dumps(tags, ensure_ascii=False),
-             json.dumps(meta, ensure_ascii=False), pack_vec(vec) if vec else None, ts, ts, key))
+             json.dumps(meta, ensure_ascii=False), pack_vec(vec) if vec else None, ts, ts, key, version))
         rid = cur.lastrowid
         if self.fts:
             self.con.execute("INSERT INTO items_fts(rowid,text,tags,namespace) VALUES(?,?,?,?)",
@@ -91,6 +98,11 @@ class Store:
         return self.con.execute(
             "SELECT * FROM items WHERE namespace=? AND key=? ORDER BY id DESC LIMIT 1",
             (namespace, key)).fetchone()
+
+    def current_version(self, namespace: str, key: str) -> int:
+        """Highest version stored under (namespace, key); 0 if none. Basis for OCC."""
+        r = self.con.execute("SELECT MAX(version) v FROM items WHERE namespace=? AND key=?", (namespace, key)).fetchone()
+        return (r["v"] or 0) if r else 0
 
     def update_meta(self, rid: int, meta: Dict[str, Any]) -> None:
         """Rewrite an item's meta JSON (used by bi-temporal supersede; text stays immutable)."""
