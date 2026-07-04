@@ -2,6 +2,7 @@
 Memory:     cos remember | recall | namespaces
 Continuity: cos canon | frontier | loop | checkpoint | doctor | handoff
 Twin:       cos predict | alignment
+Setup:      cos setup (guided onboarding wizard)
 Serve:      cos serve (MCP stdio) | cos api (HTTP)
 """
 from __future__ import annotations
@@ -24,7 +25,7 @@ def main(argv=None):
     ex = s.add_parser("extract", help="Mem0-style ADD-only auto-extraction of memories from text/stdin")
     ex.add_argument("text", nargs="?"); ex.add_argument("-n","--namespace",default="facts")
     s.add_parser("namespaces")
-    cn = s.add_parser("canon"); cn.add_argument("text", nargs="?"); 
+    cn = s.add_parser("canon"); cn.add_argument("text", nargs="?");
     fr = s.add_parser("frontier"); fr.add_argument("kind", nargs="?", choices=["trunk","cash","lab","parked"]); fr.add_argument("item", nargs="?")
     lp = s.add_parser("loop"); lp.add_argument("text", nargs="?"); lp.add_argument("--close", type=int, default=None)
     cp = s.add_parser("checkpoint"); cp.add_argument("--summary",required=True); cp.add_argument("--next",required=True,dest="nxt"); cp.add_argument("--proof",default="")
@@ -39,14 +40,22 @@ def main(argv=None):
     pr.add_argument("situation")
     al = s.add_parser("alignment", help="Check a proposed action against canon/rules; flags conflicts with non-negotiable rules")
     al.add_argument("action")
+    sw = s.add_parser("setup", help="Guided onboarding wizard — sets up memory, frontiers, twin, agents, dashboard")
+    sw.add_argument("--quick", action="store_true", help="accept all recommended defaults (non-interactive)")
+    sw.add_argument("--dashboard-only", action="store_true", help="just (re)generate the ORCA dashboard")
     a = ap.parse_args(argv)
 
+    if a.cmd == "setup":
+        from . import wizard
+        if a.dashboard_only:
+            return wizard.build_dashboard_only(_db(a))
+        return wizard.run_wizard(_db(a), quick=a.quick)
     if a.cmd == "serve":
         from . import mcp_server; sys.argv = ["mcp","--db",_db(a)]; return mcp_server.main()
     if a.cmd == "api":
         from . import api; return api.run(_db(a), a.host, a.port)
 
-    db = _db(a); 
+    db = _db(a);
     try:
         from .embedders import FastEmbedEmbedder
         m = Memory(db, embedder=FastEmbedEmbedder())
@@ -92,18 +101,15 @@ def main(argv=None):
     elif a.cmd == "handoff":
         print(c.handoff())
     elif a.cmd == "boot":
-        # start of session: show handoff + doctor (the boot ritual)
         print(c.handoff()); print("\n--- doctor ---")
         d=c.doctor(); print("%s %d/%d" % ("OK" if d["healthy"] else "DRIFT", d["passed"], d["total"]))
         for ch in d["checks"]:
             if not ch["ok"]: print("  ! %s — %s" % (ch["check"], ch["detail"]))
     elif a.cmd == "close":
-        # end of session: checkpoint + doctor (closure beats branching)
         cid=c.checkpoint(summary=a.summary, next_action=a.nxt, proof=a.proof)
         print("checkpoint #%d" % cid); d=c.doctor()
         print("doctor: %s %d/%d" % ("OK" if d["healthy"] else "DRIFT", d["passed"], d["total"]))
     elif a.cmd == "compress":
-        # weekly compression: report counts per namespace to spot bloat
         print("namespace sizes (compress candidates):")
         for ns in m.namespaces(): print("  %-12s %d" % (ns["namespace"], ns["count"]))
         ol=c.open_loops()
