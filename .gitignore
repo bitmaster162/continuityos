@@ -35,3 +35,12 @@ sim_verify_out.txt
 *_out.txt
 _VERIFY_*.bat
 _verify_sim.py
+
+# local ops/scratch helpers (session automation, not part of the package)
+_SHIP_*.bat
+_DEPLOY_*.bat
+_FIX_*.bat
+_INGEST_*.bat
+_ingest_guides.py
+*_out.txt
+/0

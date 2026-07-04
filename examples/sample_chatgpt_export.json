@@ -1,0 +1,5 @@
+[{"title":"Setup chat","conversation_id":"c1","mapping":{
+ "n1":{"message":{"author":{"role":"user"},"create_time":1700000000,"content":{"content_type":"text","parts":["I prefer the Apache-2.0 license for all my open-source projects."]}}},
+ "n2":{"message":{"author":{"role":"assistant"},"create_time":1700000100,"content":{"content_type":"text","parts":["Understood, Apache-2.0 it is."]}}},
+ "n3":{"message":{"author":{"role":"user"},"create_time":1700000200,"content":{"content_type":"text","parts":["My timezone is UTC+7 and I run 150 paper-trading bots on Bybit."]}}}
+}}]
