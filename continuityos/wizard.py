@@ -95,7 +95,7 @@ def _write_secret(key: str, value: str):
 
 # ---- the wizard ------------------------------------------------------------
 def run_wizard(db: str, quick: bool = False) -> int:
-    total = 7
+    total = 8
     st = _load_state()
     HOME.mkdir(parents=True, exist_ok=True)
 
@@ -230,8 +230,32 @@ def run_wizard(db: str, quick: bool = False) -> int:
         print(f"    {C.DIM}{line}{C.R}")
     _why("Your thread is now immortal across model changes. That's the whole point.")
 
-    # --- Step 6: ORCA dashboard ---
-    _hdr(6, total, "Your control room (ORCA dashboard)")
+    # --- Step 6: monetization map (from your data, with permission) ---
+    _hdr(6, total, "Your monetization map")
+    _why("Point me at a folder of your notes/plans and I build a tiered money-map from the")
+    _why("prices and offers you already wrote down. Local only - nothing is uploaded.")
+    src = _ask("Folder to scan for offers (blank = just your memory / skip)", st.get("moneymap_src", ""), quick)
+    try:
+        from .monetization import build as _mm_build, render_map_md as _mm_render
+        _paths = [os.path.expanduser(src)] if src.strip() else None
+        _mp = _mm_build(paths=_paths, memory=m)
+        if _mp["count"]:
+            _mmfile = HOME / "monetization_map.md"
+            _mmfile.write_text(_mm_render(_mp), encoding="utf-8")
+            _tiers_used = sum(1 for _t in _mp["tiers"].values() if _t)
+            _ok("Money-map: %d offers across %d tier(s)" % (_mp["count"], _tiers_used))
+            _say("  Saved: %s" % _mmfile)
+            for _tname, _offers in _mp["tiers"].items():
+                if _offers:
+                    print("    %s: %d" % (_tname, len(_offers)))
+        else:
+            _why("No priced offers found yet - add notes with prices, then: cos moneymap --from <dir>")
+    except Exception as _e:
+        _why("(money-map skipped: %s)" % _e)
+    st["moneymap_src"] = src
+
+    # --- Step 7: ORCA dashboard ---
+    _hdr(7, total, "Your control room (ORCA dashboard)")
     _why("One page: your memory, frontiers, agent queue and checkpoints at a glance.")
     _build_dashboard(m, c, db)
     _ok(f"Dashboard generated: {DASH_FILE}")
@@ -239,7 +263,7 @@ def run_wizard(db: str, quick: bool = False) -> int:
     _say(f"  {C.DIM}(regenerate anytime with: cos setup --dashboard-only){C.R}")
 
     # --- Step 7: done ---
-    _hdr(7, total, "You're set up")
+    _hdr(8, total, "You're set up")
     print(f"""    {C.G}✓{C.R} memory      {C.G}✓{C.R} frontiers   {C.G}✓{C.R} twin
     {C.G}✓{C.R} agents      {C.G}✓{C.R} checkpoint  {C.G}✓{C.R} dashboard""")
     _say("\n  Three commands for every day:")

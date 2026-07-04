@@ -41,6 +41,10 @@ def main(argv=None):
     us.add_argument("--key", default="local", help="billing key / customer id")
     us.add_argument("--set-plan", dest="set_plan", default=None, choices=["free","pro","team","enterprise"])
     us.add_argument("--charge", dest="charge_event", default=None, help="simulate one metered event, e.g. gate.decision")
+    mm = s.add_parser("moneymap", help="Build a tiered monetization map from YOUR data (files you point at) + memory")
+    mm.add_argument("--from", dest="sources", action="append", default=[], help="file or directory to scan (repeatable)")
+    mm.add_argument("--from-memory", dest="from_memory", action="store_true", help="also mine your ContinuityOS memory")
+    mm.add_argument("--out", default=None, help="write map markdown to this path (default: print)")
     s.add_parser("namespaces")
     cn = s.add_parser("canon"); cn.add_argument("text", nargs="?");
     fr = s.add_parser("frontier"); fr.add_argument("kind", nargs="?", choices=["trunk","cash","lab","parked"]); fr.add_argument("item", nargs="?")
@@ -133,6 +137,16 @@ def main(argv=None):
             print("rules export: canon=%d rules=%d frontiers=%d -> %s" % (
                 res["canon"], res["rules"], res["frontiers"],
                 ", ".join(res["written"]) or "(dry-run)"))
+    elif a.cmd == "moneymap":
+        from .monetization import build as _build_mm, render_map_md as _render_mm
+        mp = _build_mm(paths=[os.path.expanduser(x) for x in a.sources] or None,
+                       memory=m if a.from_memory else None)
+        md = _render_mm(mp)
+        if a.out:
+            open(os.path.expanduser(a.out), "w", encoding="utf-8").write(md)
+            print("money map: %d offers from %d file(s) -> %s" % (mp["count"], mp.get("files_scanned", 0), a.out))
+        else:
+            print(md)
     elif a.cmd == "namespaces":
         print(json.dumps(m.namespaces(),ensure_ascii=False,indent=2))
     elif a.cmd == "canon":
