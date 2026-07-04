@@ -44,3 +44,7 @@ continuity = "continuityos.gate.cli:main"
 [project.urls]
 Homepage = "https://sovereign-arena-site.vercel.app/continuityos"
 Source = "https://github.com/bitmaster162/continuityos"
+
+[tool.setuptools.packages.find]
+include = ["continuityos*"]
+exclude = ["demo*", "bench*", "tests*", "docs*", "examples*", "dist*"]
