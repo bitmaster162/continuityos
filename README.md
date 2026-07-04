@@ -24,6 +24,7 @@
 
 ---
 
+![ContinuityOS demo: bi-temporal recall and governance gate](docs/demo.gif)
 
 **Durable memory + continuity layer for AI agents and humans.** Local-first, zero external services, Apache-2.0.
 
