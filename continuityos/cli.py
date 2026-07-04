@@ -45,6 +45,7 @@ def main(argv=None):
     ru.add_argument("--out", default=".", help="directory to write agent config files into")
     ru.add_argument("--stdout", action="store_true", help="print rendered rules instead of writing files")
     ru.add_argument("--dry-run", dest="dry_run", action="store_true")
+    s.add_parser("scan", help="SCAN: reload rule-attention before a critical action (long-session SRD mitigation)")
     us = s.add_parser("usage", help="RaaS metering: usage vs plan quota; set plan; simulate a metered call")
     us.add_argument("--key", default="local", help="billing key / customer id")
     us.add_argument("--set-plan", dest="set_plan", default=None, choices=["free","pro","team","enterprise"])
@@ -180,6 +181,16 @@ def main(argv=None):
     elif a.cmd == "doctor":
         d=c.doctor(); print("%s  %d/%d" % ("healthy" if d["healthy"] else "drift", d["passed"], d["total"]))
         for ch in d["checks"]: print("  %s %s — %s" % ("ok" if ch["ok"] else "x", ch["check"], ch["detail"]))
+    elif a.cmd == "scan":
+        canon = [r["text"] for r in c._dump("canon")]
+        print("SCAN — reload attention to your rules before the next critical action.")
+        print("Generate 100-300 tokens answering these (long-session research: omission-rules decay by ~turn 10):")
+        print("  1. Which 3 of your canon rules are EASIEST to violate in the current task?")
+        print("  2. Which single 'never do X' rule must you NOT forget right now, and why?")
+        print("  3. Restate your current [ROLE] and [COMMITMENT] in one line each.")
+        print("\ncanon (%d):" % len(canon))
+        for i, r in enumerate(canon[:12], 1):
+            print("  %d. %s" % (i, r))
     elif a.cmd == "handoff":
         print(c.handoff())
     elif a.cmd == "boot":

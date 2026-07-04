@@ -34,6 +34,15 @@ MODEL_REGISTRY = {
     "deepseek-v4-pro":  {"vendor": "deepseek",  "in_per_mtok": 0.435,"out_per_mtok": 1.2,  "context": 1_000_000, "char_per_tok": 3.6},
 }
 
+# MECW = Maximum Effective Context Window (long-session research 2026): the usable context
+# before recall degrades, well below the advertised window. Used to schedule compaction/
+# checkpoints at a fraction of MECW, not the marketing number.
+MECW = {
+    "claude-opus-4-8": 185_000, "claude-fable-5": 900_000, "claude-mythos-5": 900_000,
+    "claude-haiku-4-5": 185_000, "gpt-5.5": 980_000, "gemini-3.1-pro": 920_000,
+    "gemini-3.5-flash": 920_000, "grok-4.3": 900_000, "deepseek-v4-pro": 105_000,
+}
+
 @dataclass
 class MemoryItem:
     id: int
@@ -208,6 +217,14 @@ class Memory:
         cost = intok / 1e6 * m["in_per_mtok"] + output_tokens / 1e6 * m["out_per_mtok"]
         return {"model": model_id, "input_tokens": intok, "output_tokens": output_tokens,
                 "usd": round(cost, 6), "context_window": m["context"]}
+
+    def compaction_threshold(self, model_id: str = "claude-opus-4-8", frac: float = 0.65) -> int:
+        """Token count at which to compact/checkpoint: `frac` of the model's EFFECTIVE context
+        (MECW), not the advertised window. Long-session research: claimed context >> effective,
+        and cascade-compaction silently loses >50% of hard constraints, so checkpoint early."""
+        ctx = MODEL_REGISTRY.get(model_id, MODEL_REGISTRY["claude-opus-4-8"]).get("context", 200_000)
+        mecw = MECW.get(model_id, int(ctx * 0.92))
+        return int(mecw * frac)
 
     def context(self, query: str, k: int = 6, max_tokens=None, compact: bool = False) -> str:
         """Ready-to-inject context block. Token-budget aware (max_tokens): packs the most
