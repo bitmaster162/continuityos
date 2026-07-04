@@ -67,7 +67,13 @@ TOOLS = [
  {"name":"alignment","description":"Check a proposed action against canon/rules; flags conflicts with non-negotiable rules.",
   "inputSchema":{"type":"object","properties":{"proposed_action":{"type":"string"}},"required":["proposed_action"]}},
  {"name":"preflight_action","description":"GOVERNANCE GATE: before running a tool/shell command, get a safety decision (ALLOW/WARN/HOLD/DENY/REQUIRE_CONFIRMATION/DRY_RUN_ONLY) with reasons + rollback plan. Call this BEFORE any dangerous action.",
-  "inputSchema":{"type":"object","properties":{"tool":{"type":"string","default":"shell"},"command":{"type":"string"},"paths":{"type":"array","items":{"type":"string"}}},"required":["command"]}}
+  "inputSchema":{"type":"object","properties":{"tool":{"type":"string","default":"shell"},"command":{"type":"string"},"paths":{"type":"array","items":{"type":"string"}}},"required":["command"]}},
+ {"name":"srd_status","description":"Long-session safety: interaction count vs Safe Turn Depth. When reinject_due=true, re-inject the returned canon_reminder into context - omission-rules ('never do X') decay by ~turn 10 (Security-Recall Divergence).",
+  "inputSchema":{"type":"object","properties":{}}},
+ {"name":"memory_pointer","description":"Pass-by-reference: get a lightweight {namespace,key,version} pointer to a memory value instead of its content (A2A courier-tax fix). Dereference with recall/find.",
+  "inputSchema":{"type":"object","properties":{"namespace":{"type":"string","default":"facts"},"key":{"type":"string"}},"required":["key"]}},
+ {"name":"memory_write_checked","description":"Optimistic-concurrency write by key: succeeds only if current version equals expected_version, else returns a conflict. Prevents lost updates when multiple agents write the same key.",
+  "inputSchema":{"type":"object","properties":{"text":{"type":"string"},"namespace":{"type":"string","default":"facts"},"key":{"type":"string"},"expected_version":{"type":"integer"}},"required":["text","key","expected_version"]}}
 ]
 
 class Server:
@@ -80,8 +86,11 @@ class Server:
         self.c = Continuity(memory=self.m)
         self.t = Twin(memory=self.m)
         self.ctl = ControlPlane(memory=self.m)
+        self.turns = 0
+        self.std = 10  # Safe Turn Depth: re-inject canon before omission-rules ("never do X") decay (long-session SRD research)
 
     def call(self, name, args):
+        self.turns += 1
         if name == "remember":
             rid = self.m.remember(args["text"], namespace=args.get("namespace","notes"), tags=args.get("tags"))
             return f"stored #{rid} in [{args.get('namespace','notes')}]"
@@ -115,6 +124,25 @@ class Server:
         if name == "preflight_action":
             spec=_AS(tool=args.get("tool","shell"), command=args["command"], paths=args.get("paths",[]), agent="mcp")
             return json.dumps(_preflight(spec, ledger=_Ledger(os.path.expanduser("~/.continuityos/ledger.db"))), ensure_ascii=False, indent=2)
+        if name == "srd_status":
+            due = self.turns >= self.std
+            canon = [r["text"] for r in self.c._dump("canon")][:8]
+            if due: self.turns = 0
+            return json.dumps({"turns": self.turns, "safe_turn_depth": self.std, "reinject_due": due,
+                               "canon_reminder": canon if due else [],
+                               "note": "Omission-rules decay by ~turn 10 (SRD); re-inject canon_reminder when reinject_due."},
+                              ensure_ascii=False, indent=2)
+        if name == "memory_pointer":
+            ptr = self.m.pointer(args.get("namespace", "facts"), args["key"])
+            return json.dumps(ptr, ensure_ascii=False) if ptr else "null"
+        if name == "memory_write_checked":
+            from .memory import Conflict
+            try:
+                rid = self.m.write_checked(args["text"], namespace=args.get("namespace", "facts"),
+                                           key=args["key"], expected_version=int(args["expected_version"]))
+                return "wrote #%d to %s/%s" % (rid, args.get("namespace", "facts"), args["key"])
+            except Conflict as e:
+                return json.dumps({"error": "conflict", "detail": str(e)}, ensure_ascii=False)
         raise ValueError(f"unknown tool {name}")
 
 def _send(obj):
