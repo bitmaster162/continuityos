@@ -1,19 +1,11 @@
 @echo off
-REM ============================================================
-REM  PR-7: gate runner polish (GPT re-audit) — fix shorthand
-REM  first-token loss + WARN shell parity + regression tests.
-REM ============================================================
+REM PR-9: Sim-OS invariant closure (GPT 2nd audit)
 cd /d "%~dp0"
-echo.
 echo === Staging ===
 git add -A
-echo.
 echo === Commit ===
-git commit -m "PR-7: fix gate runner — shorthand preserves first token, WARN keeps shell semantics; add regression tests (GPT audit)"
-echo.
+git commit -m "PR-9: close Sim-OS invariants (GPT 2nd audit) — candidate-scoped confirmations (P0-A), EXPLORE->VERIFY control flow so promotion is reachable (P0-B), durable restorative rollback + preserved canon metadata (P0-C/P1-B), deterministic DB rehydrate (P1-A), fail-closed rollback (P0-D); add tests/test_sim.py"
 echo === Push ===
 git push origin master
-echo.
-echo === Done. https://github.com/bitmaster162/continuityos ===
-echo.
+echo === Done ===
 pause

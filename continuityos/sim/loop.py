@@ -1,12 +1,14 @@
-"""OODA closed loop: Gateway -> Spec -> Pandora -> Memory -> Detector -> Rollback.
+"""OODA closed loop with an explicit EXPLORE -> VERIFY -> CANON control flow.
 
-The full self-improving simulation loop (ContinuityOS <-> Pandora) on the mock engine.
-Run:  python -m continuityos.sim.loop --objective X --iters N   (or `cos sim run`)
+PR-9 (GPT 2nd audit): the earlier loop broke on the first success, so a candidate could
+never accumulate the required confirmations — promotion was unreachable in the integrated
+loop. Now, when a candidate first clears the success bar, the loop does NOT stop: it enters
+a VERIFY phase and re-runs the SAME candidate with independent seeds. Promotion happens
+only after `min_confirmations` distinct qualifying runs of that candidate. A verify run
+that fails the bar abandons the candidate and returns to EXPLORE.
 
-Etaps 4-7 integrated: real risk-scoring gateway (§2), bitemporal canon/experiment
-memory (§3.3), hallucination detector (§4.1), autonomous rollback (§4.2). Etaps 8-9
-(gRPC to real Pandora, prod stack Temporal/OPA/XTDB/Ray) are TODO — see
-Trade/HANDOFF/SIM_OS_BUILD_PLAN_20260704.md.
+Run:  python -m continuityos.sim.loop --objective X --iters N   (or `cos sim`)
+Etaps 8 (gRPC to real Pandora) and 9 (prod stack) remain — see SIM_OS_BUILD_PLAN.
 """
 from __future__ import annotations
 import argparse
@@ -17,16 +19,14 @@ from .contracts import (
 )
 from .pandora_mock import run_simulation
 from .detector import HallucinationDetector
-from .memory_plane import make_memory_plane
+from .memory_plane import make_memory_plane, candidate_id
 from .gateway import GovernanceGateway, Verdict
 from .rollback import RollbackLedger, RollbackTrigger, execute_rollback
 
 
 def build_spec(objective_name: str, params: dict, provenance: list) -> SimulationSpec:
-    # NOTE (P1-6, GPT audit): the hard_bounds=2.0 and empty CanonicalState below are
-    # DEMO defaults for the mock loop. A real deployment must inject the operator's
-    # actual canon (limits, forbidden regions) into constraints/operator_canon — the
-    # gateway then enforces the real rules, not these placeholders.
+    # NOTE (P1-6): hard_bounds=2.0 and empty CanonicalState are DEMO defaults. A real
+    # deployment injects the operator's actual canon; the gateway enforces whatever is loaded.
     return SimulationSpec(
         objective=Objective(primary_metric=objective_name, target_value=1.0,
                             optimization_direction=OptimizationDirection.MAXIMIZE),
@@ -40,12 +40,13 @@ def build_spec(objective_name: str, params: dict, provenance: list) -> Simulatio
     ).finalize()
 
 
-def run_loop(objective_name: str, iters: int, verbose: bool = True) -> dict:
-    mem = make_memory_plane()               # §3.3 bitemporal canon/experiment
-    detector = HallucinationDetector()      # §4.1 epistemic-safety
-    gateway = GovernanceGateway()           # §2 risk-scoring gate
-    rb_ledger = RollbackLedger()            # §4.2 autonomous rollback
-    params = {"x": 0.05, "y": 0.9}          # deliberately off-optimum (0.5,0.5)
+def run_loop(objective_name: str, iters: int, verbose: bool = True,
+             allow_stub: bool = False) -> dict:
+    mem = make_memory_plane(allow_stub=allow_stub)   # fail-closed unless stub opt-in
+    detector = HallucinationDetector()
+    gateway = GovernanceGateway()
+    rb_ledger = RollbackLedger()
+    params = {"x": 0.05, "y": 0.9}
     budget_total = 50_000
     budget_left = budget_total
     best = -1.0
@@ -54,54 +55,63 @@ def run_loop(objective_name: str, iters: int, verbose: bool = True) -> dict:
     stop_reason = "max_iters"
     i = 0
 
+    def _rollback(objective, trigger, detail):
+        ev = execute_rollback(mem, objective, trigger, rb_ledger, detail)
+        if verbose:
+            tag = "ROLLBACK FAILED" if ev.failed else f"rollback -> canon #{ev.restored_ref}"
+            print(f"  {trigger.value}: {detail} -> {tag}")
+        return ev
+
     for i in range(1, iters + 1):
         spec = build_spec(objective_name, params, provenance)
         decision = gateway.evaluate(spec, budget_left, budget_total)
-        verdict = decision.verdict
-        if verdict == Verdict.DENY:
-            stop_reason = "gateway_deny"
-            ev = execute_rollback(mem, objective_name, RollbackTrigger.GATEWAY_DENY,
-                                  rb_ledger, decision.reasons[0])
-            if verbose:
-                print(f"iter {i}: DENY (risk {decision.risk_score}) — {decision.reasons[0]}"
-                      f" -> rollback to canon #{ev.restored_ref}")
-            break
-        if verdict == Verdict.HOLD:
-            stop_reason = "budget_hold"
-            ev = execute_rollback(mem, objective_name, RollbackTrigger.BUDGET_HOLD,
-                                  rb_ledger, decision.reasons[0])
-            if verbose:
-                print(f"iter {i}: HOLD (risk {decision.risk_score}) — {decision.reasons[0]}"
-                      f" -> rollback to canon #{ev.restored_ref}")
-            break
+        if decision.verdict == Verdict.DENY:
+            ev = _rollback(objective_name, RollbackTrigger.GATEWAY_DENY, decision.reasons[0])
+            stop_reason = "rollback_failed" if ev.failed else "gateway_deny"; break
+        if decision.verdict == Verdict.HOLD:
+            ev = _rollback(objective_name, RollbackTrigger.BUDGET_HOLD, decision.reasons[0])
+            stop_reason = "rollback_failed" if ev.failed else "budget_hold"; break
 
         result = run_simulation(spec)
         budget_left -= result.resource_consumption.compute_tokens_used
         metric = result.metrics[objective_name]
-        confident = result.status == SimStatus.SUCCESS and metric > best
-        mem.record(spec, result, confident)
+        mem.record(spec, result)
         provenance = [spec.spec_id]
-
         improved = metric - best
         best = max(best, metric)
         stale = 0 if improved > spec.stopping_criteria.plateau_min_delta else stale + 1
-
-        sig = detector.observe(spec.parameters, metric, spec.spec_id)   # §4.1
-
+        sig = detector.observe(spec.parameters, metric, spec.spec_id)
         if verbose:
-            print(f"iter {i}: verdict={verdict.value} metric={metric:.4f} best={best:.4f} "
-                  f"budget={budget_left} energy={sig.energy} spec={spec.spec_id[:8]}")
+            print(f"iter {i}: EXPLORE {decision.verdict.value} metric={metric:.4f} "
+                  f"best={best:.4f} budget={budget_left} spec={spec.spec_id[:8]}")
 
+        # --- VERIFY phase (P0-B): a promising candidate must replicate before canon ---
         if metric >= spec.stopping_criteria.success_threshold:
-            stop_reason = "success"
-            break
+            cid = candidate_id(spec)
+            promoted = False
+            for vseed in range(1, mem.policy.min_confirmations * 3 + 1):
+                vres = run_simulation(spec, seed=vseed)          # independent re-run
+                budget_left -= vres.resource_consumption.compute_tokens_used
+                vmetric = vres.metrics[objective_name]
+                rec = mem.record(spec, vres)
+                if verbose:
+                    print(f"        VERIFY(cid {cid}) run#{vseed} metric={vmetric:.4f} -> {rec['canon']}")
+                if str(rec["canon"]).startswith("verified"):
+                    promoted = True; break
+                if vmetric < mem.policy.verify_threshold:
+                    if verbose:
+                        print(f"        candidate abandoned (run below verify bar {mem.policy.verify_threshold})")
+                    break
+            if promoted:
+                stop_reason = "verified_success"; break
+            # not robust -> keep exploring from the recommendation
+            if result.next_candidate:
+                params = result.next_candidate.parameters
+            continue
+
         if sig.is_hallucination:
-            stop_reason = "hallucination_loop"
-            ev = execute_rollback(mem, objective_name, RollbackTrigger.HALLUCINATION_LOOP,
-                                  rb_ledger, sig.detail)
-            if verbose:
-                print(f"  !! hallucination ({sig.detail}) -> rollback to canon #{ev.restored_ref}")
-            break
+            ev = _rollback(objective_name, RollbackTrigger.HALLUCINATION_LOOP, sig.detail)
+            stop_reason = "rollback_failed" if ev.failed else "hallucination_loop"; break
         if result.next_candidate:
             params = result.next_candidate.parameters
 
@@ -110,9 +120,9 @@ def run_loop(objective_name: str, iters: int, verbose: bool = True) -> dict:
     summary = {"objective": objective_name, "iterations": i, "best_metric": round(best, 6),
                "stop_reason": stop_reason, "canon_size": sz["canon"],
                "experiment_size": sz["experiment"], "budget_left": budget_left,
-               "rollback_ref": mem.rollback_ref(objective_name),
                "rollbacks": len(rb_ledger.events),
-               "last_rollback": last_rb.trigger.value if last_rb else None}
+               "last_rollback": (last_rb.trigger.value if last_rb else None),
+               "rollback_failed": bool(last_rb and last_rb.failed)}
     if verbose:
         print("SUMMARY:", json.dumps(summary))
     return summary
@@ -121,9 +131,10 @@ def run_loop(objective_name: str, iters: int, verbose: bool = True) -> dict:
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="cos sim", description="Sim-OS OODA loop (mock Pandora)")
     ap.add_argument("--objective", default="test_metric")
-    ap.add_argument("--iters", type=int, default=5)
+    ap.add_argument("--iters", type=int, default=8)
+    ap.add_argument("--mock", action="store_true", help="use ephemeral in-memory plane (no durable store)")
     a = ap.parse_args(argv)
-    run_loop(a.objective, a.iters)
+    run_loop(a.objective, a.iters, allow_stub=a.mock)
     return 0
 
 

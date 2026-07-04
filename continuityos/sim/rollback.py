@@ -29,6 +29,7 @@ class RollbackEvent:
     objective: str
     restored_ref: Optional[int]            # canon row we roll back to (last good)
     detail: str
+    failed: bool = False                    # P0-D: True if the durable restore failed
     ts: float = field(default_factory=time.time)
 
 
@@ -39,8 +40,8 @@ class RollbackLedger:
         self.events: List[RollbackEvent] = []
 
     def record(self, trigger: RollbackTrigger, objective: str,
-               restored_ref: Optional[int], detail: str = "") -> RollbackEvent:
-        ev = RollbackEvent(trigger, objective, restored_ref, detail)
+               restored_ref: Optional[int], detail: str = "", failed: bool = False) -> RollbackEvent:
+        ev = RollbackEvent(trigger, objective, restored_ref, detail, failed=failed)
         self.events.append(ev)
         return ev
 
@@ -54,27 +55,26 @@ def execute_rollback(memory_plane, objective: str, trigger: RollbackTrigger,
 
     memory_plane must expose rollback_ref(objective) and restore_to(objective, ref).
 
-    P0-3 fix (GPT audit 2026-07-04): this ACTUALLY restores state, not just logs.
-    It calls memory_plane.restore_to(), which re-points current canon to the last good
-    row and resets the promotion-confirmation counter (so poisoned progress can't
-    auto-promote). Then it records the immutable rollback event. Experiment history is
-    append-only and left intact for audit.
+    P0-3/P0-D fix: this ACTUALLY restores durable state (memory_plane.restore_to re-points
+    current canon and resets confirmations). P0-D: a restore FAILURE is NOT swallowed —
+    the event is flagged `failed=True` (ROLLBACK_FAILED) so the caller can fail closed
+    (HALT/HOLD) instead of continuing as if the rollback succeeded.
     """
     ref = None
-    restored = None
     try:
         ref = memory_plane.rollback_ref(objective)
     except Exception:
         ref = None
-    # ACTUAL restore (not just a log line)
+    failed = False
     try:
         restored = memory_plane.restore_to(objective, ref)
-    except AttributeError:
-        restored = {"error": "memory_plane has no restore_to (rollback logged only)"}
+        restored_ref = restored.get("restored_canon", ref) if isinstance(restored, dict) else ref
+        detail_out = f"{detail} | restored={restored}"
     except Exception as e:
-        restored = {"error": str(e)[:120]}
-    ev = ledger.record(trigger, objective, ref, f"{detail} | restored={restored}")
-    ev.restored_ref = (restored or {}).get("restored_canon", ref) if isinstance(restored, dict) else ref
+        failed = True                              # durable restore did NOT happen
+        restored_ref = None
+        detail_out = f"{detail} | ROLLBACK_FAILED: {str(e)[:120]}"
+    ev = ledger.record(trigger, objective, restored_ref, detail_out, failed=failed)
     return ev
 
 
@@ -90,8 +90,13 @@ if __name__ == "__main__":  # self-test
     led = RollbackLedger()
     ev = execute_rollback(plane, "edge", RollbackTrigger.HALLUCINATION_LOOP, led, "3 stalled iters")
     assert plane.confirms == 0, "restore must reset confirmation counter (real state change)"
-    print(f"rollback: trigger={ev.trigger.value} restored_ref={ev.restored_ref} "
-          f"confirms_after={plane.confirms}")
-    print("OK: rollback restores state (resets confirmations), not just logs (§4.2, P0-3)")
-    assert ev.restored_ref == 42 and led.last() is ev
-    print("OK: rollback protocol records event + resolves last-good canon ref (§4.2)")
+    assert ev.failed is False and ev.restored_ref == 42 and led.last() is ev
+    print(f"OK: rollback restores state (confirms={plane.confirms}, ref={ev.restored_ref}), failed={ev.failed}")
+
+    # P0-D: a failing restore must be flagged (fail-closed), not swallowed
+    class BrokenPlane:
+        def rollback_ref(self, obj): return 7
+        def restore_to(self, obj, ref): raise RuntimeError("durable store unavailable")
+    ev2 = execute_rollback(BrokenPlane(), "edge", RollbackTrigger.GATEWAY_DENY, led, "breach")
+    assert ev2.failed is True, "restore failure must set failed=True (P0-D, fail closed)"
+    print(f"OK: rollback failure flagged failed={ev2.failed} (caller must HALT) — P0-D")
