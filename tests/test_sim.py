@@ -78,12 +78,16 @@ def test_verification_phase_promotes_deterministically(monkeypatch):
     assert s["canon_size"] >= 1
 
 
-# --- P0-1: VERIFY must not bypass the budget gate ---
-def test_verify_respects_budget_gate(monkeypatch):
-    monkeypatch.setattr(L, "run_simulation", lambda spec, seed=None: _sim(spec, 0.99, tokens=9000))
-    s = L.run_loop("edge", iters=6, verbose=False, allow_stub=True, policy=_pol(min_conf=6))
-    assert s["stop_reason"] in ("budget_hold", "rollback_failed", "verified_success")
-    assert s["budget_left"] >= -9000, f"verify overran the budget gate: {s['budget_left']}"
+# --- P0 (PR-9.2): budget is RESERVED before each run — it must never cross below zero ---
+def test_verify_never_overruns_budget(monkeypatch):
+    from continuityos.sim import pandora_mock
+    # engine honours its declared MAX_RUN_COST per run; many verify runs needed (min_conf high)
+    monkeypatch.setattr(L, "run_simulation",
+                        lambda spec, seed=None: _sim(spec, 0.99, tokens=pandora_mock.MAX_RUN_COST))
+    s = L.run_loop("edge", iters=6, verbose=False, allow_stub=True, policy=_pol(min_conf=20))
+    assert s["stop_reason"] in ("budget_hold", "rollback_failed"), \
+        f"unbounded verification should hit budget HOLD, got {s['stop_reason']}"
+    assert s["budget_left"] >= 0, f"budget crossed below zero (reservation failed): {s['budget_left']}"
 
 
 # --- P0-D: rollback fails closed ---
@@ -153,6 +157,23 @@ def test_rehydrate_query_failure_fails_closed():
     except Exception:
         raised = True
     assert raised, "rehydrate query failure must fail closed (propagate), not silently empty canon"
+
+def test_corrupt_canon_row_fails_closed():
+    # P1 (PR-9.2): a malformed CANON row must NOT be silently dropped — rehydrate raises.
+    from continuityos.sim.memory_plane import CANON_NS
+    db = os.path.join(tempfile.mkdtemp(), "sim.db")
+    mp = _durable(db)
+    # write a canon row with non-JSON meta directly into the store
+    mp.m.store.con.execute(
+        "INSERT INTO items(namespace, text, tags, meta, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?)", (CANON_NS, "edge=0.99", "[]", "{not valid json", 0.0, 0.0))
+    mp.m.store.con.commit()
+    raised = False
+    try:
+        _durable(db)                                     # restart -> rehydrate reads corrupt row
+    except Exception:
+        raised = True
+    assert raised, "corrupt canon row must fail closed, not silently vanish from current state"
 
 
 # --- gateway verdicts ---

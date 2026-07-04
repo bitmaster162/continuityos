@@ -18,10 +18,23 @@ from .contracts import (
     StoppingCriteria, CanonicalState, OptimizationDirection, SimStatus,
 )
 from .pandora_mock import run_simulation
+from .pandora_mock import MAX_RUN_COST
 from .detector import HallucinationDetector
 from .memory_plane import make_memory_plane, candidate_id
 from .gateway import GovernanceGateway, Verdict
 from .rollback import RollbackLedger, RollbackTrigger, execute_rollback
+
+
+def _reserve_and_run(spec, budget_left, seed=None):
+    """Affordability preflight (PR-9.2, GPT audit): RESERVE the bounded worst-case run
+    cost BEFORE executing, so a run can never push the budget below zero. Returns
+    (result_or_None, new_budget, affordable). If unaffordable, the run is NOT invoked."""
+    if budget_left < MAX_RUN_COST:
+        return None, budget_left, False               # cannot afford -> do not run
+    reserved = budget_left - MAX_RUN_COST             # hold worst-case
+    res = run_simulation(spec, seed=seed)
+    actual = res.resource_consumption.compute_tokens_used
+    return res, reserved + (MAX_RUN_COST - actual), True   # settle: release unused reserve
 
 
 def build_spec(objective_name: str, params: dict, provenance: list) -> SimulationSpec:
@@ -72,8 +85,12 @@ def run_loop(objective_name: str, iters: int, verbose: bool = True,
             ev = _rollback(objective_name, RollbackTrigger.BUDGET_HOLD, decision.reasons[0])
             stop_reason = "rollback_failed" if ev.failed else "budget_hold"; break
 
-        result = run_simulation(spec)
-        budget_left -= result.resource_consumption.compute_tokens_used
+        # P0 (PR-9.2): reserve the next run's bounded cost BEFORE running — never overrun.
+        result, budget_left, affordable = _reserve_and_run(spec, budget_left)
+        if not affordable:
+            ev = _rollback(objective_name, RollbackTrigger.BUDGET_HOLD,
+                           "cannot afford next run (budget reservation)")
+            stop_reason = "rollback_failed" if ev.failed else "budget_hold"; break
         metric = result.metrics[objective_name]
         mem.record(spec, result)
         provenance = [spec.spec_id]
@@ -100,8 +117,13 @@ def run_loop(objective_name: str, iters: int, verbose: bool = True,
                     stop_reason = ("rollback_failed" if ev.failed else
                                    ("budget_hold" if vdec.verdict == Verdict.HOLD else "gateway_deny"))
                     verify_halted = True; break
-                vres = run_simulation(spec, seed=vseed)          # independent re-run
-                budget_left -= vres.resource_consumption.compute_tokens_used
+                # P0 (PR-9.2): affordability preflight — reserve before the verify run.
+                vres, budget_left, affordable = _reserve_and_run(spec, budget_left, seed=vseed)
+                if not affordable:
+                    ev = _rollback(objective_name, RollbackTrigger.BUDGET_HOLD,
+                                   "cannot afford verify run (budget reservation)")
+                    stop_reason = "rollback_failed" if ev.failed else "budget_hold"
+                    verify_halted = True; break
                 vmetric = vres.metrics[objective_name]
                 rec = mem.record(spec, vres, seed=vseed)         # P1-3: keyed by seed
                 if verbose:

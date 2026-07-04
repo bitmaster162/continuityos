@@ -61,11 +61,14 @@ class RealMemoryPlane:
             "SELECT id, meta, tags, created_at FROM items WHERE namespace=? ORDER BY id",
             (CANON_NS,)).fetchall()
         for r in rows:
+            # P1 (PR-9.2): a malformed CANON row must NOT be silently dropped — corrupt
+            # canon is a fail-closed condition (unlike experiment history, which could be
+            # quarantined). Let the parse error propagate.
             try:
                 meta = json.loads(r["meta"] or "{}")
                 tags = json.loads(r["tags"] or "[]")
-            except Exception:
-                meta, tags = {}, []
+            except Exception as e:
+                raise ValueError(f"corrupt {CANON_NS} row #{r['id']}: {e}") from e
             if meta.get("superseded_by"):
                 continue                                 # not current
             obj = meta.get("objective") or (tags[0] if tags else None)

@@ -14,6 +14,11 @@ from .contracts import (
     OptimizationDirection,
 )
 
+# Bounded worst-case compute cost of a single run. The control loop RESERVES this
+# before each run so budget can never be crossed below zero (PR-9.2). A real Pandora
+# must declare its own max_compute_tokens in the run contract.
+MAX_RUN_COST = 5000
+
 
 def _score(params: dict, objective) -> float:
     """Toy objective surface: smooth bowl around an implicit optimum at 0.5 per param,
