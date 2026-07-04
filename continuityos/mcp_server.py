@@ -3,6 +3,8 @@
 Exposes durable memory to any MCP client (Claude Desktop, Claude Code, etc.):
   - remember(text, namespace?, tags?)   -> store a memory
   - recall(query, k?, namespace?)        -> hybrid (structural+semantic) recall
+  - upsert(text, namespace?, key)        -> create-or-update by semantic key (idempotent)
+  - find(namespace?, key)                -> exact key lookup (deterministic point-read)
   - forget(id)                           -> delete a memory
   - list_namespaces()                    -> folder-like overview
   - context(query, k?)                   -> ready-to-inject context block
@@ -34,6 +36,18 @@ TOOLS = [
      "k":{"type":"integer","default":5},
      "namespace":{"type":"string","description":"Optional: restrict to one namespace."}},
    "required":["query"]}},
+ {"name":"upsert","description":"Create-or-update a memory by semantic KEY (idempotent). If (namespace,key) exists it is superseded (history kept) and replaced; else created. Use for stable values an agent overwrites over time: a config value, a current decision, a user preference.",
+  "inputSchema":{"type":"object","properties":{
+     "text":{"type":"string","description":"The new value."},
+     "namespace":{"type":"string","default":"facts"},
+     "key":{"type":"string","description":"Stable semantic key, e.g. default_model or user.timezone."},
+     "tags":{"type":"array","items":{"type":"string"}}},
+   "required":["text","key"]}},
+ {"name":"find","description":"Exact key lookup: the CURRENT value stored under (namespace,key), or null. Deterministic point-read (not fuzzy recall) - reads back what upsert wrote.",
+  "inputSchema":{"type":"object","properties":{
+     "namespace":{"type":"string","default":"facts"},
+     "key":{"type":"string"}},
+   "required":["key"]}},
  {"name":"context","description":"Return a ready-to-inject context block of the most relevant memories for a query.",
   "inputSchema":{"type":"object","properties":{"query":{"type":"string"},"k":{"type":"integer","default":6}},"required":["query"]}},
  {"name":"forget","description":"Delete a memory by id.",
@@ -76,6 +90,12 @@ class Server:
             return json.dumps([h.to_dict() for h in hits], ensure_ascii=False, indent=2)
         if name == "context":
             return self.m.context(args["query"], k=int(args.get("k",6))) or "(no relevant memory)"
+        if name == "upsert":
+            rid = self.m.upsert(args["text"], namespace=args.get("namespace","facts"), key=args["key"], tags=args.get("tags"))
+            return f"upserted #{rid} in [{args.get('namespace','facts')}] key={args['key']}"
+        if name == "find":
+            hit = self.m.find(args.get("namespace","facts"), args["key"])
+            return json.dumps(hit.to_dict(), ensure_ascii=False, indent=2) if hit else "null"
         if name == "forget":
             self.m.forget(int(args["id"])); return f"forgot #{args['id']}"
         if name == "list_namespaces":
