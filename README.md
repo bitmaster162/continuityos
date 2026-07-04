@@ -264,6 +264,16 @@ The strongest 2026 agents don't win on a bigger context window — they win on *
 
 **Models are the consumable. Continuity is the asset.** Every model upgrade (or vendor switch) normally resets your agent — it forgets your rules, your context, your decision history. ContinuityOS stores the agent *outside* the model: one SQLite file (canon + rules + bi-temporal facts + decision checkpoints + a behavioral twin). Swap the model underneath and `cos boot` brings back the *same* agent. Model-agnostic by design — vendor memory locks you to their model; this doesn't.
 
+## Sim-OS — closed-loop simulation on top of the memory core
+
+Beyond memory, ContinuityOS ships an experimentation layer: [`continuityos/sim/`](continuityos/sim/) is a durable OODA loop that lets an agent propose hypotheses, run them in an isolated simulation engine (Pandora), and crystallize only *verified* results into canon — with a risk-scoring governance gate, a hallucination-loop detector, and autonomous rollback. The point is epistemic safety: the agent can experiment and fail freely, but canon never gets poisoned.
+
+```bash
+cos sim --objective edge --iters 6      # run the closed loop (mock engine)
+```
+
+See [continuityos/sim/README.md](continuityos/sim/README.md) for the architecture.
+
 ## Honest limits (threat model)
 
 We'd rather tell you the edges than oversell. Full detail in [THREAT_MODEL.md](THREAT_MODEL.md).

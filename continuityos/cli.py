@@ -43,6 +43,9 @@ def main(argv=None):
     sw = s.add_parser("setup", help="Guided onboarding wizard — sets up memory, frontiers, twin, agents, dashboard")
     sw.add_argument("--quick", action="store_true", help="accept all recommended defaults (non-interactive)")
     sw.add_argument("--dashboard-only", action="store_true", help="just (re)generate the ORCA dashboard")
+    sm = s.add_parser("sim", help="Sim-OS: closed-loop self-improving simulation (ContinuityOS <-> Pandora)")
+    sm.add_argument("--objective", default="test_metric")
+    sm.add_argument("--iters", type=int, default=5)
     a = ap.parse_args(argv)
 
     if a.cmd == "setup":
@@ -50,6 +53,9 @@ def main(argv=None):
         if a.dashboard_only:
             return wizard.build_dashboard_only(_db(a))
         return wizard.run_wizard(_db(a), quick=a.quick)
+    if a.cmd == "sim":
+        from .sim.loop import run_loop
+        run_loop(a.objective, a.iters); return 0
     if a.cmd == "serve":
         from . import mcp_server; sys.argv = ["mcp","--db",_db(a)]; return mcp_server.main()
     if a.cmd == "api":
