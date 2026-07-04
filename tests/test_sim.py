@@ -114,14 +114,22 @@ def test_rehydrate_restores_current_canon_after_restart():
     ref = mp.rollback_ref("edge"); assert ref is not None
     assert _durable(db).rollback_ref("edge") == ref, "rehydrate must recover current canon from DB"
 
-def test_rollback_survives_restart():
+def test_true_rollback_A_to_B_back_to_A_survives_restart():
+    # canon A -> canon B supersedes A -> rollback to A -> restart -> current state IS A
     db = os.path.join(tempfile.mkdtemp(), "sim.db")
     mp = _durable(db)
     mp.record(_spec(params={"x": 0.4}), _res(0.95), seed=1)
-    mp.record(_spec(params={"x": 0.4}), _res(0.96), seed=2)
-    mp.restore_to("edge", mp.rollback_ref("edge"))            # durable restorative supersede
-    after = mp.rollback_ref("edge")
-    assert _durable(db).rollback_ref("edge") == after, "rollback must be durable across restart"
+    mp.record(_spec(params={"x": 0.4}), _res(0.96), seed=2)   # -> canon A
+    a_ref = mp.rollback_ref("edge")
+    a_text = mp.m.store.get(a_ref)["text"]
+    mp.record(_spec(params={"x": 0.6}), _res(0.97), seed=1)
+    mp.record(_spec(params={"x": 0.6}), _res(0.98), seed=2)   # -> canon B supersedes A
+    assert mp.rollback_ref("edge") != a_ref, "B must supersede A"
+    mp.restore_to("edge", a_ref)                              # rollback B -> A (durable)
+    mp2 = _durable(db)                                        # restart
+    cur = mp2.rollback_ref("edge")
+    assert mp2.m.store.get(cur)["text"] == a_text, \
+        "after A->B->rollback(A)->restart, current canon must carry A's state"
 
 def test_broken_store_fails_closed():
     bad = tempfile.mkdtemp()                                  # a directory, not a db file
@@ -130,7 +138,21 @@ def test_broken_store_fails_closed():
         make_memory_plane(db=bad, allow_stub=False)
     except Exception:
         raised = True
-    assert raised, "broken durable store must fail closed, never silent stub"
+    assert raised, "broken store (open failure) must fail closed, never silent stub"
+
+def test_rehydrate_query_failure_fails_closed():
+    # store OPENS fine but the rehydrate QUERY fails -> must propagate, not empty state
+    db = os.path.join(tempfile.mkdtemp(), "sim.db")
+    mp = _durable(db)
+    class BadCon:
+        def execute(self, *a, **k): raise RuntimeError("query failed")
+    mp.m.store.con = BadCon()
+    raised = False
+    try:
+        mp._rehydrate()
+    except Exception:
+        raised = True
+    assert raised, "rehydrate query failure must fail closed (propagate), not silently empty canon"
 
 
 # --- gateway verdicts ---

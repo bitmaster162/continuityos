@@ -47,7 +47,7 @@ class RealMemoryPlane:
         self.m = Memory(os.path.expanduser(db))          # raises if store is broken
         self.policy = policy or PromotionPolicy()
         self._canon_ids: Dict[str, int] = {}             # objective -> current canon row
-        self._confirmations: Dict[str, Set[str]] = {}    # candidate_id -> {result_id,...}
+        self._confirmations: Dict[str, Set[str]] = {}    # candidate_id -> {seed-key,...} (P1-3)
         self._rehydrate()
 
     def _rehydrate(self):
