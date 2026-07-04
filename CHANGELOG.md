@@ -15,10 +15,12 @@ Focus: making ContinuityOS a portable, composable engine ready for open-source l
 migrate history in, export rules out, meter usage, and let cognitive layers build on top.
 
 ### Added
-- **`cos import`** — migrate ChatGPT (`conversations.json`) and Claude (`conversations.json` /
-  `memories.json`) exports into memory. Bi-temporal: each memory's `valid_from` is the original
-  message time, so `recall --as-of` reconstructs what you knew then. Offline, no API keys;
-  `--extract` distills typed facts, `--dry-run` previews.
+- **`cos import`** — migrate your AI history into memory from **six vendors**: ChatGPT (DAG
+  backward-traversal, drops regenerated branches), Claude (human→user, thinking blocks,
+  memories/projects), Gemini (Takeout), Grok (BSON dates), Mistral, Perplexity (dual-schema).
+  Cross-vendor dedup via the **PAM `content_hash`** standard. Bi-temporal: each memory's
+  `valid_from` is the original message time, so `recall --as-of` reconstructs what you knew then.
+  Offline, no API keys; `--extract` distills typed facts, `--dry-run` previews.
 - **`cos rules`** — export canon + rules to the config files coding agents auto-load: `CLAUDE.md`,
   `AGENTS.md`, `.cursor/rules/continuityos.mdc`. One source of truth flows into every agent.
 - **`cos usage`** — RaaS metering: a durable usage ledger with plan-based quotas
@@ -31,7 +33,27 @@ migrate history in, export rules out, meter usage, and let cognitive layers buil
   integration) — `find(namespace, key)` is a deterministic point-read; `upsert(text, namespace,
   key)` is create-or-update by semantic key (append-only: history kept via supersede). New `key`
   column + `(namespace, key)` index. Exposed across the Python API, the CLI (`cos remember -K`,
-  `cos find`), and the MCP server (now 14 tools).
+  `cos find`), and the MCP server (now 19 tools).
+
+- **`cos advocate`** — a built-in **devil's advocate**: challenges any claim/action against your
+  own memory (contradictions, superseded facts, missing evidence, canon conflicts, overconfidence,
+  dishonest omissions, irreversible actions) → verdict STOP/RECONSIDER/PROCEED. **Auto-gated** at
+  `cos checkpoint`/`close`/`boot` so consequential moves are challenged before they land. Rubric in `ADVOCATE.md`.
+- **`cos audit`** — full-system audit: memory inventory + invariants (append-only integrity,
+  bi-temporal ordering, canon presence, dangling supersede pointers). `--devil` runs the advocate
+  over every failing finding — an EU-AI-Act Article-12-style queryable decision record.
+- **`cos bus`** (alias `cos a2a`) — a zero-dep agent-to-agent message bus (JSON-RPC over stdlib
+  `http.server`) with **HMAC capability tokens** scoped read/write. (Renamed from `a2a` to avoid
+  confusion with the Linux-Foundation A2A protocol.)
+- **`cos epoch`** — a git-like DAG of epoch results: `commit`/`branch`/`log`/`graph`. Each epoch's
+  metrics become an append-only commit; branches fork like git. Feeds a Three.js graph viewer.
+- **HTTP API** — `cos api` gains `/epoch/graph`, `/epoch/commit`, and generic `/graph/<name>`
+  (serve any named graph live from SQLite) + CORS.
+- **`cos scan`** (long-session SRD mitigation), **`cos update`** (self-update from PyPI/git,
+  offline-safe, consent-gated), **MECW** (maximum effective context window + compaction threshold),
+  and **pass-by-reference pointers + OCC** (`write_checked`, conflict-detecting writes).
+- **Reproducible benchmark** — `bench/recall_bench.py`: honest, zero-external-call recall +
+  knowledge-update/temporal correctness + latency (we publish weaknesses too; no gamed leaderboard number).
 
 ### Changed
 - **`cos doctor` output is ASCII** (no emoji) so it never crashes cp1252 Windows consoles.

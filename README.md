@@ -75,20 +75,24 @@ cos recall  "which license should I pick?"
 cos namespaces
 ```
 
-### Import your ChatGPT / Claude history
+### Import your AI history (6 vendors)
 
-Bring your existing AI history into ContinuityOS — **bi-temporally**, so
-`cos recall --as-of <date>` reconstructs what you knew then instead of a flat dump:
+Bring your existing history into ContinuityOS from **ChatGPT, Claude, Gemini, Grok, Mistral,
+and Perplexity** — **bi-temporally**, so `cos recall --as-of <date>` reconstructs what you knew
+then instead of a flat dump:
 
 ```bash
-cos import ~/Downloads/chatgpt-export/conversations.json   # ChatGPT data export
-cos import ~/Downloads/claude-export/                      # Claude export dir (conversations.json + memories.json)
-cos import export.json --extract                           # distill typed facts (decision/preference/...), not raw turns
-cos import export.json --dry-run                           # preview counts, write nothing
+cos import ~/Downloads/chatgpt-export/conversations.json   # ChatGPT (DAG backward-traversal)
+cos import ~/Downloads/claude-export/                      # Claude (+ memories.json / projects.json)
+cos import ~/Downloads/Takeout/                            # Google Gemini (MyActivity.json)
+cos import grok-export.json                                # xAI Grok (BSON dates)
+cos import perplexity_thread.json                          # Perplexity (dual-schema)
+cos import export.json --extract                           # distill typed facts, not raw turns
 ```
 
-Auto-detects both export formats; deterministic and offline (no API keys). Every
-imported memory's `valid_from` is set to the original message time.
+Auto-detects all six formats; cross-vendor dedup via the **PAM `content_hash`** standard (the same
+question asked to different models collapses to one memory). Deterministic and offline (no API keys);
+every imported memory's `valid_from` is the original message time.
 
 ### From Python
 
@@ -206,6 +210,28 @@ print(c.handoff())    # resume-context block
 ```
 
 Over MCP the agent gets `checkpoint`, `handoff`, `doctor`, `set_frontier` tools too — so it maintains its own continuity, not just its recall.
+
+---
+
+## Governance — devil's advocate, audit, gate
+
+ContinuityOS isn't just recall — it's the **governance & audit layer** for agent memory, built for
+the EU-AI-Act era (Article-12 queryable decision records), not the LoCoMo leaderboard.
+
+- **`cos advocate "<claim>"`** — a running **devil's advocate** that challenges a claim or action
+  against your own memory (contradictions, stale facts, missing evidence, canon conflicts,
+  overconfidence, dishonest omissions, irreversible actions) → verdict STOP / RECONSIDER / PROCEED.
+  Auto-gated at `checkpoint`/`close`/`boot`. Rubric in `ADVOCATE.md`.
+- **`cos audit [--devil]`** — memory inventory + invariants (append-only integrity, bi-temporal
+  ordering, canon, dangling pointers); emits an Article-12-style record.
+- **Governance gate** — before any dangerous tool/shell action, a hard/soft decision
+  (ALLOW / WARN / HOLD / DENY / REQUIRE_CONFIRMATION / DRY_RUN_ONLY) with reasons, rollback plan, and
+  an append-only ledger.
+
+```bash
+cos advocate "All 150 bots are profitable and guaranteed to win"   # flags overconfidence + honesty
+cos audit --devil                                                   # invariants + adversarial pass
+```
 
 ---
 
