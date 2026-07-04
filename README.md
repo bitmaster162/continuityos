@@ -289,6 +289,15 @@ cos sim --objective edge --iters 6      # run the closed loop (mock engine)
 
 See [continuityos/sim/README.md](continuityos/sim/README.md) for the architecture.
 
+## Composable — built on in the wild
+
+ContinuityOS is a memory + governance *engine*, not a closed product — the point is what other developers layer on top. Two independent integrations appeared in its first days:
+
+- **Sim-OS ↔ Pandora** (in this repo, [`continuityos/sim/`](continuityos/sim/)) — a closed-loop simulation bridge: the memory/governance core drives an external simulation engine (Pandora) and crystallizes only *verified* results into canon.
+- **A cognitive-memory layer** built independently *on* ContinuityOS as its engine — semantic keys, a write-time policy gate, and explainable ranking on top of the core store. That integration fed straight back upstream: the key-based `find(namespace, key)` and `upsert()` primitives added in v0.9 came from it — a real dependency, not a fork.
+
+That second loop is the design working as intended: keep the core a small, generic, stdlib-only engine, and let domain-specific layers compose on top and send missing primitives back. The [`Memory`](continuityos/memory.py) API, the governance gate, and [`sim/`](continuityos/sim/) are the extension seams.
+
 ## Honest limits (threat model)
 
 We'd rather tell you the edges than oversell. Full detail in [THREAT_MODEL.md](THREAT_MODEL.md).
