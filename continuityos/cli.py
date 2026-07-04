@@ -50,6 +50,9 @@ def main(argv=None):
     us.add_argument("--key", default="local", help="billing key / customer id")
     us.add_argument("--set-plan", dest="set_plan", default=None, choices=["free","pro","team","enterprise"])
     us.add_argument("--charge", dest="charge_event", default=None, help="simulate one metered event, e.g. gate.decision")
+    up = s.add_parser("update", help="Self-update ContinuityOS from PyPI/git (check for a newer version)")
+    up.add_argument("--check", action="store_true", help="only report, do not upgrade")
+    up.add_argument("--yes", action="store_true", help="apply the upgrade in place")
     mm = s.add_parser("moneymap", help="Build a tiered monetization map from YOUR data (files you point at) + memory")
     mm.add_argument("--from", dest="sources", action="append", default=[], help="file or directory to scan (repeatable)")
     mm.add_argument("--from-memory", dest="from_memory", action="store_true", help="also mine your ContinuityOS memory")
@@ -90,6 +93,18 @@ def main(argv=None):
         from . import mcp_server; sys.argv = ["mcp","--db",_db(a)]; return mcp_server.main()
     if a.cmd == "api":
         from . import api; return api.run(_db(a), a.host, a.port)
+    if a.cmd == "update":
+        from . import updater
+        info = updater.check(force=True)
+        print("continuityos %s | latest: %s | %s" % (info["current"], info.get("latest") or "?",
+              "UPDATE AVAILABLE" if info["update_available"] else "up to date"))
+        if a.check or not info["update_available"]:
+            return 0
+        if not a.yes:
+            print("run:  cos update --yes   to upgrade in place"); return 0
+        res = updater.apply(yes=True)
+        print("updated to %s" % res.get("latest") if res.get("updated") else "not updated: %s" % res.get("reason",""))
+        return 0
     if a.cmd == "usage":
         from .metering import Meter
         meter = Meter(os.path.expanduser("~/.continuityos/usage.db"))
@@ -198,6 +213,13 @@ def main(argv=None):
         d=c.doctor(); print("%s %d/%d" % ("OK" if d["healthy"] else "DRIFT", d["passed"], d["total"]))
         for ch in d["checks"]:
             if not ch["ok"]: print("  ! %s — %s" % (ch["check"], ch["detail"]))
+        try:
+            from . import updater
+            u = updater.check()
+            if u.get("update_available"):
+                print("\n[update] %s -> %s available  (run: cos update)" % (u["current"], u["latest"]))
+        except Exception:
+            pass
     elif a.cmd == "close":
         cid=c.checkpoint(summary=a.summary, next_action=a.nxt, proof=a.proof)
         print("checkpoint #%d" % cid); d=c.doctor()
