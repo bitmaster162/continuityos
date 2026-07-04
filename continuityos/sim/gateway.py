@@ -47,14 +47,35 @@ class GovernanceGateway:
         reasons: List[str] = []
         sig: Dict[str, float] = {}
 
-        # 1) hard canon check first — a real constraint breach is an immediate DENY
+        # 1) operator-canon + constraint checks — a real breach is an immediate DENY.
+        # P1-6 (GPT audit): enforce the loaded operator canon, not just local demo bounds.
+        # Canon bounds (from operator_canon entities) OVERRIDE / augment spec.constraints.
+        # NOTE: build_spec() in loop.py currently injects DEMO defaults (hard_bounds=2.0,
+        # empty CanonicalState). A real deployment must populate operator_canon from the
+        # operator's ContinuityOS canon — then this check enforces the real rules.
+        canon_bounds = dict(getattr(spec.constraints, "hard_bounds", {}) or {})
+        operator_canon = getattr(spec, "operator_canon", None)
+        canon_entities = getattr(operator_canon, "entities", None) or []
+        canon_keys = set()
+        for ent in canon_entities:
+            for k, lim in (getattr(ent, "attributes", None) or {}).items():
+                if k.endswith("_max") or k.endswith("_limit"):
+                    base = k.rsplit("_", 1)[0]
+                    canon_bounds[base] = lim         # operator canon wins over demo bounds
+                    canon_keys.add(base)
         for p, v in spec.parameters.items():
-            cap = spec.constraints.hard_bounds.get(p)
+            cap = canon_bounds.get(p)
             if cap is not None and abs(v) > cap:
+                src = "operator canon" if p in canon_keys else "declared constraint"
                 return GatewayDecision(
                     Verdict.DENY, 1.0,
-                    [f"canon breach: {p}={v} exceeds hard bound {cap}"],
+                    [f"{src} breach: {p}={v} exceeds bound {cap}"],
                     {"constraint": 1.0})
+        # forbidden regions declared by canon/constraints
+        for region in getattr(spec.constraints, "forbidden_regions", []) or []:
+            if region and any(region in f"{p}={v}" for p, v in spec.parameters.items()):
+                return GatewayDecision(Verdict.DENY, 1.0,
+                                       [f"forbidden region hit: {region}"], {"constraint": 1.0})
         sig["constraint"] = 0.0
 
         # 2) budget pressure (0 = plenty, 1 = exhausted)

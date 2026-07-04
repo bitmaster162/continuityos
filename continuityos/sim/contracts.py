@@ -96,11 +96,19 @@ class SimulationSpec:
     contract_version: str = CONTRACT_VERSION
 
     def finalize(self) -> "SimulationSpec":
-        """Compute content-addressed spec_id (SHA-256 of the canonical payload)."""
+        """Compute content-addressed spec_id: SHA-256 over ALL semantically material
+        fields (P0-1 fix, GPT audit 2026-07-04). Two specs differing in budget,
+        constraints, stopping criteria or operator canon MUST get different ids —
+        otherwise spec_id can't back provenance/integrity claims."""
+        import dataclasses
         payload = {
             "objective": self.objective.__dict__ | {
                 "optimization_direction": self.objective.optimization_direction.value},
             "parameters": self.parameters,
+            "constraints": dataclasses.asdict(self.constraints),
+            "budget": dataclasses.asdict(self.budget),
+            "stopping_criteria": dataclasses.asdict(self.stopping_criteria),
+            "operator_canon": dataclasses.asdict(self.operator_canon),
             "provenance": self.provenance,
             "version": self.contract_version,
         }

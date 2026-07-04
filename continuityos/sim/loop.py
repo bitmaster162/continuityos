@@ -23,6 +23,10 @@ from .rollback import RollbackLedger, RollbackTrigger, execute_rollback
 
 
 def build_spec(objective_name: str, params: dict, provenance: list) -> SimulationSpec:
+    # NOTE (P1-6, GPT audit): the hard_bounds=2.0 and empty CanonicalState below are
+    # DEMO defaults for the mock loop. A real deployment must inject the operator's
+    # actual canon (limits, forbidden regions) into constraints/operator_canon — the
+    # gateway then enforces the real rules, not these placeholders.
     return SimulationSpec(
         objective=Objective(primary_metric=objective_name, target_value=1.0,
                             optimization_direction=OptimizationDirection.MAXIMIZE),

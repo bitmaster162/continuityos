@@ -31,3 +31,4 @@ SHIP.md
 
 # benchmark datasets (downloaded, not shipped)
 bench/data/
+sim_verify_out.txt

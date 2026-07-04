@@ -31,16 +31,33 @@ intent → Governance Gateway → SimulationSpec → Pandora → bitemporal memo
 | `rollback.py` | Autonomous rollback to the last verified canon on any failure mode. |
 | `loop.py` | Wires it all into the OODA loop. |
 
-## Epistemic safety (the point)
+## Epistemic safety (the design goal — with honest guarantees)
 
-The agent can experiment and fail all it wants — **canon never gets poisoned**. On a
-plateau or a constraint breach, garbage stays in `experiment_history`; the verified
-truth is protected and, if needed, restored. Proven in the module self-tests.
+The intent: an agent experiments freely, but verified truth (canon) is protected. What
+the code actually enforces today (hardened after an external audit, 2026-07-04):
+
+- **Promotion requires replication, not one lucky run.** A result only enters canon after
+  `min_confirmations` runs clear a `verify_threshold` set *above* the loop's success bar.
+  A single passing iteration stays in `experiment_history`.
+- **Rollback restores state, not just logs it.** On any failure mode the current-canon
+  pointer is reset to the last verified row and the confirmation counter is zeroed, so
+  poisoned progress can't auto-promote. Experiment history stays intact for audit.
+- **Fail closed.** If the durable store can't be opened, the plane raises — it does **not**
+  silently degrade to ephemeral RAM. Stub/in-memory mode is explicit opt-in (`allow_stub`).
+- **Spec identity is a full content hash** over all material fields (objective, params,
+  constraints, budget, stopping criteria, operator canon, provenance).
+
+**Honest limits:** this runs on a *mock* Pandora, and "verified" here means replication
+against that mock — not out-of-sample, independent-verifier, or human-threshold
+verification, which belong to a real deployment. The gateway enforces whatever operator
+canon is loaded; the demo loop injects placeholder bounds (see `build_spec`). Treat this
+as a hardened scaffold, not a battle-tested safety certificate.
 
 ## Status
 
-Etaps 4–7 done (gateway, memory, detector, rollback) on the mock engine — MVP works
-end-to-end. Etaps 8 (gRPC to real Pandora) and 9 (prod stack: Temporal / OPA-Rego /
-XTDB / Ray / OTel) are the remaining infrastructure steps.
+Etaps 4–7 implemented (gateway, memory, detector, rollback) on the mock engine; core
+invariants hardened per external audit. Etaps 8 (gRPC to real Pandora) and 9 (prod stack:
+Temporal / OPA-Rego / XTDB / Ray / OTel) remain. Each module has a runnable self-test:
+`python -m continuityos.sim.<module>`.
 
 Each module has a runnable `__main__` self-test: `python -m continuityos.sim.gateway`, etc.
