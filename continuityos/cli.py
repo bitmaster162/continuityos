@@ -12,6 +12,23 @@ from .memory import Memory
 from .continuity import Continuity
 from .twin import Twin
 
+def _advocate_gate(m, t, action_text, label="next action"):
+    """Auto devil's-advocate: challenge a consequential action before it lands.
+    Non-blocking — surfaces STOP/RECONSIDER/CAUTION so the human sees it. Implements
+    the dyad-research rule \"find a counterargument/bias for every claim\" (anti-sycophancy,
+    bliss-attractor guard). Recorded append-only to the audit namespace."""
+    if not action_text:
+        return
+    try:
+        from .advocate import DevilsAdvocate
+        da = DevilsAdvocate(m, t); r = da.challenge(action_text, action=True); da.record(r)
+        if not r["verdict"].startswith("PROCEED —"):
+            print("[devil's advocate / %s] %s" % (label, r["verdict"]))
+            for _c in r["flags"]:
+                print("  %s %s: %s" % (_c["severity"], _c["angle"], _c["detail"][:90]))
+    except Exception:
+        pass
+
 def _db(a): return a.db or os.path.expanduser("~/.continuityos/memory.db")
 
 def main(argv=None):
@@ -199,6 +216,7 @@ def main(argv=None):
         else:
             for l in c.open_loops(): print("[#%d] %s" % (l["id"],l["text"]))
     elif a.cmd == "checkpoint":
+        _advocate_gate(m, t, a.nxt)
         print("checkpoint #%d" % c.checkpoint(summary=a.summary,next_action=a.nxt,proof=a.proof))
     elif a.cmd == "doctor":
         d=c.doctor(); print("%s  %d/%d" % ("healthy" if d["healthy"] else "drift", d["passed"], d["total"]))
@@ -227,7 +245,9 @@ def main(argv=None):
                 print("\n[update] %s -> %s available  (run: cos update)" % (u["current"], u["latest"]))
         except Exception:
             pass
+        print("\n[advocate armed] consequential moves get challenged before they land (anti-sycophancy / bliss-attractor guard) - cos advocate \"<claim>\"")
     elif a.cmd == "close":
+        _advocate_gate(m, t, a.nxt)
         cid=c.checkpoint(summary=a.summary, next_action=a.nxt, proof=a.proof)
         print("checkpoint #%d" % cid); d=c.doctor()
         print("doctor: %s %d/%d" % ("OK" if d["healthy"] else "DRIFT", d["passed"], d["total"]))
