@@ -77,6 +77,45 @@ def test_rollback_success_not_flagged():
     assert ev.failed is False and ev.restored_ref == 5
 
 
+# --- P1-A / P0-C durable: rehydrate + rollback survive a process restart ---
+def _durable_plane(db, min_conf=2):
+    from continuityos.sim.memory_plane import RealMemoryPlane, PromotionPolicy
+    return RealMemoryPlane(db, policy=PromotionPolicy(verify_threshold=0.9, min_confirmations=min_conf))
+
+def test_rehydrate_restores_current_canon_after_restart():
+    import tempfile, os
+    db = os.path.join(tempfile.mkdtemp(), "sim.db")
+    mp = _durable_plane(db)
+    mp.record(_spec(params={"x": 0.4}), _res(0.95, "r1"))
+    mp.record(_spec(params={"x": 0.4}), _res(0.96, "r2"))     # -> canon
+    ref = mp.rollback_ref("edge")
+    assert ref is not None
+    mp2 = _durable_plane(db)                                   # simulate restart (same db)
+    assert mp2.rollback_ref("edge") == ref, "rehydrate must recover current canon from DB"
+
+def test_rollback_survives_restart():
+    import tempfile, os
+    db = os.path.join(tempfile.mkdtemp(), "sim.db")
+    mp = _durable_plane(db)
+    mp.record(_spec(params={"x": 0.4}), _res(0.95, "r1"))
+    mp.record(_spec(params={"x": 0.4}), _res(0.96, "r2"))     # canon row A
+    mp.restore_to("edge", mp.rollback_ref("edge"))            # durable restorative supersede
+    after = mp.rollback_ref("edge")
+    mp2 = _durable_plane(db)                                   # restart
+    assert mp2.rollback_ref("edge") == after, "rollback must be durable across restart"
+
+def test_broken_store_fails_closed():
+    import tempfile
+    # passing a directory as the db path makes sqlite fail to open -> must RAISE, not stub
+    bad = tempfile.mkdtemp()                                   # a directory, not a file
+    raised = False
+    try:
+        make_memory_plane(db=bad, allow_stub=False)
+    except Exception:
+        raised = True
+    assert raised, "broken durable store must fail closed, never silent stub"
+
+
 # --- gateway verdicts ---
 def test_gateway_denies_canon_breach():
     gw = GovernanceGateway()
