@@ -41,8 +41,8 @@ def build_spec(objective_name: str, params: dict, provenance: list) -> Simulatio
 
 
 def run_loop(objective_name: str, iters: int, verbose: bool = True,
-             allow_stub: bool = False) -> dict:
-    mem = make_memory_plane(allow_stub=allow_stub)   # fail-closed unless stub opt-in
+             allow_stub: bool = False, policy=None) -> dict:
+    mem = make_memory_plane(allow_stub=allow_stub, policy=policy)   # fail-closed unless stub opt-in
     detector = HallucinationDetector()
     gateway = GovernanceGateway()
     rb_ledger = RollbackLedger()
@@ -89,22 +89,34 @@ def run_loop(objective_name: str, iters: int, verbose: bool = True,
         if metric >= spec.stopping_criteria.success_threshold:
             cid = candidate_id(spec)
             promoted = False
+            verify_halted = False
             for vseed in range(1, mem.policy.min_confirmations * 3 + 1):
+                # P0-1 (GPT 3rd audit): VERIFY must NOT bypass the budget/governance gate.
+                vdec = gateway.evaluate(spec, budget_left, budget_total)
+                if vdec.verdict in (Verdict.HOLD, Verdict.DENY):
+                    trig = (RollbackTrigger.BUDGET_HOLD if vdec.verdict == Verdict.HOLD
+                            else RollbackTrigger.GATEWAY_DENY)
+                    ev = _rollback(objective_name, trig, f"verify halted: {vdec.reasons[0]}")
+                    stop_reason = ("rollback_failed" if ev.failed else
+                                   ("budget_hold" if vdec.verdict == Verdict.HOLD else "gateway_deny"))
+                    verify_halted = True; break
                 vres = run_simulation(spec, seed=vseed)          # independent re-run
                 budget_left -= vres.resource_consumption.compute_tokens_used
                 vmetric = vres.metrics[objective_name]
-                rec = mem.record(spec, vres)
+                rec = mem.record(spec, vres, seed=vseed)         # P1-3: keyed by seed
                 if verbose:
                     print(f"        VERIFY(cid {cid}) run#{vseed} metric={vmetric:.4f} -> {rec['canon']}")
                 if str(rec["canon"]).startswith("verified"):
                     promoted = True; break
                 if vmetric < mem.policy.verify_threshold:
+                    mem.reject_candidate(cid)                    # P0-2: clear stale evidence
                     if verbose:
-                        print(f"        candidate abandoned (run below verify bar {mem.policy.verify_threshold})")
+                        print(f"        candidate abandoned (below verify bar {mem.policy.verify_threshold}); evidence cleared")
                     break
+            if verify_halted:
+                break
             if promoted:
                 stop_reason = "verified_success"; break
-            # not robust -> keep exploring from the recommendation
             if result.next_candidate:
                 params = result.next_candidate.parameters
             continue

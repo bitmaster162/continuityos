@@ -52,14 +52,14 @@ class RealMemoryPlane:
 
     def _rehydrate(self):
         """P1-A: rebuild current-canon pointers by a DIRECT deterministic query — current
-        rows are those in CANON_NS whose meta has no `superseded_by`. Latest per objective."""
-        try:
-            con = self.m.store.con
-            rows = con.execute(
-                "SELECT id, meta, tags, created_at FROM items WHERE namespace=? ORDER BY id",
-                (CANON_NS,)).fetchall()
-        except Exception:
-            rows = []
+        rows are those in CANON_NS whose meta has no `superseded_by`. Latest per objective.
+        P1-4 (GPT 3rd audit): FAIL CLOSED — a query/schema/corruption error is NOT
+        swallowed into an empty state. It propagates so startup fails rather than
+        silently pretending there is no canon. (A fresh DB returns [] cleanly, no error.)"""
+        con = self.m.store.con
+        rows = con.execute(
+            "SELECT id, meta, tags, created_at FROM items WHERE namespace=? ORDER BY id",
+            (CANON_NS,)).fetchall()
         for r in rows:
             try:
                 meta = json.loads(r["meta"] or "{}")
@@ -72,21 +72,29 @@ class RealMemoryPlane:
             if obj:
                 self._canon_ids[obj] = r["id"]           # ordered by id -> last wins
 
-    def record(self, spec, result, confident_hint: bool = False) -> Dict[str, Any]:
+    def reject_candidate(self, cid: str) -> None:
+        """P0-2 (GPT 3rd audit): abandoning a candidate must clear its pending evidence,
+        so a failed verification can't be reused later to reach promotion."""
+        self._confirmations[cid] = set()
+
+    def record(self, spec, result, seed=None) -> Dict[str, Any]:
         obj = spec.objective.primary_metric
         cid = candidate_id(spec)
         metric = list(result.metrics.values())[0] if result.metrics else 0.0
-        rid_key = getattr(result, "result_id", None) or f"{cid}:{metric}"
+        # P1-3: replication identity = candidate_id + seed, NOT a random result_id.
+        # A distinct SEED is what makes a re-run an independent replication; a fresh UUID
+        # doesn't. (Real deployment extends this with engine_version + data_snapshot_id.)
+        rep_key = f"seed:{seed}" if seed is not None else "explore"
         text = f"{obj}={metric} @ params={spec.parameters}"
         meta = {"spec_id": spec.spec_id, "candidate_id": cid, "provenance": spec.provenance,
                 "objective": obj, "status": getattr(result.status, "value", str(result.status)),
-                "metric": metric}
+                "metric": metric, "seed": seed}
         exp_id = self.m.remember(text, namespace=EXPERIMENT_NS, tags=[obj], meta=meta)
 
         canon_action = "experiment_only"
         if metric >= self.policy.verify_threshold:
             confs = self._confirmations.setdefault(cid, set())
-            confs.add(rid_key)                            # distinct qualifying runs only
+            confs.add(rep_key)                            # distinct SEEDs only
             if len(confs) >= self.policy.min_confirmations:
                 prior = self._canon_ids.get(obj)
                 if prior is not None and hasattr(self.m, "supersede"):
@@ -144,17 +152,20 @@ class StubMemoryPlane:
         self._confirmations: Dict[str, Set[str]] = {}
         self._canon_ids: Dict[str, int] = {}
 
-    def record(self, spec, result, confident_hint: bool = False) -> Dict[str, Any]:
+    def reject_candidate(self, cid: str) -> None:
+        self._confirmations[cid] = set()
+
+    def record(self, spec, result, seed=None) -> Dict[str, Any]:
         obj = spec.objective.primary_metric
         cid = candidate_id(spec)
         metric = list(result.metrics.values())[0] if result.metrics else 0.0
-        rid_key = getattr(result, "result_id", None) or f"{cid}:{metric}"
+        rep_key = f"seed:{seed}" if seed is not None else "explore"
         entry = {"spec_id": spec.spec_id, "candidate_id": cid, "params": spec.parameters,
-                 "metric": metric, "objective": obj, "provenance": spec.provenance}
+                 "metric": metric, "objective": obj, "provenance": spec.provenance, "seed": seed}
         self.experiment_history.append(entry)
         canon_action = "experiment_only"
         if metric >= self.policy.verify_threshold:
-            confs = self._confirmations.setdefault(cid, set()); confs.add(rid_key)
+            confs = self._confirmations.setdefault(cid, set()); confs.add(rep_key)
             if len(confs) >= self.policy.min_confirmations:
                 self.canon.append(entry); self._canon_ids[obj] = len(self.canon)
                 canon_action = "verified: canon(stub)"
@@ -193,16 +204,18 @@ if __name__ == "__main__":  # self-test
         objective=SimpleNamespace(primary_metric="edge"), parameters=params,
         constraints=SimpleNamespace(hard_bounds={k: 2.0 for k in params}),
         provenance=[], spec_id="s")
-    def res(m, rid): return SimpleNamespace(metrics={"edge": m},
-        status=SimpleNamespace(value="success"), result_id=rid)
+    def res(m): return SimpleNamespace(metrics={"edge": m}, status=SimpleNamespace(value="success"))
 
     # P0-A: two DIFFERENT candidates must NOT co-confirm
-    mp.record(spec({"x": 0.4}), res(0.95, "r1"))
-    mp.record(spec({"x": 0.9}), res(0.95, "r2"))
+    mp.record(spec({"x": 0.4}), res(0.95), seed=1)
+    mp.record(spec({"x": 0.9}), res(0.95), seed=1)
     assert mp.sizes()["canon"] == 0, "different candidates must not co-confirm (P0-A)"
-    # same candidate, two distinct runs -> promote
-    mp.record(spec({"x": 0.4}), res(0.96, "r3"))
-    assert mp.sizes()["canon"] == 1, "same candidate x2 -> canon"
+    # P1-3: same candidate + SAME seed must NOT double-count
+    mp.record(spec({"x": 0.4}), res(0.96), seed=1)
+    assert mp.sizes()["canon"] == 0, "same candidate+same seed must not count twice (P1-3)"
+    # same candidate + DISTINCT seed -> 2nd confirmation -> promote
+    mp.record(spec({"x": 0.4}), res(0.96), seed=2)
+    assert mp.sizes()["canon"] == 1, "same candidate, distinct seeds x2 -> canon"
     r = mp.restore_to("edge", None)
     print("restore:", r, "| canon:", mp.sizes()["canon"])
-    print("OK: candidate-scoped confirmations + durable-shaped restore (PR-9)")
+    print("OK: candidate+seed replication identity + durable-shaped restore (PR-9.1)")

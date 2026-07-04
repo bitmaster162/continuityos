@@ -34,3 +34,4 @@ bench/data/
 sim_verify_out.txt
 *_out.txt
 _VERIFY_*.bat
+_verify_sim.py
