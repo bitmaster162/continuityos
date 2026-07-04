@@ -97,6 +97,11 @@ def main(argv=None):
     aa = s.add_parser("bus", aliases=["a2a"], help="Capability-token message bus (JSON-RPC, HMAC tokens; NOT the LF A2A standard) — serve | token")
     aa.add_argument("bus_cmd", choices=["serve","token"]); aa.add_argument("--host",default="127.0.0.1"); aa.add_argument("--port",type=int,default=8079)
     aa.add_argument("--secret",default=os.environ.get("COS_BUS_SECRET", os.environ.get("COS_A2A_SECRET",""))); aa.add_argument("--sub",default="agent"); aa.add_argument("--scope",default="read",choices=["read","write"])
+    ep = s.add_parser("epoch", help="Git-like DAG of epoch results: commit | branch | log | graph")
+    ep.add_argument("epoch_cmd", choices=["commit","branch","log","graph"])
+    ep.add_argument("-b","--branch", default=None, help="target/new/filter branch (default: main)")
+    ep.add_argument("-l","--label", default=""); ep.add_argument("-m","--metric", action="append", default=[], help="key=value (repeatable)")
+    ep.add_argument("--from", dest="from_branch", default="main"); ep.add_argument("--out", default=None)
     sw = s.add_parser("setup", help="Guided onboarding wizard — sets up memory, frontiers, twin, agents, dashboard")
     sw.add_argument("--quick", action="store_true", help="accept all recommended defaults (non-interactive)")
     sw.add_argument("--dashboard-only", action="store_true", help="just (re)generate the ORCA dashboard")
@@ -278,6 +283,32 @@ def main(argv=None):
             print("cos bus serving on http://%s:%d  (scopes: read|write; Ctrl-C to stop)" % (a.host, a.port))
             try: httpd.serve_forever()
             except KeyboardInterrupt: httpd.shutdown()
+    elif a.cmd == "epoch":
+        from .epochgraph import EpochGraph
+        g = EpochGraph(m)
+        if a.epoch_cmd == "commit":
+            metrics = {}
+            for kv in a.metric:
+                if "=" in kv:
+                    k, v = kv.split("=", 1)
+                    try: metrics[k] = float(v)
+                    except ValueError: metrics[k] = v
+            cid = g.commit(a.branch or "main", a.label, metrics)
+            print("epoch commit #%d on [%s]: %s %s" % (cid, a.branch or "main", a.label, metrics or ""))
+        elif a.epoch_cmd == "branch":
+            if not a.branch: print("usage: cos epoch branch -b <new_branch> [--from <src>]"); return 2
+            bid = g.branch(a.branch, a.from_branch)
+            print("branched [%s] from [%s] (#%d)" % (a.branch, a.from_branch, bid))
+        elif a.epoch_cmd == "log":
+            for c in g.log(a.branch):
+                print("* #%d [%s] epoch %d - %s %s" % (c["id"], c["branch"], c["epoch"], c["label"], c.get("metrics", "")))
+        elif a.epoch_cmd == "graph":
+            G = g.to_graph()
+            if a.out:
+                json.dump(G, open(a.out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+                print("wrote %s (%d nodes, %d edges, branches: %s)" % (a.out, len(G["nodes"]), len(G["edges"]), G["branches"]))
+            else:
+                print(json.dumps(G, ensure_ascii=False, indent=2))
 
 if __name__ == "__main__":
     main()
