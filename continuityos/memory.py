@@ -82,7 +82,8 @@ class Memory:
     def remember(self, text: str, namespace: str = "notes",
                  tags: Optional[List[str]] = None, meta: Optional[Dict[str, Any]] = None,
                  mtype: Optional[str] = None, valid_from: Optional[float] = None,
-                 valid_to: Optional[float] = None, supersedes: Optional[int] = None) -> int:
+                 valid_to: Optional[float] = None, supersedes: Optional[int] = None,
+                 key: Optional[str] = None) -> int:
         """Store a fact. Bi-temporal (Zep pattern): valid_from/valid_to bound when the fact
         is TRUE in the world, distinct from created_at (= when we learned it). mtype = semantic
         type (Memanto pattern: fact/preference/decision/goal/event/learning/error).
@@ -94,7 +95,7 @@ class Memory:
         if valid_to is not None: meta["valid_to"] = float(valid_to)
         if supersedes is not None: meta["supersedes"] = int(supersedes)
         vec = self.embed(text)
-        rid = self.store.add(text, namespace=namespace, tags=tags, meta=meta, vec=vec)
+        rid = self.store.add(text, namespace=namespace, tags=tags, meta=meta, vec=vec, key=key)
         if supersedes is not None:
             old = self.store.get(int(supersedes))
             if old is not None:
@@ -111,6 +112,27 @@ class Memory:
         if old is not None and "namespace" not in kw:
             kw["namespace"] = old["namespace"]
         return self.remember(text, supersedes=old_id, **kw)
+
+    def find(self, namespace: str, key: str) -> Optional[MemoryItem]:
+        """Exact key-based point read: the current value under (namespace, key), or None.
+        Deterministic O(log n) — unlike recall(), which is ranked/fuzzy. (HMOS upstream.)"""
+        row = self.store.find_by_key(namespace, key)
+        if row is None:
+            return None
+        meta = json.loads(row["meta"])
+        if "superseded_by" in meta:            # newest row was retired without a re-key
+            return None
+        return MemoryItem(id=row["id"], text=row["text"], namespace=row["namespace"],
+                          tags=json.loads(row["tags"]), meta=meta, score=1.0, why="key")
+
+    def upsert(self, text: str, namespace: str, key: str, **kw) -> int:
+        """CREATE-or-UPDATE by semantic key. If (namespace, key) already exists, the old value
+        is superseded (append-only: history kept, validity closed) and the new becomes current;
+        otherwise a new keyed memory is created. Returns the (new) id. (HMOS upstream.)"""
+        existing = self.store.find_by_key(namespace, key)
+        if existing is not None and "superseded_by" not in json.loads(existing["meta"]):
+            return self.supersede(existing["id"], text, namespace=namespace, key=key, **kw)
+        return self.remember(text, namespace=namespace, key=key, **kw)
 
     def forget(self, item_id: int) -> bool:
         return self.store.delete(item_id)

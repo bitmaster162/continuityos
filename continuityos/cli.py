@@ -18,7 +18,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="cos", description="ContinuityOS — durable memory + continuity for agents & humans")
     ap.add_argument("--db", default=None)
     s = ap.add_subparsers(dest="cmd", required=True)
-    r = s.add_parser("remember"); r.add_argument("text"); r.add_argument("-n","--namespace",default="notes"); r.add_argument("-t","--tags",default="")
+    r = s.add_parser("remember"); r.add_argument("text"); r.add_argument("-n","--namespace",default="notes"); r.add_argument("-t","--tags",default=""); r.add_argument("-K","--key",default=None,help="semantic key: upsert (create-or-update) instead of append")
+    fi = s.add_parser("find", help="Exact key lookup: current value under namespace/key (deterministic, not fuzzy)")
+    fi.add_argument("namespace"); fi.add_argument("key")
     q = s.add_parser("recall"); q.add_argument("query"); q.add_argument("-k",type=int,default=5); q.add_argument("-n","--namespace",default=None)
     q.add_argument("--as-of",dest="as_of",default=None,help="ISO date/datetime: what was true THEN")
     q.add_argument("--current-only",action="store_true",help="hide superseded/expired facts")
@@ -100,7 +102,13 @@ def main(argv=None):
     t = Twin(memory=m)
     if a.cmd == "remember":
         tags=[t.strip() for t in a.tags.split(",") if t.strip()]
-        print("stored #%d in [%s]" % (m.remember(a.text,namespace=a.namespace,tags=tags), a.namespace))
+        if a.key:
+            print("upserted #%d in [%s] key=%s" % (m.upsert(a.text,namespace=a.namespace,key=a.key,tags=tags), a.namespace, a.key))
+        else:
+            print("stored #%d in [%s]" % (m.remember(a.text,namespace=a.namespace,tags=tags), a.namespace))
+    elif a.cmd == "find":
+        hit = m.find(a.namespace, a.key)
+        print(json.dumps(hit.to_dict(), ensure_ascii=False, indent=2) if hit else "(not found)")
     elif a.cmd == "recall":
         as_of = None
         if a.as_of:

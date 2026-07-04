@@ -48,6 +48,11 @@ class Store:
             updated_at REAL NOT NULL
         )""")
         c.execute("CREATE INDEX IF NOT EXISTS idx_items_ns ON items(namespace)")
+        # v0.9 upstream (HMOS): optional semantic key per item -> key-based find()/upsert().
+        cols = {r[1] for r in c.execute("PRAGMA table_info(items)").fetchall()}
+        if "key" not in cols:
+            c.execute("ALTER TABLE items ADD COLUMN key TEXT")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_items_key ON items(namespace, key)")
         # FTS5 mirror for keyword/structural search
         try:
             c.execute("CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5("
@@ -59,17 +64,17 @@ class Store:
 
     def add(self, text: str, namespace: str = "default",
             tags: Optional[List[str]] = None, meta: Optional[Dict[str, Any]] = None,
-            vec: Optional[List[float]] = None) -> int:
+            vec: Optional[List[float]] = None, key: Optional[str] = None) -> int:
         tags = tags or []; meta = meta or {}
         ts = _now()
         with self._lock:
-            return self._add_locked(text, namespace, tags, meta, vec, ts)
+            return self._add_locked(text, namespace, tags, meta, vec, ts, key)
 
-    def _add_locked(self, text, namespace, tags, meta, vec, ts):
+    def _add_locked(self, text, namespace, tags, meta, vec, ts, key=None):
         cur = self.con.execute(
-            "INSERT INTO items(namespace,text,tags,meta,vec,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+            "INSERT INTO items(namespace,text,tags,meta,vec,created_at,updated_at,key) VALUES(?,?,?,?,?,?,?,?)",
             (namespace, text, json.dumps(tags, ensure_ascii=False),
-             json.dumps(meta, ensure_ascii=False), pack_vec(vec) if vec else None, ts, ts))
+             json.dumps(meta, ensure_ascii=False), pack_vec(vec) if vec else None, ts, ts, key))
         rid = cur.lastrowid
         if self.fts:
             self.con.execute("INSERT INTO items_fts(rowid,text,tags,namespace) VALUES(?,?,?,?)",
@@ -79,6 +84,13 @@ class Store:
 
     def get(self, rid: int) -> Optional[sqlite3.Row]:
         return self.con.execute("SELECT * FROM items WHERE id=?", (rid,)).fetchone()
+
+    def find_by_key(self, namespace: str, key: str) -> Optional[sqlite3.Row]:
+        """Newest row for a (namespace, key). upsert() supersedes older versions, so the
+        highest id is the current value; history rows keep the key for audit/replay."""
+        return self.con.execute(
+            "SELECT * FROM items WHERE namespace=? AND key=? ORDER BY id DESC LIMIT 1",
+            (namespace, key)).fetchone()
 
     def update_meta(self, rid: int, meta: Dict[str, Any]) -> None:
         """Rewrite an item's meta JSON (used by bi-temporal supersede; text stays immutable)."""
