@@ -73,7 +73,11 @@ TOOLS = [
  {"name":"memory_pointer","description":"Pass-by-reference: get a lightweight {namespace,key,version} pointer to a memory value instead of its content (A2A courier-tax fix). Dereference with recall/find.",
   "inputSchema":{"type":"object","properties":{"namespace":{"type":"string","default":"facts"},"key":{"type":"string"}},"required":["key"]}},
  {"name":"memory_write_checked","description":"Optimistic-concurrency write by key: succeeds only if current version equals expected_version, else returns a conflict. Prevents lost updates when multiple agents write the same key.",
-  "inputSchema":{"type":"object","properties":{"text":{"type":"string"},"namespace":{"type":"string","default":"facts"},"key":{"type":"string"},"expected_version":{"type":"integer"}},"required":["text","key","expected_version"]}}
+  "inputSchema":{"type":"object","properties":{"text":{"type":"string"},"namespace":{"type":"string","default":"facts"},"key":{"type":"string"},"expected_version":{"type":"integer"}},"required":["text","key","expected_version"]}},
+ {"name":"devils_advocate","description":"Challenge a claim or proposed action against your own memory + canon BEFORE acting: flags contradictions, superseded facts, missing evidence, canon conflicts, overconfidence, dishonest omissions, irreversible actions. Returns a verdict (STOP/RECONSIDER/PROCEED WITH CAUTION/PROCEED). Call before consequential moves.",
+  "inputSchema":{"type":"object","properties":{"claim":{"type":"string"},"action":{"type":"boolean","default":False},"namespace":{"type":"string"}},"required":["claim"]}},
+ {"name":"system_audit","description":"Full-system audit: memory inventory + invariants (append-only integrity, bi-temporal ordering, canon presence, dangling supersede pointers). devil=true runs the devil's advocate over every failing finding. EU-AI-Act Article-12 style record.",
+  "inputSchema":{"type":"object","properties":{"devil":{"type":"boolean","default":False}}}}
 ]
 
 class Server:
@@ -143,6 +147,15 @@ class Server:
                 return "wrote #%d to %s/%s" % (rid, args.get("namespace", "facts"), args["key"])
             except Conflict as e:
                 return json.dumps({"error": "conflict", "detail": str(e)}, ensure_ascii=False)
+        if name == "devils_advocate":
+            from .advocate import DevilsAdvocate
+            da = DevilsAdvocate(self.m, self.t)
+            r = da.challenge(args["claim"], action=bool(args.get("action", False)), namespace=args.get("namespace"))
+            da.record(r)
+            return json.dumps({"verdict": r["verdict"], "flags": r["flags"], "open_questions": r["open_questions"]}, ensure_ascii=False, indent=2)
+        if name == "system_audit":
+            from .audit import SystemAudit
+            return json.dumps(SystemAudit(self.m, self.c, self.t).run(devil=bool(args.get("devil", False))), ensure_ascii=False, indent=2)
         raise ValueError(f"unknown tool {name}")
 
 def _send(obj):

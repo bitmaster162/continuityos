@@ -73,6 +73,13 @@ def main(argv=None):
     pr.add_argument("situation")
     al = s.add_parser("alignment", help="Check a proposed action against canon/rules; flags conflicts with non-negotiable rules")
     al.add_argument("action")
+    ad = s.add_parser("advocate", help="Devil's advocate: challenge a claim/action against memory+canon before acting")
+    ad.add_argument("claim"); ad.add_argument("--action", action="store_true"); ad.add_argument("-n","--namespace",default=None); ad.add_argument("--record", action="store_true")
+    au = s.add_parser("audit", help="Full-system audit: inventory + invariants (--devil = adversarial pass; --json = raw)")
+    au.add_argument("--devil", action="store_true"); au.add_argument("--json", dest="as_json", action="store_true")
+    aa = s.add_parser("a2a", help="Agent-to-agent server (JSON-RPC, HMAC capability tokens) — serve | token")
+    aa.add_argument("a2a_cmd", choices=["serve","token"]); aa.add_argument("--host",default="127.0.0.1"); aa.add_argument("--port",type=int,default=8079)
+    aa.add_argument("--secret",default=os.environ.get("COS_A2A_SECRET","")); aa.add_argument("--sub",default="agent"); aa.add_argument("--scope",default="read",choices=["read","write"])
     sw = s.add_parser("setup", help="Guided onboarding wizard — sets up memory, frontiers, twin, agents, dashboard")
     sw.add_argument("--quick", action="store_true", help="accept all recommended defaults (non-interactive)")
     sw.add_argument("--dashboard-only", action="store_true", help="just (re)generate the ORCA dashboard")
@@ -233,6 +240,24 @@ def main(argv=None):
         print(json.dumps(t.predict(a.situation), ensure_ascii=False, indent=2))
     elif a.cmd == "alignment":
         print(json.dumps(t.alignment(a.action), ensure_ascii=False, indent=2))
+    elif a.cmd == "advocate":
+        from .advocate import DevilsAdvocate
+        da = DevilsAdvocate(m, t); r = da.challenge(a.claim, action=a.action, namespace=a.namespace)
+        if a.record: da.record(r)
+        print(da.render(r))
+    elif a.cmd == "audit":
+        from .audit import SystemAudit
+        rep = SystemAudit(m, c, t).run(devil=a.devil)
+        print(json.dumps(rep, ensure_ascii=False, indent=2) if a.as_json else SystemAudit(m).render(rep))
+    elif a.cmd == "a2a":
+        from . import a2a as _a2a
+        if a.a2a_cmd == "token":
+            print(_a2a.mint_token(a.secret, a.sub, a.scope))
+        else:
+            httpd = _a2a.serve(m, secret=a.secret, host=a.host, port=a.port, twin=t, continuity=c)
+            print("cos a2a serving on http://%s:%d  (scopes: read|write; Ctrl-C to stop)" % (a.host, a.port))
+            try: httpd.serve_forever()
+            except KeyboardInterrupt: httpd.shutdown()
 
 if __name__ == "__main__":
     main()
