@@ -69,3 +69,28 @@ def test_exec_mode_rejects_shell_operators():
                        capture_output=True, text=True)
     assert r.returncode == 2
     assert "argv-only" in r.stdout or "shell operators" in r.stdout
+
+
+def test_run_shorthand_preserves_first_token(monkeypatch):
+    # PR-7: `continuity run npm test` must NOT drop the first token ("npm").
+    import continuityos.gate.cli as gc
+    cap = {}
+    monkeypatch.setattr(gc, "_decide",
+                        lambda cmd, tool="shell", agent="cli-run": ({"decision": "ALLOW", "reasons": []}, None))
+    monkeypatch.setattr(gc.subprocess, "call", lambda *a, **k: cap.update(args=a, kwargs=k) or 0)
+    gc.main(["run", "npm", "test"])
+    # shorthand -> exec mode -> argv via shlex.split; first token preserved
+    assert cap["args"][0] == ["npm", "test"], f"first token lost: {cap['args'][0]!r}"
+
+
+def test_shell_warn_executes_with_shell_true(monkeypatch):
+    # PR-7: a WARN decision in shell mode must keep shell semantics (shell=True),
+    # not silently degrade to argv.
+    import continuityos.gate.cli as gc
+    cap = {}
+    monkeypatch.setattr(gc, "_decide",
+                        lambda cmd, tool="shell", agent="cli-run": ({"decision": "WARN", "reasons": []}, None))
+    monkeypatch.setattr(gc.subprocess, "call", lambda *a, **k: cap.update(args=a, kwargs=k) or 0)
+    gc.main(["run", "shell", "--", "echo ok && echo done"])
+    assert cap["kwargs"].get("shell") is True, "WARN shell mode lost shell=True"
+    assert cap["args"][0] == "echo ok && echo done"

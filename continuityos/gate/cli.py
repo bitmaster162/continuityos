@@ -76,8 +76,13 @@ def main(argv=None):
         return 0
 
     if a.cmd == "run":
-        rest = a.rest
+        rest = list(a.rest)
         if rest and rest[0] == "--": rest = rest[1:]
+        # Shorthand `continuity run <cmd...>`: the `tool` positional actually holds the
+        # first command token (e.g. `run npm test` -> tool="npm", rest=["test"]).
+        # Prepend it back so the first token isn't lost (PR-7 fix, GPT audit 2026-07-04).
+        if a.tool not in ("exec", "shell"):
+            rest = [a.tool] + rest
         cmd = " ".join(rest)
         if not cmd:
             print("usage: continuity run [exec|shell] -- <command>"); return 2
@@ -101,7 +106,9 @@ def main(argv=None):
             return 1
         if d == "WARN":
             print("\n⚠ WARN — proceeding (logged). Review the reasons above.")
-            return subprocess.call(shlex.split(cmd))
+            # Preserve shell semantics on WARN too — mirror the ALLOW branch, don't
+            # silently downgrade `shell` mode to argv (PR-7 fix, GPT audit 2026-07-04).
+            return subprocess.call(cmd, shell=True) if mode == "shell" else subprocess.call(shlex.split(cmd))
         if d == "REQUIRE_CONFIRMATION":
             if not sys.stdin.isatty():
                 print("\n⛔ HELD (REQUIRE_CONFIRMATION, non-interactive). NOT executed."); return 1
