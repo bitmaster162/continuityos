@@ -1,5 +1,5 @@
 """ContinuityOS CLI.
-Memory:     cos remember | recall | namespaces
+Memory:     cos remember | recall | namespaces | import
 Continuity: cos canon | frontier | loop | checkpoint | doctor | handoff
 Twin:       cos predict | alignment
 Setup:      cos setup (guided onboarding wizard)
@@ -24,6 +24,13 @@ def main(argv=None):
     q.add_argument("--type",dest="mtype",default=None,help="filter by semantic type (fact/preference/decision/...)")
     ex = s.add_parser("extract", help="Mem0-style ADD-only auto-extraction of memories from text/stdin")
     ex.add_argument("text", nargs="?"); ex.add_argument("-n","--namespace",default="facts")
+    im = s.add_parser("import", help="Import ChatGPT/Claude export (conversations.json / memories.json) into memory")
+    im.add_argument("path", help="export file or directory")
+    im.add_argument("-n","--namespace",default="imported")
+    im.add_argument("--source",default="auto",choices=["auto","chatgpt","claude"])
+    im.add_argument("--extract",dest="distill",action="store_true",help="distill typed salient facts instead of raw turns")
+    im.add_argument("--roles",default="user,human,memory",help="comma-separated roles to import (default: your own turns)")
+    im.add_argument("--dry-run",dest="dry_run",action="store_true",help="report what would import, write nothing")
     s.add_parser("namespaces")
     cn = s.add_parser("canon"); cn.add_argument("text", nargs="?");
     fr = s.add_parser("frontier"); fr.add_argument("kind", nargs="?", choices=["trunk","cash","lab","parked"]); fr.add_argument("item", nargs="?")
@@ -85,6 +92,18 @@ def main(argv=None):
         from .extract import extract_and_store
         ids = extract_and_store(txt, m, namespace=a.namespace)
         print("stored %d candidate(s): %s" % (len(ids), ids))
+    elif a.cmd == "import":
+        from .adapters import import_path
+        roles = tuple(x.strip() for x in a.roles.split(",") if x.strip())
+        res = import_path(a.path, m, namespace=a.namespace, source=a.source,
+                          roles=roles, extract_mode=a.distill, dry_run=a.dry_run)
+        d = res.as_dict()
+        print("import [%s] %s%s: %d imported, %d dup, %d short (from %d msgs / %d conversations) -> ns [%s]" % (
+            d["source"], os.path.basename(a.path.rstrip("/\\")) or a.path,
+            " (dry-run)" if a.dry_run else "", d["imported"], d["skipped_dup"],
+            d["skipped_short"], d["messages_seen"], d["conversations"], a.namespace))
+        if res.ids:
+            print("  ids: %s%s" % (res.ids[:10], " ..." if len(res.ids) > 10 else ""))
     elif a.cmd == "namespaces":
         print(json.dumps(m.namespaces(),ensure_ascii=False,indent=2))
     elif a.cmd == "canon":
@@ -102,8 +121,8 @@ def main(argv=None):
     elif a.cmd == "checkpoint":
         print("checkpoint #%d" % c.checkpoint(summary=a.summary,next_action=a.nxt,proof=a.proof))
     elif a.cmd == "doctor":
-        d=c.doctor(); print("%s  %d/%d" % ("✅ healthy" if d["healthy"] else "⚠ drift", d["passed"], d["total"]))
-        for ch in d["checks"]: print("  %s %s — %s" % ("✓" if ch["ok"] else "✗", ch["check"], ch["detail"]))
+        d=c.doctor(); print("%s  %d/%d" % ("healthy" if d["healthy"] else "drift", d["passed"], d["total"]))
+        for ch in d["checks"]: print("  %s %s — %s" % ("ok" if ch["ok"] else "x", ch["check"], ch["detail"]))
     elif a.cmd == "handoff":
         print(c.handoff())
     elif a.cmd == "boot":

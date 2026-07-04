@@ -73,6 +73,21 @@ cos recall  "which license should I pick?"
 cos namespaces
 ```
 
+### Import your ChatGPT / Claude history
+
+Bring your existing AI history into ContinuityOS — **bi-temporally**, so
+`cos recall --as-of <date>` reconstructs what you knew then instead of a flat dump:
+
+```bash
+cos import ~/Downloads/chatgpt-export/conversations.json   # ChatGPT data export
+cos import ~/Downloads/claude-export/                      # Claude export dir (conversations.json + memories.json)
+cos import export.json --extract                           # distill typed facts (decision/preference/...), not raw turns
+cos import export.json --dry-run                           # preview counts, write nothing
+```
+
+Auto-detects both export formats; deterministic and offline (no API keys). Every
+imported memory's `valid_from` is set to the original message time.
+
 ### From Python
 
 ```python
@@ -289,12 +304,4 @@ Best fit today: **operators and teams that need auditable, governed continuity**
 
 ## Status
 
-`v0.8.2` — **6 layers, 12 MCP tools, 37/37 tests, full audit passed.** Unified core, all tested (FastEmbed-accelerated recall, session rituals `boot/close/compress`, recall benchmark in `bench/`): **L1 Memory** (hybrid FTS+vector, WAL + thread-safe store) · **L2 Continuity** (canon/frontiers/loops/checkpoints/doctor/handoff) · **L3 Council** (multi-agent, authority levels + roles) · **L4 Twin** (digital twin: profile/predict/alignment — now in CLI too) · **L5 Control Plane** (correct/redact/rollback/export) · **L6 Autopoiesis** (self-maintenance doctor). CLI (`cos` + `continuity`), MCP server (**12 tools**, cross-platform `mcp_bridge.py`), HTTP API, Docker. CI via GitHub Actions.
-
-**Audit fixes applied:** FastEmbed default + auto-fallback · Gate enforcement via Hermes shell hooks · predict/alignment in CLI · docs/ + quickstart example.
-
-Roadmap: incremental vector index for large stores, optional reranking, import adapters (chat exports, notes), web memory browser.
-
-## License
-
-Apache-2.0. See [LICENSE](LICENSE).
+`v0.8.2` — **6 layers, 12 MCP tools, 37/37 tests, full audit passed.** Unified core, all tested (FastEmbed-accelerated recall, session rituals `boot/close/compress`, recall benchmark in `bench/`): **L1 Memory** (hybrid FTS+vector, WAL + thread-safe store) · **L2 Continuity** (canon/frontiers/loops/checkpoints/doctor/handoff) · *
