@@ -98,6 +98,15 @@ def make_handler(mem: Memory, token: str | None = None):
             if u.path == "/epoch/graph":
                 from .epochgraph import EpochGraph
                 return self._j(200, EpochGraph(mem).to_graph())
+            if u.path.startswith("/graph/"):
+                name = u.path[len("/graph/"):]
+                it = mem.find("graphs", name)
+                if it is None:
+                    return self._j(404, {"error": "no graph '%s' (POST one first)" % name})
+                try:
+                    return self._j(200, json.loads(it.text))
+                except Exception:
+                    return self._j(200, {"raw": it.text})
             self._j(404, {"error": "not found"})
 
         def do_POST(self):
@@ -136,6 +145,12 @@ def make_handler(mem: Memory, token: str | None = None):
                     return self._j(400, {"error": "name is required"})
                 bid = EpochGraph(mem).branch(str(name), str(body.get("from", "main")))
                 return self._j(200, {"id": bid})
+            if u.path.startswith("/graph/"):
+                gname = u.path[len("/graph/"):]
+                if not gname:
+                    return self._j(400, {"error": "graph name required"})
+                gid = mem.upsert(json.dumps(body, ensure_ascii=False), namespace="graphs", key=gname)
+                return self._j(200, {"ok": True, "graph": gname, "id": gid})
             self._j(404, {"error": "not found"})
 
     return H

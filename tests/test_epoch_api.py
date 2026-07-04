@@ -1,4 +1,4 @@
-import tempfile, os, threading, json, urllib.request
+import tempfile, os, threading, json, urllib.request, urllib.error
 os.environ["CONTINUITYOS_SILENCE_EMBED_WARN"] = "1"
 from http.server import ThreadingHTTPServer
 from continuityos.memory import Memory
@@ -27,5 +27,18 @@ def test_epoch_endpoints_and_cors():
         r, g = _get(8479, "/epoch/graph")
         assert len(g["nodes"]) == 2 and len(g["edges"]) == 1
         assert r.headers.get("Access-Control-Allow-Origin") == "*"   # CORS for file:// viewer
+    finally:
+        h.shutdown()
+
+def test_named_graph_store_and_serve():
+    h = _srv(8481)
+    try:
+        _post(8481, "/graph/eco", {"nodes": [{"id": "a", "type": "skill", "name": "A"}], "edges": [], "types": ["skill"]})
+        r, g = _get(8481, "/graph/eco")
+        assert g["nodes"][0]["id"] == "a" and g["types"] == ["skill"]
+        try:
+            _get(8481, "/graph/missing"); assert False, "should 404"
+        except urllib.error.HTTPError as e:
+            assert e.code == 404
     finally:
         h.shutdown()
