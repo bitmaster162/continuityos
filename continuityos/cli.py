@@ -1,6 +1,6 @@
 """ContinuityOS CLI.
 Memory:     cos remember | recall | namespaces | import
-Continuity: cos canon | frontier | loop | checkpoint | doctor | handoff
+Continuity: cos canon | frontier | loop | checkpoint | doctor | handoff | rules
 Twin:       cos predict | alignment
 Setup:      cos setup (guided onboarding wizard)
 Serve:      cos serve (MCP stdio) | cos api (HTTP)
@@ -31,6 +31,11 @@ def main(argv=None):
     im.add_argument("--extract",dest="distill",action="store_true",help="distill typed salient facts instead of raw turns")
     im.add_argument("--roles",default="user,human,memory",help="comma-separated roles to import (default: your own turns)")
     im.add_argument("--dry-run",dest="dry_run",action="store_true",help="report what would import, write nothing")
+    ru = s.add_parser("rules", help="Export canon+rules to agent configs (CLAUDE.md / AGENTS.md / .cursor/rules)")
+    ru.add_argument("--to", default="all", choices=["all","claude","agents","cursor"])
+    ru.add_argument("--out", default=".", help="directory to write agent config files into")
+    ru.add_argument("--stdout", action="store_true", help="print rendered rules instead of writing files")
+    ru.add_argument("--dry-run", dest="dry_run", action="store_true")
     s.add_parser("namespaces")
     cn = s.add_parser("canon"); cn.add_argument("text", nargs="?");
     fr = s.add_parser("frontier"); fr.add_argument("kind", nargs="?", choices=["trunk","cash","lab","parked"]); fr.add_argument("item", nargs="?")
@@ -104,6 +109,17 @@ def main(argv=None):
             d["skipped_short"], d["messages_seen"], d["conversations"], a.namespace))
         if res.ids:
             print("  ids: %s%s" % (res.ids[:10], " ..." if len(res.ids) > 10 else ""))
+    elif a.cmd == "rules":
+        from .rules_export import export_rules
+        targets = ("claude","agents","cursor") if a.to == "all" else (a.to,)
+        res = export_rules(m, out_dir=a.out, targets=targets, dry_run=a.dry_run or a.stdout)
+        if a.stdout:
+            for tg in targets:
+                print("----- %s -----\n%s" % (tg, res["contents"][tg]))
+        else:
+            print("rules export: canon=%d rules=%d frontiers=%d -> %s" % (
+                res["canon"], res["rules"], res["frontiers"],
+                ", ".join(res["written"]) or "(dry-run)"))
     elif a.cmd == "namespaces":
         print(json.dumps(m.namespaces(),ensure_ascii=False,indent=2))
     elif a.cmd == "canon":
