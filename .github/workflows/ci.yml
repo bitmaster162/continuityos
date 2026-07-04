@@ -1,39 +1,12 @@
-name: CI
+name: tests
 
 on:
   push:
-    branches: [main, master]
+    branches: [ master, main ]
   pull_request:
-    branches: [main, master]
-
-permissions:
-  contents: read
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
-  lint:
-    name: Lint (ruff)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install ruff
-        run: |
-          python -m pip install --upgrade pip
-          pip install ruff
-      - name: Lint with ruff
-        # Advisory only: ruff may not be fully configured yet, so don't fail CI.
-        continue-on-error: true
-        run: ruff check .
-
   test:
-    name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -41,38 +14,14 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
-
-      - name: Install dependencies
+      - name: Install (stdlib-only core + dev tools)
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]" pytest-cov
-
-      - name: Run tests
-        run: |
-          pytest tests/ -q \
-            --cov=continuityos \
-            --cov-report=term \
-            --cov-report=xml \
-            --junitxml=pytest-results.xml
-
-      - name: Upload coverage to Codecov
-        if: always()
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./coverage.xml
-          fail_ci_if_error: false
-
-      - name: Upload test results artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pytest-results-${{ matrix.python-version }}
-          path: pytest-results.xml
-          if-no-files-found: warn
-          retention-days: 14
+          pip install -e ".[dev]"
+      - name: Run test suite
+        env:
+          CONTINUITYOS_SILENCE_EMBED_WARN: "1"
+        run: pytest tests/ -q

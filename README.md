@@ -1,5 +1,7 @@
 # ContinuityOS
 
+[![tests](https://github.com/bitmaster162/continuityos/actions/workflows/ci.yml/badge.svg)](https://github.com/bitmaster162/continuityos/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/continuityos.svg)](https://pypi.org/project/continuityos/) ![Python](https://img.shields.io/badge/python-3.10%2B-blue) ![License](https://img.shields.io/badge/license-Apache--2.0-green)
+
 [![PyPI](https://img.shields.io/pypi/v/continuityos)](https://pypi.org/project/continuityos/) [![Python](https://img.shields.io/pypi/pyversions/continuityos)](https://pypi.org/project/continuityos/) [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 
