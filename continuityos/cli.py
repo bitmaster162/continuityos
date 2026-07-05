@@ -108,6 +108,11 @@ def main(argv=None):
     sc.add_argument("-d","--domain", default="ai-agents"); sc.add_argument("-s","--source", default=""); sc.add_argument("-t","--title", default="")
     sc.add_argument("-a","--asymmetry", type=float, default=0.5); sc.add_argument("-l","--level", type=int, default=3)
     sc.add_argument("--horizon", default="now"); sc.add_argument("--decision", default=None)
+    lg = s.add_parser("ledger", help="Centralized fleet hash-chain audit ledger: serve | token | verify | export")
+    lg.add_argument("ledger_cmd", choices=["serve","token","verify","export"])
+    lg.add_argument("--path", default="fleet_ledger.db"); lg.add_argument("--host", default="127.0.0.1"); lg.add_argument("--port", type=int, default=8090)
+    lg.add_argument("--secret", default=os.environ.get("COS_LEDGER_SECRET","")); lg.add_argument("--sub", default="agent"); lg.add_argument("--scope", default="read", choices=["read","write"])
+    lg.add_argument("--url", default=None); lg.add_argument("--token", default=None); lg.add_argument("--limit", type=int, default=100)
     sw = s.add_parser("setup", help="Guided onboarding wizard — sets up memory, frontiers, twin, agents, dashboard")
     sw.add_argument("--quick", action="store_true", help="accept all recommended defaults (non-interactive)")
     sw.add_argument("--dashboard-only", action="store_true", help="just (re)generate the ORCA dashboard")
@@ -332,6 +337,25 @@ def main(argv=None):
             for k, v in DOMAINS.items(): print("  %-12s %s" % (k, v))
         elif a.scout_cmd == "digest":
             print(fd.render(fd.digest()))
+    elif a.cmd == "ledger":
+        from . import ledger_server as _ls
+        if a.ledger_cmd == "token":
+            print(_ls.mint_token(a.secret, a.sub, a.scope))
+        elif a.ledger_cmd == "serve":
+            httpd = _ls.serve(a.path, a.secret, a.host, a.port)
+            print("cos ledger serving on http://%s:%d (path %s; scopes read|write; Ctrl-C to stop)" % (a.host, a.port, a.path))
+            try: httpd.serve_forever()
+            except KeyboardInterrupt: httpd.shutdown()
+        else:
+            if a.url:
+                import urllib.request as _u
+                _p = "/ledger/verify" if a.ledger_cmd == "verify" else "/ledger/export?limit=%d" % a.limit
+                _req = _u.Request(a.url.rstrip("/") + _p, headers={"Authorization": "Bearer " + (a.token or "")})
+                print(_u.urlopen(_req, timeout=5).read().decode())
+            else:
+                from .gate.ledger import Ledger
+                _led = Ledger(a.path)
+                print(json.dumps(_led.verify() if a.ledger_cmd == "verify" else {"events": _led.export(a.limit)}, ensure_ascii=False, indent=2))
 
 if __name__ == "__main__":
     main()
