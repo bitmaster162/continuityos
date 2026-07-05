@@ -102,6 +102,11 @@ def main(argv=None):
     ep.add_argument("-b","--branch", default=None, help="target/new/filter branch (default: main)")
     ep.add_argument("-l","--label", default=""); ep.add_argument("-m","--metric", action="append", default=[], help="key=value (repeatable)")
     ep.add_argument("--from", dest="from_branch", default="main"); ep.add_argument("--out", default=None)
+    sc = s.add_parser("scout", help="Personal Frontier Intelligence Desk: signal | digest | watch")
+    sc.add_argument("scout_cmd", choices=["signal","digest","watch"])
+    sc.add_argument("-d","--domain", default="ai-agents"); sc.add_argument("-s","--source", default=""); sc.add_argument("-t","--title", default="")
+    sc.add_argument("-a","--asymmetry", type=float, default=0.5); sc.add_argument("-l","--level", type=int, default=3)
+    sc.add_argument("--horizon", default="now"); sc.add_argument("--decision", default=None)
     sw = s.add_parser("setup", help="Guided onboarding wizard — sets up memory, frontiers, twin, agents, dashboard")
     sw.add_argument("--quick", action="store_true", help="accept all recommended defaults (non-interactive)")
     sw.add_argument("--dashboard-only", action="store_true", help="just (re)generate the ORCA dashboard")
@@ -309,6 +314,18 @@ def main(argv=None):
                 print("wrote %s (%d nodes, %d edges, branches: %s)" % (a.out, len(G["nodes"]), len(G["edges"]), G["branches"]))
             else:
                 print(json.dumps(G, ensure_ascii=False, indent=2))
+    elif a.cmd == "scout":
+        from .frontier import FrontierDesk, DOMAINS
+        fd = FrontierDesk(m)
+        if a.scout_cmd == "signal":
+            if not a.title: print("usage: cos scout signal -d <domain> -s <source> -t <title> [-a asym -l level --horizon]"); return 2
+            sid = fd.signal(a.domain, a.source, a.title, a.asymmetry, a.level, a.horizon, a.decision)
+            print("frontier signal #%d [%s]: %s" % (sid, a.domain, a.title))
+        elif a.scout_cmd == "watch":
+            print("watch-domains:")
+            for k, v in DOMAINS.items(): print("  %-12s %s" % (k, v))
+        elif a.scout_cmd == "digest":
+            print(fd.render(fd.digest()))
 
 if __name__ == "__main__":
     main()
