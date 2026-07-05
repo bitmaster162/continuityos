@@ -18,3 +18,13 @@ def test_dangling_pointer_detected():
     rep=SystemAudit(m).run(devil=True)
     assert not {x["check"]:x["ok"] for x in rep["findings"]}["no_dangling_pointers"]
     assert "devil" in rep and rep["devil_summary"]["challenged"]>=1
+
+def test_article12_export():
+    m=Memory(os.path.join(tempfile.mkdtemp(),"t.db"))
+    m.remember("Canon: honest.", namespace="canon")
+    from continuityos.advocate import DevilsAdvocate
+    da=DevilsAdvocate(m); da.record(da.challenge("test claim"))   # a governance decision in the audit ns
+    sa=SystemAudit(m); rep=sa.run()
+    a12=sa.export_article12(rep)
+    assert a12["standard"].startswith("EU AI Act Article 12")
+    assert a12["decision_count"]>=1 and "integrity_findings" in a12 and "traceability" in a12

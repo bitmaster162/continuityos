@@ -94,6 +94,7 @@ def main(argv=None):
     ad.add_argument("claim"); ad.add_argument("--action", action="store_true"); ad.add_argument("-n","--namespace",default=None); ad.add_argument("--record", action="store_true")
     au = s.add_parser("audit", help="Full-system audit: inventory + invariants (--devil = adversarial pass; --json = raw)")
     au.add_argument("--devil", action="store_true"); au.add_argument("--json", dest="as_json", action="store_true")
+    au.add_argument("--export", choices=["article12"], default=None, help="Emit an EU AI Act Article-12 record-keeping JSON")
     aa = s.add_parser("bus", aliases=["a2a"], help="Capability-token message bus (JSON-RPC, HMAC tokens; NOT the LF A2A standard) — serve | token")
     aa.add_argument("bus_cmd", choices=["serve","token"]); aa.add_argument("--host",default="127.0.0.1"); aa.add_argument("--port",type=int,default=8079)
     aa.add_argument("--secret",default=os.environ.get("COS_BUS_SECRET", os.environ.get("COS_A2A_SECRET",""))); aa.add_argument("--sub",default="agent"); aa.add_argument("--scope",default="read",choices=["read","write"])
@@ -277,8 +278,13 @@ def main(argv=None):
         print(da.render(r))
     elif a.cmd == "audit":
         from .audit import SystemAudit
-        rep = SystemAudit(m, c, t).run(devil=a.devil)
-        print(json.dumps(rep, ensure_ascii=False, indent=2) if a.as_json else SystemAudit(m).render(rep))
+        sa = SystemAudit(m, c, t); rep = sa.run(devil=a.devil)
+        if getattr(a, "export", None) == "article12":
+            print(json.dumps(sa.export_article12(rep), ensure_ascii=False, indent=2))
+        elif a.as_json:
+            print(json.dumps(rep, ensure_ascii=False, indent=2))
+        else:
+            print(sa.render(rep))
     elif a.cmd in ("bus","a2a"):
         from . import bus as _bus
         if a.bus_cmd == "token":

@@ -137,3 +137,29 @@ class SystemAudit:
             for d in report["devil"]:
                 out.append(f"  {d['verdict'].split(' —')[0]}: {d['claim'][:70]}")
         return "\n".join(out)
+
+    def export_article12(self, report: Dict[str, Any]) -> Dict[str, Any]:
+        """EU AI Act Article-12 (record-keeping) export: an automatically-generated,
+        queryable record of the system state + governance decisions over its operation.
+        Records are append-only + bi-temporal (nothing deleted), produced as a byproduct
+        of operations. A record-keeping export, not legal advice or a compliance guarantee."""
+        import datetime as _dt
+        decisions = []
+        for r in self._rows("audit"):
+            meta = json.loads(r["meta"])
+            decisions.append({"id": r["id"], "record": r["text"], "verdict": meta.get("verdict"),
+                              "flags": meta.get("flags"), "ts": meta.get("ts")})
+        s = report["summary"]
+        return {
+            "standard": "EU AI Act Article 12 - record-keeping / logging",
+            "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            "system": {"product": "ContinuityOS", "memories": s["total_memories"], "namespaces": s["namespaces"]},
+            "integrity_findings": {f["check"]: {"ok": f["ok"], "severity": f["severity"], "detail": f["detail"]}
+                                   for f in report["findings"]},
+            "invariants_clean": s["clean"],
+            "governance_decisions": decisions,
+            "decision_count": len(decisions),
+            "traceability": "Append-only + bi-temporal (valid_from/valid_to, supersede) - nothing is deleted; "
+                            "this log is generated automatically as a byproduct of operations.",
+            "disclaimer": "A record-keeping export, not legal advice or a certified compliance guarantee.",
+        }
