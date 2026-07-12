@@ -16,8 +16,9 @@ from .memory import Memory
 FRONTIER_KINDS = ("trunk", "cash", "lab", "parked")
 
 class Continuity:
-    def __init__(self, memory: Optional[Memory] = None, db: str = "continuityos.db"):
-        self.m = memory or Memory(db)
+    def __init__(self, memory: Optional[Memory] = None, db: str = "continuityos.db",
+                 *, read_only: bool = False):
+        self.m = memory or Memory(db, read_only=read_only)
 
     # ---- canon: slow truths ----
     def add_canon(self, text: str, tags: Optional[List[str]] = None) -> int:

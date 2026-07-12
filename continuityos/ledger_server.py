@@ -262,107 +262,208 @@ class LedgerSink:
                                               "Authorization": "Bearer " + self.token})
         return json.loads(urllib.request.urlopen(req, timeout=self.timeout).read())
 
+    def _append_buffered_event_locked(self, event: str) -> None:
+        """Append one encoded event while the caller holds ``_buffer_lock``."""
+        os.makedirs(os.path.dirname(self.buffer), exist_ok=True)
+        with open(self.buffer, "a", encoding="utf-8", newline="\n") as stream:
+            stream.write(event + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        _sync_parent(self.buffer)
+
+    def _buffer_event(
+        self,
+        event: str,
+        central_error: Exception,
+        *,
+        before_concurrent: bool = False,
+    ):
+        try:
+            with _file_lock(self._buffer_lock, blocking=True) as acquired:
+                if not acquired:
+                    raise TimeoutError("timed out acquiring ledger buffer lock")
+                if before_concurrent:
+                    # The caller owns the flush lock and already observed an empty
+                    # backlog. Anything appended since that observation belongs to
+                    # a later record that lost flush-lock admission, so a failed
+                    # direct POST must be restored ahead of those newer records.
+                    concurrent = _read_lines(self.buffer)
+                    _atomic_replace_lines(self.buffer, [event] + concurrent)
+                else:
+                    self._append_buffered_event_locked(event)
+            return {"buffered": True}
+        except Exception as buffer_error:
+            return {
+                "buffered": False,
+                "error": "central ledger unavailable and local buffer write failed",
+                "central_error_type": type(central_error).__name__,
+                "error_type": type(buffer_error).__name__,
+            }
+
+    def _durable_backlog_locked(self) -> bool:
+        """Return whether a non-empty delivery generation remains on disk."""
+        return any(
+            os.path.isfile(path) and os.path.getsize(path) > 0
+            for path in (self._inflight, self.buffer)
+        )
+
     def record(self, kind, payload):
         try:
-            self.flush()
-            return _require_append_receipt(self._post(kind, payload))
-        except Exception as central_error:
-            try:
-                event = json.dumps(
-                    {"kind": kind, "payload": payload, "ts": time.time()},
-                    ensure_ascii=False,
-                    separators=(",", ":"),
+            event = json.dumps(
+                {"kind": kind, "payload": payload, "ts": time.time()},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        except Exception as serialization_error:
+            return {
+                "buffered": False,
+                "error": "central ledger unavailable and local buffer write failed",
+                "central_error_type": type(serialization_error).__name__,
+                "error_type": type(serialization_error).__name__,
+            }
+
+        with _file_lock(self._flush_lock, blocking=False) as flush_acquired:
+            if not flush_acquired:
+                return self._buffer_event(
+                    event,
+                    BlockingIOError("ledger flush already in progress"),
                 )
-                with _file_lock(self._buffer_lock, blocking=True) as acquired:
-                    if not acquired:
-                        raise TimeoutError("timed out acquiring ledger buffer lock")
-                    os.makedirs(os.path.dirname(self.buffer), exist_ok=True)
-                    with open(self.buffer, "a", encoding="utf-8", newline="\n") as stream:
-                        stream.write(event + "\n")
-                        stream.flush()
-                        os.fsync(stream.fileno())
-                    _sync_parent(self.buffer)
-                return {"buffered": True}
-            except Exception as buffer_error:
+            target_index = None
+            with _file_lock(self._buffer_lock, blocking=True) as buffer_acquired:
+                if not buffer_acquired:
+                    return self._buffer_event(
+                        event,
+                        TimeoutError("timed out acquiring ledger buffer lock"),
+                    )
+                if self._durable_backlog_locked():
+                    try:
+                        target_index = (
+                            len(_read_lines(self._inflight))
+                            + len(_read_lines(self.buffer))
+                        )
+                        self._append_buffered_event_locked(event)
+                    except Exception as buffer_error:
+                        return {
+                            "buffered": False,
+                            "error": "central ledger unavailable and local buffer write failed",
+                            "central_error_type": "BacklogPending",
+                            "error_type": type(buffer_error).__name__,
+                        }
+            if target_index is not None:
+                try:
+                    _, target_state, target_receipt = self._flush_locked(
+                        target_index=target_index
+                    )
+                except Exception:
+                    # The current event was fsynced before replay began. Any
+                    # replay exception leaves it in the active or inflight
+                    # generation for at-least-once recovery.
+                    return {"buffered": True}
+                if target_state == "sent":
+                    return target_receipt
+                if target_state == "pending":
+                    return {"buffered": True}
                 return {
                     "buffered": False,
-                    "error": "central ledger unavailable and local buffer write failed",
-                    "central_error_type": type(central_error).__name__,
-                    "error_type": type(buffer_error).__name__,
+                    "error": "queued ledger event was not acknowledged",
+                    "error_type": target_state,
                 }
+            try:
+                return _require_append_receipt(self._post(kind, payload))
+            except Exception as central_error:
+                return self._buffer_event(
+                    event,
+                    central_error,
+                    before_concurrent=True,
+                )
+
+    def _flush_locked(self, *, target_index=None):
+        """Flush while the caller exclusively holds ``_flush_lock``."""
+        with _file_lock(self._buffer_lock, blocking=True) as buffer_acquired:
+            if not buffer_acquired:
+                raise TimeoutError("timed out acquiring ledger buffer lock")
+            if not os.path.isfile(self._inflight):
+                if not os.path.isfile(self.buffer):
+                    if target_index is None:
+                        return 0
+                    return 0, "missing", None
+                os.replace(self.buffer, self._inflight)
+                _sync_parent(self._inflight)
+            elif os.path.isfile(self.buffer):
+                # A stale crash-recovery batch predates the active generation.
+                # Merge the already-buffered generation before network I/O so a
+                # subsequent direct record cannot overtake it. A crash between
+                # replace and unlink can duplicate, but cannot lose, evidence.
+                stale = _read_lines(self._inflight)
+                active = _read_lines(self.buffer)
+                _atomic_replace_lines(self._inflight, stale + active)
+                os.unlink(self.buffer)
+                _sync_parent(self.buffer)
+        lines = _read_lines(self._inflight)
+        rest = []
+        corrupt = []
+        sent = 0
+        target_state = "pending" if target_index is not None else None
+        target_receipt = None
+        for index, line in enumerate(lines):
+            try:
+                event = json.loads(line)
+                if (
+                    not isinstance(event, dict)
+                    or not isinstance(event.get("kind"), str)
+                    or not event.get("kind")
+                    or "payload" not in event
+                ):
+                    raise ValueError("buffered event must contain kind and payload")
+            except Exception as exc:
+                if index == target_index:
+                    target_state = "quarantined"
+                corrupt.append(json.dumps({
+                    "raw": line,
+                    "raw_sha256": hashlib.sha256(
+                        line.encode("utf-8")
+                    ).hexdigest(),
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "quarantined_ts": time.time(),
+                }, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+                continue
+            try:
+                receipt = _require_append_receipt(
+                    self._post(event["kind"], event["payload"])
+                )
+                sent += 1
+                if index == target_index:
+                    target_state = "sent"
+                    target_receipt = receipt
+            except Exception:
+                rest = lines[index:]
+                break
+        with _file_lock(self._buffer_lock, blocking=True) as buffer_acquired:
+            if not buffer_acquired:
+                raise TimeoutError("timed out acquiring ledger buffer lock")
+            if corrupt:
+                os.makedirs(os.path.dirname(self._corrupt), exist_ok=True)
+                with open(
+                    self._corrupt, "a", encoding="utf-8", newline="\n"
+                ) as stream:
+                    for record in corrupt:
+                        stream.write(record + "\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                _sync_parent(self._corrupt)
+            if rest:
+                concurrent = _read_lines(self.buffer)
+                _atomic_replace_lines(self.buffer, rest + concurrent)
+            if os.path.exists(self._inflight):
+                os.unlink(self._inflight)
+                _sync_parent(self._inflight)
+        if target_index is None:
+            return sent
+        return sent, target_state, target_receipt
 
     def flush(self):
         with _file_lock(self._flush_lock, blocking=False) as flush_acquired:
             if not flush_acquired:
                 return 0
-            with _file_lock(self._buffer_lock, blocking=True) as buffer_acquired:
-                if not buffer_acquired:
-                    raise TimeoutError("timed out acquiring ledger buffer lock")
-                if not os.path.isfile(self._inflight):
-                    if not os.path.isfile(self.buffer):
-                        return 0
-                    os.replace(self.buffer, self._inflight)
-                    _sync_parent(self._inflight)
-                elif os.path.isfile(self.buffer):
-                    # A stale crash-recovery batch predates the active generation.
-                    # Merge the already-buffered generation before network I/O so a
-                    # subsequent direct record cannot overtake it. A crash between
-                    # replace and unlink can duplicate, but cannot lose, evidence.
-                    stale = _read_lines(self._inflight)
-                    active = _read_lines(self.buffer)
-                    _atomic_replace_lines(self._inflight, stale + active)
-                    os.unlink(self.buffer)
-                    _sync_parent(self.buffer)
-            lines = _read_lines(self._inflight)
-            rest = []
-            corrupt = []
-            sent = 0
-            for index, line in enumerate(lines):
-                try:
-                    event = json.loads(line)
-                    if (
-                        not isinstance(event, dict)
-                        or not isinstance(event.get("kind"), str)
-                        or not event.get("kind")
-                        or "payload" not in event
-                    ):
-                        raise ValueError("buffered event must contain kind and payload")
-                except Exception as exc:
-                    corrupt.append(json.dumps({
-                        "raw": line,
-                        "raw_sha256": hashlib.sha256(
-                            line.encode("utf-8")
-                        ).hexdigest(),
-                        "error_type": type(exc).__name__,
-                        "error": str(exc),
-                        "quarantined_ts": time.time(),
-                    }, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
-                    continue
-                try:
-                    _require_append_receipt(
-                        self._post(event["kind"], event["payload"])
-                    )
-                    sent += 1
-                except Exception:
-                    rest = lines[index:]
-                    break
-            with _file_lock(self._buffer_lock, blocking=True) as buffer_acquired:
-                if not buffer_acquired:
-                    raise TimeoutError("timed out acquiring ledger buffer lock")
-                if corrupt:
-                    os.makedirs(os.path.dirname(self._corrupt), exist_ok=True)
-                    with open(
-                        self._corrupt, "a", encoding="utf-8", newline="\n"
-                    ) as stream:
-                        for record in corrupt:
-                            stream.write(record + "\n")
-                        stream.flush()
-                        os.fsync(stream.fileno())
-                    _sync_parent(self._corrupt)
-                if rest:
-                    concurrent = _read_lines(self.buffer)
-                    _atomic_replace_lines(self.buffer, rest + concurrent)
-                if os.path.exists(self._inflight):
-                    os.unlink(self._inflight)
-                    _sync_parent(self._inflight)
-            return sent
+            return self._flush_locked()

@@ -137,6 +137,96 @@ def test_cross_process_flush_preserves_concurrent_buffered_record(tmp_path):
     assert not os.path.exists(buffer + ".inflight")
 
 
+def test_failed_direct_record_is_restored_before_concurrent_buffered_record(
+    tmp_path,
+):
+    buffer = str(tmp_path / "direct-failure-order.jsonl")
+    older = L.LedgerSink("http://unused", "token", buffer=buffer)
+    newer = L.LedgerSink("http://unused", "token", buffer=buffer)
+    post_started = threading.Event()
+    release_post = threading.Event()
+    older_result = []
+    newer_direct_posts = []
+
+    def blocked_failure(kind, payload):
+        post_started.set()
+        if not release_post.wait(10):
+            raise TimeoutError("test release was not signaled")
+        raise OSError("injected direct append failure")
+
+    def must_not_post(kind, payload):
+        newer_direct_posts.append(payload["id"])
+        return {"hash": "1" * 64}
+
+    older._post = blocked_failure
+    newer._post = must_not_post
+    owner = threading.Thread(
+        target=lambda: older_result.append(
+            older.record("event", {"id": "older"})
+        )
+    )
+    owner.start()
+    try:
+        assert post_started.wait(10), "older record never reached its POST"
+        assert newer.record("event", {"id": "newer"}) == {"buffered": True}
+        assert newer_direct_posts == []
+    finally:
+        release_post.set()
+        owner.join(10)
+
+    assert not owner.is_alive()
+    assert older_result == [{"buffered": True}]
+    with open(buffer, encoding="utf-8") as stream:
+        queued = [json.loads(line) for line in stream if line.strip()]
+    assert [event["payload"]["id"] for event in queued] == ["older", "newer"]
+
+    delivered = []
+
+    def accepted(kind, payload):
+        delivered.append(payload["id"])
+        return {"hash": "2" * 64}
+
+    older._post = accepted
+    assert older.flush() == 2
+    assert delivered == ["older", "newer"]
+
+
+def test_record_queues_behind_backlog_when_replay_stalls(tmp_path):
+    buffer = str(tmp_path / "stalled-order.jsonl")
+    with open(buffer, "w", encoding="utf-8", newline="\n") as stream:
+        stream.write(json.dumps({
+            "kind": "event",
+            "payload": {"id": "older"},
+            "ts": 1,
+        }) + "\n")
+
+    sink = L.LedgerSink("http://unused", "token", buffer=buffer)
+    attempts = []
+
+    def transient_failure(kind, payload):
+        attempts.append(payload["id"])
+        if payload["id"] == "older":
+            raise OSError("injected replay stall")
+        return {"hash": "e" * 64}
+
+    sink._post = transient_failure
+    assert sink.record("event", {"id": "newer"}) == {"buffered": True}
+    assert attempts == ["older"]
+    with open(buffer, encoding="utf-8") as stream:
+        queued = [json.loads(line) for line in stream if line.strip()]
+    assert [event["payload"]["id"] for event in queued] == ["older", "newer"]
+
+    delivered = []
+
+    def accepted(kind, payload):
+        delivered.append(payload["id"])
+        return {"hash": "f" * 64}
+
+    sink._post = accepted
+    assert sink.flush() == 2
+    assert delivered == ["older", "newer"]
+
+
 def test_atomic_merge_failure_preserves_active_and_inflight_bytes(
     tmp_path, monkeypatch
 ):
@@ -195,16 +285,31 @@ def test_record_replays_stale_and_active_generations_before_current(tmp_path):
     with open(buffer, "w", encoding="utf-8", newline="\n") as stream:
         stream.write(json.dumps(active) + "\n")
     remote_order = []
+    inflight_snapshots = []
     sink = L.LedgerSink("http://unused", "token", buffer=buffer)
 
     def accepted(kind, payload):
         remote_order.append(payload["id"])
-        return {"hash": "a" * 64}
+        with open(inflight, encoding="utf-8") as stream:
+            generation = [
+                json.loads(line)["payload"]["id"]
+                for line in stream
+                if line.strip()
+            ]
+        inflight_snapshots.append(generation)
+        receipt_char = {
+            "old-inflight": "a",
+            "older-active": "b",
+            "current": "c",
+        }[payload["id"]]
+        return {"hash": receipt_char * 64}
 
     sink._post = accepted
     result = sink.record("event", {"id": "current"})
-    assert result["hash"] == "a" * 64
+    assert result["hash"] == "c" * 64
     assert remote_order == ["old-inflight", "older-active", "current"]
+    assert inflight_snapshots[0] == remote_order
+    assert inflight_snapshots == [remote_order] * 3
     assert not os.path.exists(buffer)
     assert not os.path.exists(inflight)
 

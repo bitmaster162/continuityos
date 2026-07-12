@@ -6,6 +6,7 @@ Everything local, single file, zero external services.
 """
 from __future__ import annotations
 import sqlite3, json, time, struct, os, threading
+from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 def _now() -> float:
@@ -18,7 +19,27 @@ def unpack_vec(b: bytes) -> List[float]:
     return list(struct.unpack("<%df" % (len(b) // 4), b))
 
 class Store:
-    def __init__(self, path: str = "continuityos.db"):
+    def __init__(self, path: str = "continuityos.db", *, read_only: bool = False):
+        self._lock = threading.RLock()
+        if read_only:
+            if path == ":memory:":
+                raise ValueError("read-only Store requires an existing file")
+            normalized = os.path.normcase(
+                os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+            )
+            self.path = normalized
+            uri = Path(normalized).as_uri() + "?mode=ro"
+            self.con = sqlite3.connect(
+                uri,
+                uri=True,
+                check_same_thread=False,
+            )
+            self.con.row_factory = sqlite3.Row
+            self.fts = self.con.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='items_fts'"
+            ).fetchone() is not None
+            return
         self.path = path
         d = os.path.dirname(os.path.abspath(path))
         os.makedirs(d, exist_ok=True)
@@ -27,7 +48,6 @@ class Store:
         # crash resilience for the memory DB.
         self.con = sqlite3.connect(path, check_same_thread=False)
         self.con.row_factory = sqlite3.Row
-        self._lock = threading.RLock()
         try:
             self.con.execute("PRAGMA journal_mode=WAL")
             self.con.execute("PRAGMA synchronous=NORMAL")

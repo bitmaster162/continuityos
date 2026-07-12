@@ -140,6 +140,28 @@ def context_identity(context) -> Dict[str, Any]:
     return identity
 
 
+def open_existing_context(path: str, *, source: str = ""):
+    """Open and fingerprint one existing governance context without mutation.
+
+    The SQLite handle uses ``mode=ro`` so a path removed or replaced after DB
+    resolution cannot be recreated or migrated by the context constructor.  The
+    fingerprint is computed from that exact live handle, closing the
+    validate-then-open race of a path-only precheck.
+    """
+    from .continuity import Continuity
+
+    context = Continuity(db=path, read_only=True)
+    try:
+        identity = context_identity(context)
+    except Exception:
+        context.m.store.con.close()
+        raise
+    if source:
+        identity["source"] = source
+        context._context_source = source
+    return context, identity
+
+
 @contextlib.contextmanager
 def context_read_snapshot(context):
     """Hold one local lock and SQLite read snapshot across digest + evaluation."""
