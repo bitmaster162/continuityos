@@ -1,52 +1,167 @@
-name: tests
+name: review-gates
 
 on:
-  push:
-    branches: [ master, main ]
   pull_request:
+  push:
+    branches:
+      - "review/**"
+      - "codex/review/**"
+      - "codex/sibling-ci-*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: review-gates-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
+  review:
+    name: ${{ matrix.label }} / Python 3.11
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        include:
+          - os: ubuntu-latest
+            label: ubuntu
+          - os: windows-latest
+            label: windows
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Check out exact review source
+        uses: actions/checkout@v4
         with:
-          python-version: ${{ matrix.python-version }}
-      - name: Install (stdlib-only core + dev tools)
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-      - name: Run test suite
-        env:
-          CONTINUITYOS_SILENCE_EMBED_WARN: "1"
-        run: pytest tests/ -q
-      - name: Run governance regression corpus
-        run: python -m bench.continuitybench
-      - name: Run release-hardening probes
-        if: matrix.python-version == '3.11'
-        run: python tests/release_hardening_probes.py
+          persist-credentials: false
 
-  windows-gate-smoke:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-      - name: Run Windows release-hardening probes
+
+      - name: Install review tooling only
+        run: python -m pip install pytest==9.1.1 build==1.5.0
+
+      - name: Validate review-only workflow policy
+        run: >-
+          python -m tools.ci_review validate-workflow
+          --workflow .github/workflows/ci.yml
+          --output "${{ runner.temp }}/continuityos-review-receipts/workflow-policy.json"
+
+      - name: Scan exact Git index and write manifest
+        run: >-
+          python -m tools.ci_review exact-index
+          --manifest "${{ runner.temp }}/continuityos-review-receipts/exact-index.json"
+          --scan-output "${{ runner.temp }}/continuityos-review-receipts/exact-index-secret-scan.json"
+
+      - name: Prove package metadata is absent
+        run: >-
+          python -m tools.ci_review metadata --mode absent --source-root .
+          --output "${{ runner.temp }}/continuityos-review-receipts/clean-source-metadata.json"
+
+      - name: Collect exact pytest node IDs
+        run: >-
+          python -m tools.ci_review collect-nodeids
+          --output "${{ runner.temp }}/continuityos-review-receipts/pytest-nodeids.json"
+
+      - name: Test clean source without installed package metadata
         env:
+          CONTINUITYOS_SILENCE_EMBED_WARN: "1"
           PYTHONUTF8: "1"
-        run: python tests/release_hardening_probes.py
+        run: >-
+          python -m tools.ci_review run
+          --output "${{ runner.temp }}/continuityos-review-receipts/clean-source-pytest.json"
+          -- python -m pytest -q
+
+      - name: Build wheel
+        run: >-
+          python -m tools.ci_review run
+          --output "${{ runner.temp }}/continuityos-review-receipts/wheel-build.json"
+          -- python -m build --wheel --outdir "${{ runner.temp }}/continuityos-wheelhouse"
+
+      - name: Download isolated wheel-test tooling
+        run: >-
+          python -m tools.ci_review run
+          --output "${{ runner.temp }}/continuityos-review-receipts/wheel-test-tooling.json"
+          -- python -m pip download --only-binary=:all:
+          --dest "${{ runner.temp }}/continuityos-pytest-wheelhouse"
+          pytest==9.1.1
+
+      - name: Test wheel only from external site-packages
+        env:
+          CONTINUITYOS_SILENCE_EMBED_WARN: "1"
+          PYTHONUTF8: "1"
+        run: >-
+          python -m tools.ci_review wheel-test
+          --wheel-dir "${{ runner.temp }}/continuityos-wheelhouse"
+          --test-wheel-dir "${{ runner.temp }}/continuityos-pytest-wheelhouse"
+          --workspace "${{ runner.temp }}/continuityos-wheel-test"
+          --source-root .
+          --output "${{ runner.temp }}/continuityos-review-receipts/wheel-only-pytest.json"
+
+      - name: Install editable package without optional runtime dependencies
+        run: >-
+          python -m tools.ci_review run
+          --output "${{ runner.temp }}/continuityos-review-receipts/editable-install.json"
+          -- python -m pip install --no-deps -e .
+
+      - name: Prove editable metadata and import identity
+        run: >-
+          python -m tools.ci_review metadata --mode editable --source-root .
+          --output "${{ runner.temp }}/continuityos-review-receipts/editable-metadata.json"
+
+      - name: Run full editable-install pytest
+        env:
+          CONTINUITYOS_SILENCE_EMBED_WARN: "1"
+          PYTHONUTF8: "1"
+        run: >-
+          python -m tools.ci_review run
+          --output "${{ runner.temp }}/continuityos-review-receipts/editable-pytest.json"
+          -- python -m pytest -q
+
+      - name: Compile source and test trees
+        run: >-
+          python -m tools.ci_review run
+          --output "${{ runner.temp }}/continuityos-review-receipts/compileall.json"
+          -- python -m compileall -q continuityos tests bench gate_hook.py tools
+
       - name: Run governance regression corpus
         env:
           PYTHONUTF8: "1"
-        run: python -m bench.continuitybench
+        run: >-
+          python -m tools.ci_review run
+          --output "${{ runner.temp }}/continuityos-review-receipts/governance-corpus.json"
+          -- python -m bench.continuitybench
+
+      - name: Run portable release-hardening probes
+        env:
+          PYTHONUTF8: "1"
+        run: >-
+          python -m tools.ci_review run
+          --output "${{ runner.temp }}/continuityos-review-receipts/portable-probes-command.json"
+          -- python tests/release_hardening_probes.py
+          --json-out "${{ runner.temp }}/continuityos-review-receipts/portable-probes.json"
+
+      - name: Run mandatory Linux symlink and realpath regression
+        if: runner.os == 'Linux'
+        run: >-
+          python -m tools.ci_review run
+          --output "${{ runner.temp }}/continuityos-review-receipts/linux-symlink-realpath.json"
+          -- python -m pytest -q
+          tests/test_ci_linux_symlink_realpath.py::test_linux_symlink_realpath_cannot_bypass_protected_path
+
+      - name: Write SHA-256 receipt manifest
+        if: always()
+        run: >-
+          python -m tools.ci_review receipt-manifest
+          --directory "${{ runner.temp }}/continuityos-review-receipts"
+          --output "${{ runner.temp }}/continuityos-review-receipts/SHA256SUMS"
+
+      - name: Upload review receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-receipts-${{ matrix.label }}-py311-${{ github.run_id }}
+          path: ${{ runner.temp }}/continuityos-review-receipts/
+          if-no-files-found: error
+          retention-days: 14
