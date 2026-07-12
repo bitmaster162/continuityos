@@ -34,19 +34,28 @@ the gate and the operator decide, not the memory.
 **Does:** classifies known-dangerous shell/file/git *commands* before they run
 (`rm -rf`, force-push, secret/`.env` reads, `curl | sh`, history rewrites) and returns
 `ALLOW · WARN · HOLD · DENY · REQUIRE_CONFIRMATION · DRY_RUN_ONLY` with reasons and an
-append-only, tamper-evident ledger.
+append-only, tamper-evident ledger. Policy parse/ambiguity and context-evaluation errors hold
+the controlled CLI/hook instead of silently reverting to defaults.
 
 **Does not:**
 - Understand arbitrary application logic. A subtle bug *inside* a script it is allowed to
   run is out of scope. Gate the script's category, not its internals.
 - Sandbox execution. It decides yes/no; it does not contain a process that runs.
+- Intercept arbitrary tools merely because the package or MCP server is installed. `continuity run`
+  is a controlled runner; the Claude hook enforces only when installed and matched; MCP
+  `preflight_action` is advisory. Direct shell/SDK calls remain outside the boundary.
 - Catch novel obfuscation guaranteed. It is a deterministic classifier, not an oracle.
   `exec` mode is argv-only and refuses shell operators; `shell` mode runs them but is
   classified more strictly. Prefer `exec`.
 
 ## Rollback scope
 
-Rollback reverts **local file/DB state only**. It **cannot** undo irreversible external
+The v1 controlled runner snapshots explicit regular files, SQLite databases (through the SQLite
+backup API), and the prior absence of file targets immediately before approved execution.
+Directories and symlinks are deliberately unsupported and cause the controlled execution to hold.
+Advisory preflight only returns snapshot intent; it does not claim a snapshot already exists.
+
+Rollback reverts this narrow **local file/DB state only**. It **cannot** undo irreversible external
 side effects: a bad API call to prod, a deleted remote repo, a sent transaction, a placed
 order. Those must be gated *before* execution — never rely on rollback to clean them up.
 Reversibility is a property you design upstream, not a button you press after.
@@ -56,17 +65,20 @@ Reversibility is a property you design upstream, not a button you press after.
 - **Staleness.** A fact true last week can be wrong today. Use bi-temporal `supersede()`
   and `recall(current_only=True)` so corrections hide stale facts. Do not feed raw memory
   to a state-sensitive decision without the current-only filter.
-- **Provenance.** Facts carry source/timestamp/confidence. Low-confidence or
-  unknown-source memory should not drive irreversible actions.
+- **Provenance.** Facts can carry source/timestamp/confidence when callers or adapters supply
+  them; generic writes do not currently require these fields. Low-confidence or unknown-source
+  memory should not drive irreversible actions, and enforcement remains incomplete.
 - **Poisoning.** If an attacker can write to your memory store, they can influence recall.
   Treat write access to the DB as a privileged boundary; the gate reads canon, so canon
   integrity matters.
 
 ## Privacy
 
-Local-first by construction: one SQLite file, no cloud, no account, no telemetry. Secrets
-(API keys) belong in `~/.continuityos/.env` (chmod 600), never in canon text or git. The
-optional embedders run locally; nothing is sent to a third party by the core.
+Local-first by construction: user memory content is stored in a local SQLite file and is not
+uploaded by the core; governance and metering may create additional local databases. There is no
+account requirement or product telemetry. Update checks and installation/model downloads can make
+outbound requests. Secrets (API keys) belong in `~/.continuityos/.env` (chmod 600), never in canon
+text or git. Optional embedders execute locally after their model artifacts are installed.
 
 ## Embedder honesty
 
@@ -91,6 +103,14 @@ work — the payoff is an auditable, model-agnostic thread.
 - Guaranteed detection of adversarial prompt injection in recalled content — we reduce
   blast radius (data-not-commands, gate, current-only), we do not claim immunity.
 - Sandboxing of executed processes (see gate limits above).
+- A broker that physically removes direct/raw tool paths from an agent.
+- Closing filesystem TOCTOU after path validation; paths are reified by the executor, not held by
+  an OS-level capability handle.
+- Directory/symlink snapshots or general transaction compensation.
+
+The SQLite ledger serializes read-head + append with a write transaction, so concurrent local
+writers form one chain. That addresses atomicity, not authenticity: a same-user attacker with DB
+write access can rewrite the chain, and there is no external anchor.
 
 ## Reporting
 

@@ -1,53 +1,49 @@
-# ContinuityOS — Recall Benchmarks
+# ContinuityOS — reproducible local benchmarks
 
-Honest, reproducible numbers. Run yourself: `python bench/recall_bench.py`.
+## Default memory micro-benchmark
 
-## Setup
-- 10 labeled (memory → paraphrased query) pairs (`bench/recall_bench.py`, synthetic).
-- Hybrid recall: `0.6·semantic + 0.4·keyword`. Metric: recall@k and MRR.
-- Hardware: CPU only. Swap `load_dataset()` for **LoCoMo / LongMemEval** for comparable public numbers.
+Run:
 
-## Results (2026-06-24, post-audit)
-
-| Embedder | recall@1 | recall@3 | recall@5 | MRR | ms/query | deps |
-|---|---|---|---|---|---|---|
-| `HashingEmbedder` (default, offline) | 0.30 | 0.50 | 0.50 | 0.38 | 0.7 | **0** |
-| `FastEmbedEmbedder` (bge-small, ONNX) | 0.40 | 0.60 | **1.00** | 0.58 | 9.8 | `[fast]` |
-
-### Live production recall (22 real memories, post-reindex)
-
-| Query | HashingEmbedder | FastEmbed |
-|---|---|---|
-| "trading edge" | 0.22 | **0.79** |
-| "database config" | 0.15 | **0.44** |
-| "deploy rules" | 0.08 | **0.71** |
-
-**Headline:** FastEmbed now default in MCP server + CLI (auto-fallback to HashingEmbedder if `fastembed` not installed). Recall quality up 3-4× on real data. WAL mode enabled for crash resilience.
-
-```python
-from continuityos import Memory
-from continuityos.embedders import FastEmbedEmbedder
-m = Memory("memory.db", embedder=FastEmbedEmbedder())   # pip install "continuityos[fast]"
+```bash
+python bench/recall_bench.py
 ```
 
-## LoCoMo (public benchmark, 2026-07-02)
+The included deterministic corpus contains 30 labeled query/target pairs, 100 distractors, and
+20 fact-update pairs represented in old and new form: 170 memories total. The default
+`HashingEmbedder` uses no API, model download, or external token call. The script rewrites
+`bench/bench_results.json` with the measured result.
 
-Full **LoCoMo** retrieval run (10 dialogues, 1977 questions): every dialogue turn ingested
-as a memory, question must surface the gold *evidence turns* via hybrid recall. This measures
-**evidence retrieval**, not LLM answer accuracy — do not compare directly with answer-graded
-scores (Mem0 91.6, Memanto 87.1 are LLM-answer numbers).
+Local receipt from 2026-07-12 on the current Windows/Python 3.11 working tree:
 
-| Embedder | R@1 | R@3 | R@5 | R@10 | MRR |
-|---|---|---|---|---|---|
-| HashingEmbedder (zero-dep default) | 0.281 | 0.434 | 0.483 | 0.535 | 0.368 |
-| model2vec potion-base-8M (30MB, no torch) | 0.298 | 0.475 | 0.545 | 0.622 | 0.403 |
+| Metric | Result |
+|---|---:|
+| keyword recall@1 / @3 / @5 | 96.7% / 100.0% / 100.0% |
+| paraphrase recall@1 / @3 / @5 | 30.0% / 53.3% / 60.0% |
+| current-only knowledge update | 95.0% |
+| temporal as-of | 100.0% |
+| latency p50 / p95 / mean | 11.008 / 17.780 / 11.073 ms |
+| external tokens / API calls | 0 / 0 |
 
-Reproduce: `python bench/locomo_bench.py` with `bench/data/locomo10.json` in place.
-Honest read: the zero-dependency floor puts gold evidence in top-10 for ~54% of questions;
-a 30MB static embedder lifts that to ~62% with no heavy deps. Real ONNX/ST embedders are
-the next rung (`continuityos[fast]` / `[st]`).
+Latency is hardware/load dependent. The synthetic corpus is a regression smoke, not a public
+leaderboard or production-quality claim. In particular, the default embedder's paraphrase recall
+is weak. Optional FastEmbed/model2vec/sentence-transformer configurations are supported, but this
+repository does not currently ship a checksum-bound result artifact for them, so no comparative
+gain is claimed here.
 
-## Honest notes
-- Synthetic 10-pair set is a smoke benchmark, not a leaderboard. The harness is built so swapping in LoCoMo/LongMemEval is a one-function change — that's the next step before publishing competitive numbers vs Mem0 / Letta / Zep.
-- `recall@1` gains are smaller than `recall@5` because the keyword (FTS) leg already wins rank-1 on exact-term queries; semantic helps most on paraphrases (where keyword misses) — exactly the hybrid thesis.
-- `ms/query` is higher for ONNX (9.8ms) but still real-time; first call downloads the ~130MB model once.
+## LoCoMo status
+
+`bench/locomo_bench.py` is a harness only. The required
+`bench/data/locomo10.json` dataset is intentionally absent from the repository and no pinned
+dataset checksum or raw result receipt is included. A missing dataset exits non-zero. Until those
+artifacts are added, ContinuityOS publishes **no current LoCoMo score**.
+
+## Governance corpus
+
+The separate command below checks preflight decisions, not memory retrieval:
+
+```bash
+python -m bench.continuitybench
+```
+
+See [`BUILD_GATE_STATUS.md`](BUILD_GATE_STATUS.md) for its current local receipt and the boundary
+claims that remain on hold.

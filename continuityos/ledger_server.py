@@ -3,9 +3,11 @@
 Every governance decision from every fleet member (BitEvo, the arena battle_client,
 any agent) is dual-written here, so `GET /ledger/article12` is a single EU-AI-Act
 Article-12 record across the WHOLE fleet — not one SQLite file per host. Auth = HMAC
-capability tokens (same scheme as cos bus). The client `LedgerSink` is **fail-open**:
-if the ledger is unreachable it buffers locally and never raises, so the caller
-(e.g. trading) never blocks; buffered events replay on the next successful call.
+capability tokens (same scheme as cos bus). The client `LedgerSink` is **fail-open
+for delivery errors**: if the ledger is unreachable it buffers locally and does
+not propagate the delivery exception. Calls can still wait for configured HTTP
+timeouts and backlog replay. Delivery is at-least-once, so crash recovery can
+duplicate an accepted event until server-side event IDs/deduplication exist.
 
     cos ledger serve --secret "$COS_LEDGER_SECRET" --path fleet_ledger.db --port 8090
     cos ledger token --secret ... --sub bitevo --scope write
@@ -17,7 +19,7 @@ if the ledger is unreachable it buffers locally and never raises, so the caller
 stdlib-only.
 """
 from __future__ import annotations
-import json, hmac, hashlib, time, os, threading, urllib.request
+import contextlib, errno, json, hmac, hashlib, time, os, tempfile, threading, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -25,6 +27,110 @@ READ = {"ledger.verify", "ledger.export", "ledger.article12", "ping"}
 WRITE = {"ledger.append"}
 SCOPE = {"read": READ, "write": READ | WRITE}
 _WLOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _file_lock(path: str, *, blocking: bool, timeout: float = 5.0):
+    """Cross-process one-byte advisory lock backed by a persistent sidecar."""
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    stream = open(path, "a+b")
+    stream.seek(0, os.SEEK_END)
+    if stream.tell() == 0:
+        stream.write(b"\0")
+        stream.flush()
+        os.fsync(stream.fileno())
+    stream.seek(0)
+    acquired = False
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    stream.seek(0)
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except OSError as exc:
+                contention = exc.errno in {
+                    errno.EACCES,
+                    errno.EAGAIN,
+                    getattr(errno, "EDEADLK", -1),
+                }
+                if not contention:
+                    raise
+                if not blocking or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.01)
+        yield acquired
+    finally:
+        if acquired:
+            if os.name == "nt":
+                import msvcrt
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        stream.close()
+
+
+def _sync_parent(path: str) -> None:
+    if os.name == "nt":
+        return
+    parent_fd = os.open(os.path.dirname(os.path.abspath(path)), os.O_RDONLY)
+    try:
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _atomic_replace_lines(path: str, lines) -> None:
+    """Durably replace one JSONL file without truncating the previous version."""
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        prefix="." + os.path.basename(path) + ".",
+        suffix=".tmp",
+        dir=parent,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            for line in lines:
+                stream.write(line.rstrip("\r\n") + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        _sync_parent(path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _read_lines(path: str):
+    if not os.path.isfile(path):
+        return []
+    with open(path, "r", encoding="utf-8") as stream:
+        return [line for line in stream.read().splitlines() if line.strip()]
+
+
+def _require_append_receipt(response):
+    """Accept only a full server hash as proof that an append was durable."""
+    if not isinstance(response, dict):
+        raise ValueError("ledger append response must be an object")
+    receipt_hash = response.get("hash")
+    if (
+        not isinstance(receipt_hash, str)
+        or len(receipt_hash) != 64
+        or receipt_hash != receipt_hash.lower()
+        or any(char not in "0123456789abcdef" for char in receipt_hash)
+    ):
+        raise ValueError("ledger append response has no valid full SHA-256 hash")
+    return response
 
 
 def _sig(secret: str, msg: str) -> str:
@@ -98,13 +204,13 @@ def make_handler(path: str, secret: str):
                     return self._send(401, {"error": "unauthorized: %s" % who})
             if u.path in ("/", "/health"):
                 return self._send(200, {"ok": True, "product": "cos-ledger"})
-            led = Ledger(path)
-            if method == "ledger.verify":
-                return self._send(200, led.verify())
-            if method == "ledger.export":
-                return self._send(200, {"events": led.export(int((q.get("limit") or ["100"])[0]))})
-            if method == "ledger.article12":
-                return self._send(200, _article12(led))
+            with Ledger(path) as led:
+                if method == "ledger.verify":
+                    return self._send(200, led.verify())
+                if method == "ledger.export":
+                    return self._send(200, {"events": led.export(int((q.get("limit") or ["100"])[0]))})
+                if method == "ledger.article12":
+                    return self._send(200, _article12(led))
 
         def do_POST(self):
             if urlparse(self.path).path != "/ledger/append":
@@ -121,7 +227,8 @@ def make_handler(path: str, secret: str):
             payload = dict(payload) if isinstance(payload, dict) else {"value": payload}
             payload["_source"] = who
             with _WLOCK:
-                h = Ledger(path).append(str(body.get("kind", "event")), payload)
+                with Ledger(path) as ledger:
+                    h = ledger.append(str(body.get("kind", "event")), payload)
             return self._send(200, {"hash": h, "source": who})
     return H
 
@@ -134,11 +241,19 @@ def serve(path: str, secret: str, host: str = "127.0.0.1", port: int = 8090):
 
 class LedgerSink:
     """Fail-open ledger client. record() posts to the central ledger; on ANY failure
-    it appends to a local buffer and returns — never raises. Buffered events replay
-    on the next successful record()/flush(). Trading never blocks on the ledger."""
+    it durably appends to a local buffer and returns an honest buffered result.
+    Buffered events replay on the next successful record()/flush(); replay can
+    block up to the configured request timeouts and is at-least-once."""
 
     def __init__(self, url: str, token: str, buffer: str = "cos_ledger_buffer.jsonl", timeout: float = 1.5):
-        self.url = url.rstrip("/"); self.token = token; self.buffer = buffer; self.timeout = timeout
+        self.url = url.rstrip("/")
+        self.token = token
+        self.buffer = os.path.abspath(os.path.expanduser(buffer))
+        self.timeout = timeout
+        self._inflight = self.buffer + ".inflight"
+        self._corrupt = self.buffer + ".corrupt.jsonl"
+        self._buffer_lock = self.buffer + ".buffer.lock"
+        self._flush_lock = self.buffer + ".flush.lock"
 
     def _post(self, kind, payload):
         req = urllib.request.Request(self.url + "/ledger/append",
@@ -150,30 +265,104 @@ class LedgerSink:
     def record(self, kind, payload):
         try:
             self.flush()
-            return self._post(kind, payload)
-        except Exception:
+            return _require_append_receipt(self._post(kind, payload))
+        except Exception as central_error:
             try:
-                with open(self.buffer, "a", encoding="utf-8") as f:
-                    f.write(json.dumps({"kind": kind, "payload": payload, "ts": time.time()}) + "\n")
-            except Exception:
-                pass
-            return {"buffered": True}
+                event = json.dumps(
+                    {"kind": kind, "payload": payload, "ts": time.time()},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                with _file_lock(self._buffer_lock, blocking=True) as acquired:
+                    if not acquired:
+                        raise TimeoutError("timed out acquiring ledger buffer lock")
+                    os.makedirs(os.path.dirname(self.buffer), exist_ok=True)
+                    with open(self.buffer, "a", encoding="utf-8", newline="\n") as stream:
+                        stream.write(event + "\n")
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    _sync_parent(self.buffer)
+                return {"buffered": True}
+            except Exception as buffer_error:
+                return {
+                    "buffered": False,
+                    "error": "central ledger unavailable and local buffer write failed",
+                    "central_error_type": type(central_error).__name__,
+                    "error_type": type(buffer_error).__name__,
+                }
 
     def flush(self):
-        if not os.path.exists(self.buffer):
-            return 0
-        lines = [ln for ln in open(self.buffer, encoding="utf-8").read().splitlines() if ln.strip()]
-        rest = []; sent = 0
-        for ln in lines:
-            try:
-                r = json.loads(ln); self._post(r["kind"], r["payload"]); sent += 1
-            except Exception:
-                rest.append(ln)
-        if rest:
-            open(self.buffer, "w", encoding="utf-8").write("\n".join(rest) + "\n")
-        elif os.path.exists(self.buffer):
-            try:
-                os.remove(self.buffer)
-            except Exception:
-                pass
-        return sent
+        with _file_lock(self._flush_lock, blocking=False) as flush_acquired:
+            if not flush_acquired:
+                return 0
+            with _file_lock(self._buffer_lock, blocking=True) as buffer_acquired:
+                if not buffer_acquired:
+                    raise TimeoutError("timed out acquiring ledger buffer lock")
+                if not os.path.isfile(self._inflight):
+                    if not os.path.isfile(self.buffer):
+                        return 0
+                    os.replace(self.buffer, self._inflight)
+                    _sync_parent(self._inflight)
+                elif os.path.isfile(self.buffer):
+                    # A stale crash-recovery batch predates the active generation.
+                    # Merge the already-buffered generation before network I/O so a
+                    # subsequent direct record cannot overtake it. A crash between
+                    # replace and unlink can duplicate, but cannot lose, evidence.
+                    stale = _read_lines(self._inflight)
+                    active = _read_lines(self.buffer)
+                    _atomic_replace_lines(self._inflight, stale + active)
+                    os.unlink(self.buffer)
+                    _sync_parent(self.buffer)
+            lines = _read_lines(self._inflight)
+            rest = []
+            corrupt = []
+            sent = 0
+            for index, line in enumerate(lines):
+                try:
+                    event = json.loads(line)
+                    if (
+                        not isinstance(event, dict)
+                        or not isinstance(event.get("kind"), str)
+                        or not event.get("kind")
+                        or "payload" not in event
+                    ):
+                        raise ValueError("buffered event must contain kind and payload")
+                except Exception as exc:
+                    corrupt.append(json.dumps({
+                        "raw": line,
+                        "raw_sha256": hashlib.sha256(
+                            line.encode("utf-8")
+                        ).hexdigest(),
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                        "quarantined_ts": time.time(),
+                    }, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+                    continue
+                try:
+                    _require_append_receipt(
+                        self._post(event["kind"], event["payload"])
+                    )
+                    sent += 1
+                except Exception:
+                    rest = lines[index:]
+                    break
+            with _file_lock(self._buffer_lock, blocking=True) as buffer_acquired:
+                if not buffer_acquired:
+                    raise TimeoutError("timed out acquiring ledger buffer lock")
+                if corrupt:
+                    os.makedirs(os.path.dirname(self._corrupt), exist_ok=True)
+                    with open(
+                        self._corrupt, "a", encoding="utf-8", newline="\n"
+                    ) as stream:
+                        for record in corrupt:
+                            stream.write(record + "\n")
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    _sync_parent(self._corrupt)
+                if rest:
+                    concurrent = _read_lines(self.buffer)
+                    _atomic_replace_lines(self.buffer, rest + concurrent)
+                if os.path.exists(self._inflight):
+                    os.unlink(self._inflight)
+                    _sync_parent(self._inflight)
+            return sent

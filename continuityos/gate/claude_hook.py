@@ -24,26 +24,26 @@ import sys, json, os
 from .spec import ActionSpec
 from .engine import preflight
 from .ledger import Ledger
-from .policy import load_policy
+from .policy import PolicyError, default_policy, discover_policy, load_policy
 
 # preflight decision -> Claude Code permissionDecision
 _MAP = {
     "ALLOW": "allow", "WARN": "allow",
-    "REQUIRE_CONFIRMATION": "ask", "DRY_RUN_ONLY": "ask",
-    "DENY": "deny", "HOLD": "deny",
+    "REQUIRE_CONFIRMATION": "ask",
+    "DRY_RUN_ONLY": "deny", "DENY": "deny", "HOLD": "deny",
 }
 
-def _extract(tool_name: str, tool_input: dict):
+def _extract(tool_name: str, tool_input: dict, cwd: str = ""):
     """Map a Claude Code tool call to an ActionSpec."""
     ti = tool_input or {}
     if tool_name == "Bash":
         cmd = ti.get("command", "")
-        return ActionSpec(tool="shell", command=cmd, paths=_paths(cmd), agent="claude-code")
+        return ActionSpec(tool="shell", command=cmd, paths=_paths(cmd), agent="claude-code", cwd=cwd)
     if tool_name in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
         p = ti.get("file_path") or ti.get("notebook_path") or ""
-        return ActionSpec(tool="file.write", command=f"write {p}", paths=[p] if p else [], agent="claude-code")
+        return ActionSpec(tool="file.write", command=f"write {p}", paths=[p] if p else [], agent="claude-code", cwd=cwd)
     # unknown tool -> let ContinuityOS see it as a generic action
-    return ActionSpec(tool=tool_name.lower(), command=json.dumps(ti)[:200], agent="claude-code")
+    return ActionSpec(tool=tool_name.lower(), command=json.dumps(ti)[:200], agent="claude-code", cwd=cwd)
 
 def _paths(cmd: str):
     import re
@@ -59,18 +59,23 @@ def main():
               "permissionDecisionReason": "ContinuityOS: failed to parse hook payload (fail-closed)"}}))
         return 2
     tool_name = data.get("tool_name", "")
-    spec = _extract(tool_name, data.get("tool_input", {}))
+    cwd = data.get("cwd") or os.getcwd()
+    spec = _extract(tool_name, data.get("tool_input", {}), cwd=cwd)
     home = os.path.expanduser("~/.continuityos")
     os.makedirs(home, exist_ok=True)
-    pol_path = os.path.join(home, "policy.yaml")
-    pol = load_policy(pol_path if os.path.exists(pol_path) else "")
+    try:
+        pol = load_policy(discover_policy(home))
+    except (PolicyError, OSError) as exc:
+        pol = default_policy()
+        spec.meta["policy_error"] = f"{type(exc).__name__}: {exc}"
     ctx = None
     try:
         from ..continuity import Continuity
         ctx = Continuity(db=os.path.join(home, "memory.db"))
-    except Exception:
-        pass
-    r = preflight(spec, policy=pol, ledger=Ledger(os.path.join(home, "ledger.db")), context=ctx)
+    except Exception as exc:
+        spec.meta["context_error"] = f"{type(exc).__name__}: {exc}"
+    with Ledger(os.path.join(home, "ledger.db")) as ledger:
+        r = preflight(spec, policy=pol, ledger=ledger, context=ctx)
     decision = r["decision"]
     perm = _MAP.get(decision, "ask")
     reason = f"ContinuityOS [{decision}]: " + "; ".join(r["reasons"][:3])

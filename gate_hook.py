@@ -25,59 +25,100 @@ GATE_PYTHON = os.environ.get(
     "CONTINUITYOS_PYTHON",
     r"C:\PROJECTS\continuityos\.venv\Scripts\python.exe"
 )
-GATE_DB = os.environ.get(
-    "CONTINUITYOS_DB",
-    r"C:\PROJECTS\continuityos\hermes_memory.db"
-)
-
 # Tools that should be gate-checked
 GATED_TOOLS = {"terminal", "execute_code"}
+
+def _block(reason):
+    print(json.dumps({
+        "decision": "block",
+        "reason": "ContinuityOS GATE: " + reason + " (fail-closed)",
+    }))
+
 
 def main():
     try:
         payload = json.load(sys.stdin)
-    except Exception:
+        if not isinstance(payload, dict):
+            raise TypeError("hook payload must be an object")
+    except Exception as exc:
         # Can't parse → DENY (fail-closed for governance)
-        print(json.dumps({"decision": "block", "reason": "⛔ ContinuityOS GATE: failed to parse hook payload (fail-closed)"}))
+        _block(f"invalid hook payload: {type(exc).__name__}: {exc}")
         return
 
     tool = payload.get("tool_name", "")
+    if not isinstance(tool, str):
+        _block("tool_name must be a string")
+        return
     if tool not in GATED_TOOLS:
         return  # Not a shell tool → allow
+    if tool == "execute_code":
+        _block("execute_code cannot be reduced to one authoritative shell action")
+        return
 
     tool_input = payload.get("tool_input", {})
+    if not isinstance(tool_input, dict):
+        _block("tool_input must be an object")
+        return
     command = tool_input.get("command", "")
+    if not isinstance(command, str):
+        _block("tool_input.command must be a string")
+        return
     if not command:
         return  # Empty command → allow
+
+    tool_workdir = tool_input.get("workdir")
+    payload_cwd = payload.get("cwd")
+    if tool_workdir is not None:
+        if (
+            not isinstance(tool_workdir, str)
+            or not tool_workdir
+            or not os.path.isabs(os.path.expandvars(os.path.expanduser(tool_workdir)))
+        ):
+            _block("tool_input.workdir must be a non-empty absolute path")
+            return
+        authoritative_cwd = tool_workdir
+    elif payload_cwd is None:
+        authoritative_cwd = ""
+    elif isinstance(payload_cwd, str):
+        authoritative_cwd = payload_cwd
+    else:
+        _block("payload cwd must be a string")
+        return
 
     # Call ContinuityOS preflight
     try:
         result = subprocess.run(
             [GATE_PYTHON, "-m", "continuityos.gate.cli",
-             "preflight", "shell", command],
+             "preflight", "shell", command,
+             "--cwd", authoritative_cwd, "--json"],
             capture_output=True, text=True, timeout=10,
-            env={**os.environ, "CONTINUITYOS_DB": GATE_DB}
+            env=dict(os.environ),
         )
 
-        output = result.stdout.strip()
+        if result.returncode != 0:
+            print(json.dumps({"decision": "block", "reason":
+                  f"ContinuityOS GATE: preflight exited {result.returncode} (fail-closed)"}))
+            return
+        try:
+            response = json.loads(result.stdout)
+            decision = response["decision"]
+            reasons = response.get("reasons") or []
+        except Exception:
+            print(json.dumps({"decision": "block", "reason":
+                  "ContinuityOS GATE: invalid preflight response (fail-closed)"}))
+            return
 
-        # Parse decision from CLI output
-        if "decision: DENY" in output:
-            reason = "⛔ ContinuityOS GATE: DENY"
-            for line in output.split("\n"):
-                if line.strip().startswith("- "):
-                    reason += f"\n{line.strip()}"
+        if decision in {"DENY", "HOLD", "DRY_RUN_ONLY", "REQUIRE_CONFIRMATION"}:
+            reason = f"ContinuityOS GATE: {decision}"
+            if reasons:
+                reason += ": " + "; ".join(str(item) for item in reasons[:3])
             print(json.dumps({"decision": "block", "reason": reason}))
-        elif "decision: HOLD" in output:
-            reason = "⏸️ ContinuityOS GATE: HOLD for review"
-            print(json.dumps({"decision": "block", "reason": reason}))
-        elif "decision: REQUIRE_CONFIRMATION" in output:
-            # Let Hermes handle the confirmation via its own approval system
-            # Don't block — just let it through, Hermes approvals will catch it
             return
-        else:
-            # ALLOW or WARN → let it through
+        if decision in {"ALLOW", "WARN"}:
             return
+        print(json.dumps({"decision": "block", "reason":
+              f"ContinuityOS GATE: unknown decision {decision!r} (fail-closed)"}))
+        return
 
     except subprocess.TimeoutExpired:
         # Gate timeout → fail-closed (block if gate is unreachable)

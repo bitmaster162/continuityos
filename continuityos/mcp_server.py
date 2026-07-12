@@ -9,7 +9,7 @@ Exposes durable memory to any MCP client (Claude Desktop, Claude Code, etc.):
   - list_namespaces()                    -> folder-like overview
   - context(query, k?)                   -> ready-to-inject context block
 
-Run:  python -m continuityos.mcp_server --db ~/.continuityos/memory.db
+Run:  python -m continuityos.mcp_server --db ~/.continuityos/memory.db [--policy path/to/policy.json]
 Newline-delimited JSON-RPC over stdin/stdout (MCP stdio transport).
 """
 from __future__ import annotations
@@ -18,7 +18,9 @@ from .memory import Memory
 from .continuity import Continuity
 from .twin import Twin
 from .control import ControlPlane
+from .db import resolve_memory_db
 from .gate import ActionSpec as _AS, preflight as _preflight, Ledger as _Ledger
+from .gate.policy import discover_policy as _discover_policy, load_policy as _load_policy
 from . import __version__
 
 PROTOCOL = "2024-11-05"
@@ -66,8 +68,8 @@ TOOLS = [
   "inputSchema":{"type":"object","properties":{"situation":{"type":"string"}},"required":["situation"]}},
  {"name":"alignment","description":"Check a proposed action against canon/rules; flags conflicts with non-negotiable rules.",
   "inputSchema":{"type":"object","properties":{"proposed_action":{"type":"string"}},"required":["proposed_action"]}},
- {"name":"preflight_action","description":"GOVERNANCE GATE: before running a tool/shell command, get a safety decision (ALLOW/WARN/HOLD/DENY/REQUIRE_CONFIRMATION/DRY_RUN_ONLY) with reasons + rollback plan. Call this BEFORE any dangerous action.",
-  "inputSchema":{"type":"object","properties":{"tool":{"type":"string","default":"shell"},"command":{"type":"string"},"paths":{"type":"array","items":{"type":"string"}}},"required":["command"]}},
+ {"name":"preflight_action","description":"ADVISORY PREFLIGHT: returns a safety decision for a typed action. The MCP tool does not intercept other tools; the caller must enforce the result.",
+  "inputSchema":{"type":"object","properties":{"tool":{"type":"string","default":"shell"},"command":{"type":"string"},"args":{"type":"array","items":{"type":"string"},"description":"Exact argument vector assessed by tool_schemas.max_args."},"paths":{"type":"array","items":{"type":"string"}},"cwd":{"type":"string","description":"Authoritative execution working directory; required for reliable relative-path decisions."}},"required":["command","args"]}},
  {"name":"srd_status","description":"Long-session safety: interaction count vs Safe Turn Depth. When reinject_due=true, re-inject the returned canon_reminder into context - omission-rules ('never do X') decay by ~turn 10 (Security-Recall Divergence).",
   "inputSchema":{"type":"object","properties":{}}},
  {"name":"memory_pointer","description":"Pass-by-reference: get a lightweight {namespace,key,version} pointer to a memory value instead of its content (A2A courier-tax fix). Dereference with recall/find.",
@@ -81,15 +83,31 @@ TOOLS = [
 ]
 
 class Server:
-    def __init__(self, db):
+    def __init__(self, db=None, policy_path: str = "", db_source: str = ""):
+        resolved = resolve_memory_db(db)
+        db = resolved["path"]
+        configured_missing = (
+            resolved["configured"]
+            and db != ":memory:"
+            and not os.path.isfile(db)
+        )
         try:
             from .embedders import FastEmbedEmbedder
             self.m = Memory(db, embedder=FastEmbedEmbedder())
         except Exception:
             self.m = Memory(db)  # fallback to HashingEmbedder
         self.c = Continuity(memory=self.m)
+        self.c._context_source = db_source or resolved["source"]
+        self._governance_context_error = (
+            f"configured memory database was missing at server startup: {db}; "
+            "initialize it intentionally and restart before governance preflight"
+            if configured_missing
+            else ""
+        )
         self.t = Twin(memory=self.m)
         self.ctl = ControlPlane(memory=self.m)
+        runtime_policy = policy_path or _discover_policy(os.path.expanduser("~/.continuityos"))
+        self.policy = _load_policy(runtime_policy)
         self.turns = 0
         self.std = 10  # Safe Turn Depth: re-inject canon before omission-rules ("never do X") decay (long-session SRD research)
 
@@ -126,8 +144,19 @@ class Server:
         if name == "alignment":
             return json.dumps(self.t.alignment(args["proposed_action"]), ensure_ascii=False, indent=2)
         if name == "preflight_action":
-            spec=_AS(tool=args.get("tool","shell"), command=args["command"], paths=args.get("paths",[]), agent="mcp")
-            return json.dumps(_preflight(spec, ledger=_Ledger(os.path.expanduser("~/.continuityos/ledger.db"))), ensure_ascii=False, indent=2)
+            spec=_AS(tool=args.get("tool","shell"), command=args["command"], args=args.get("args"), paths=args.get("paths",[]), cwd=args.get("cwd",""), agent="mcp")
+            governance_context_error = getattr(
+                self, "_governance_context_error", None
+            )
+            if governance_context_error is None:
+                spec.meta["context_error"] = (
+                    "governance context initialization state unavailable"
+                )
+            elif governance_context_error:
+                spec.meta["context_error"] = governance_context_error
+            with _Ledger(os.path.expanduser("~/.continuityos/ledger.db")) as ledger:
+                decision = _preflight(spec, policy=self.policy, ledger=ledger, context=self.c)
+            return json.dumps(decision, ensure_ascii=False, indent=2)
         if name == "srd_status":
             due = self.turns >= self.std
             canon = [r["text"] for r in self.c._dump("canon")][:8]
@@ -163,9 +192,10 @@ def _send(obj):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--db", default=os.path.expanduser("~/.continuityos/memory.db"))
+    ap.add_argument("--db", default=None)
+    ap.add_argument("--policy", default="", help="Path to one JSON policy, or YAML when PyYAML is installed")
     a = ap.parse_args()
-    srv = Server(a.db)
+    srv = Server(a.db, a.policy)
     for line in sys.stdin:
         line = line.strip()
         if not line: continue

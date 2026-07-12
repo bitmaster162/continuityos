@@ -96,7 +96,7 @@ if __name__ == "__main__":
         print(f"Dataset not found at {DATA}\n"
               "Download locomo10.json from github.com/snap-research/locomo (data/locomo10.json) "
               "and place it there, then re-run.")
-        raise SystemExit(0)
+        raise SystemExit(2)
     samples = load_locomo()
     print(f"LoCoMo: {len(samples)} dialogues, "
           f"{sum(len(s['turns']) for s in samples)} turns, "

@@ -1,6 +1,32 @@
 import os, tempfile
 from continuityos.gate import ActionSpec, preflight, Ledger, DEFAULT_POLICY
 
+
+def _mock_preflight_receipt(ledger_path, cmd, tool, args, decision):
+    action = {
+        "tool": tool,
+        "command": cmd,
+        "args": list(args),
+        "paths": [],
+        "cwd": os.getcwd(),
+        "agent": "cli-run",
+        "meta": {},
+    }
+    rollback_plan = {}
+    with Ledger(ledger_path) as ledger:
+        receipt_hash = ledger.append("preflight", {
+            "action": action,
+            "decision": decision,
+            "rollback_plan": rollback_plan,
+        })
+    return {
+        "decision": decision,
+        "reasons": [],
+        "ledger_hash": receipt_hash,
+        "action": action,
+        "rollback_plan": rollback_plan,
+    }, None
+
 def test_rm_rf_denied():
     r = preflight(ActionSpec(tool="shell", command="rm -rf /", paths=["/"]))
     assert r["decision"] == "DENY"
@@ -50,16 +76,16 @@ def test_canon_context_escalates():
     assert r["decision"] in ("REQUIRE_CONFIRMATION", "DENY")
     assert any("canon" in x for x in r["reasons"])
 
-def test_real_rollback_restores_file():
-    from continuityos.gate import ActionSpec, preflight
-    from continuityos.gate.rollback import restore
-    import tempfile, os
-    f = os.path.join(tempfile.mkdtemp(), "d.db"); open(f, "w").write("ORIG")
-    r = preflight(ActionSpec(tool="shell", command="rm " + f, paths=[f]))
-    sid = r["rollback_plan"]["snapshot_id"]
-    open(f, "w").write("GONE")
-    assert restore(sid)["restored"] == 1
-    assert open(f).read() == "ORIG"
+def test_real_rollback_restores_file(tmp_path, monkeypatch):
+    import continuityos.gate.rollback as rollback
+    monkeypatch.setattr(rollback, "SNAP_ROOT", str(tmp_path / "snapshots"))
+    f = tmp_path / "d.db"
+    f.write_text("ORIG", encoding="utf-8")
+    snap = rollback.snapshot([str(f)])
+    assert snap["restorable"] is True
+    f.write_text("GONE", encoding="utf-8")
+    assert rollback.restore(snap["id"])["restored"] == 1
+    assert f.read_text(encoding="utf-8") == "ORIG"
 
 
 def test_exec_mode_rejects_shell_operators():
@@ -71,26 +97,61 @@ def test_exec_mode_rejects_shell_operators():
     assert "argv-only" in r.stdout or "shell operators" in r.stdout
 
 
-def test_run_shorthand_preserves_first_token(monkeypatch):
+def test_run_shorthand_preserves_first_token(tmp_path, monkeypatch):
     # PR-7: `continuity run npm test` must NOT drop the first token ("npm").
     import continuityos.gate.cli as gc
     cap = {}
-    monkeypatch.setattr(gc, "_decide",
-                        lambda cmd, tool="shell", agent="cli-run": ({"decision": "ALLOW", "reasons": []}, None))
+    monkeypatch.setattr(gc, "LEDGER", str(tmp_path / "ledger.db"))
+    monkeypatch.setattr(
+        gc,
+        "_decide",
+        lambda cmd, tool="shell", agent="cli-run", **kwargs:
+            _mock_preflight_receipt(
+                gc.LEDGER, cmd, tool, kwargs["args"], "ALLOW"
+            ),
+    )
     monkeypatch.setattr(gc.subprocess, "call", lambda *a, **k: cap.update(args=a, kwargs=k) or 0)
     gc.main(["run", "npm", "test"])
     # shorthand -> exec mode -> argv via shlex.split; first token preserved
     assert cap["args"][0] == ["npm", "test"], f"first token lost: {cap['args'][0]!r}"
 
 
-def test_shell_warn_executes_with_shell_true(monkeypatch):
+def test_shell_warn_executes_with_shell_true(tmp_path, monkeypatch):
     # PR-7: a WARN decision in shell mode must keep shell semantics (shell=True),
     # not silently degrade to argv.
     import continuityos.gate.cli as gc
     cap = {}
-    monkeypatch.setattr(gc, "_decide",
-                        lambda cmd, tool="shell", agent="cli-run": ({"decision": "WARN", "reasons": []}, None))
+    monkeypatch.setattr(gc, "LEDGER", str(tmp_path / "ledger.db"))
+    monkeypatch.setattr(
+        gc,
+        "_decide",
+        lambda cmd, tool="shell", agent="cli-run", **kwargs:
+            _mock_preflight_receipt(
+                gc.LEDGER, cmd, tool, kwargs["args"], "WARN"
+            ),
+    )
     monkeypatch.setattr(gc.subprocess, "call", lambda *a, **k: cap.update(args=a, kwargs=k) or 0)
     gc.main(["run", "shell", "--", "echo ok && echo done"])
     assert cap["kwargs"].get("shell") is True, "WARN shell mode lost shell=True"
     assert cap["args"][0] == "echo ok && echo done"
+
+
+def test_exec_uses_exact_argv_that_was_preflighted(tmp_path, monkeypatch):
+    import continuityos.gate.cli as gc
+    captured = {}
+
+    def decide(cmd, tool="shell", agent="cli-run", **kwargs):
+        captured["checked_args"] = kwargs["args"]
+        return _mock_preflight_receipt(
+            gc.LEDGER, cmd, tool, kwargs["args"], "ALLOW"
+        )
+
+    monkeypatch.setattr(gc, "LEDGER", str(tmp_path / "ledger.db"))
+    monkeypatch.setattr(gc, "_decide", decide)
+    monkeypatch.setattr(gc.subprocess, "call", lambda argv, **kwargs: captured.update(
+        {"executed_args": argv, "exec_kwargs": kwargs}
+    ) or 0)
+    argv = ["python", "-c", "print('hello world')"]
+    assert gc.main(["run", "exec", "--", *argv]) == 0
+    assert captured["checked_args"] == argv
+    assert captured["executed_args"] == argv

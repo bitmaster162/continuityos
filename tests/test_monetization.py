@@ -34,8 +34,8 @@ def test_build_map_buckets_tiers():
 
 def test_build_from_dir_and_render():
     d = tempfile.mkdtemp()
-    open(os.path.join(d, "plan.md"), "w").write(SAMPLE)
-    open(os.path.join(d, "notes.txt"), "w").write("Delist EWS $99/mo premium")
+    open(os.path.join(d, "plan.md"), "w", encoding="utf-8").write(SAMPLE)
+    open(os.path.join(d, "notes.txt"), "w", encoding="utf-8").write("Delist EWS $99/mo premium")
     m = build(paths=[d])
     assert m["files_scanned"] == 2 and m["count"] >= 6
     md = render_map_md(m)
@@ -51,7 +51,7 @@ def test_dedupe_and_empty():
 
 def test_scan_skips_binaryish_and_missing():
     d = tempfile.mkdtemp()
-    open(os.path.join(d, "a.md"), "w").write("$50/mo")
+    open(os.path.join(d, "a.md"), "w", encoding="utf-8").write("$50/mo")
     sc = scan_paths([d, "/nonexistent/path"])
     assert sc["files"] == 1
     print("PASS scan_skips_binaryish_and_missing")

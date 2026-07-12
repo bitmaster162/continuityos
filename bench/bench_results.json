@@ -1,6 +1,6 @@
 {
   "total_memories": 170,
-  "build_ms": 75.7,
+  "build_ms": 169.6,
   "recall_keyword": {
     "@1": 96.7,
     "@3": 100.0,
@@ -14,9 +14,9 @@
   "knowledge_update_current_pct": 95.0,
   "temporal_as_of_pct": 100.0,
   "recall_latency_ms": {
-    "p50": 4.316,
-    "p95": 5.557,
-    "mean": 4.635
+    "p50": 11.008,
+    "p95": 17.78,
+    "mean": 11.073
   },
   "external_tokens_per_query": 0,
   "external_api_calls": 0,

@@ -11,6 +11,7 @@ import argparse, os, json, sys
 from .memory import Memory
 from .continuity import Continuity
 from .twin import Twin
+from .db import resolve_memory_db
 
 def _advocate_gate(m, t, action_text, label="next action"):
     """Auto devil's-advocate: challenge a consequential action before it lands.
@@ -29,7 +30,8 @@ def _advocate_gate(m, t, action_text, label="next action"):
     except Exception:
         pass
 
-def _db(a): return a.db or os.path.expanduser("~/.continuityos/memory.db")
+def _db(a):
+    return resolve_memory_db(a.db)["path"]
 
 def main(argv=None):
     # Windows consoles default to cp1252 and crash on Cyrillic/emoji memory output; force UTF-8.
@@ -130,7 +132,11 @@ def main(argv=None):
         from .sim.loop import run_loop
         run_loop(a.objective, a.iters); return 0
     if a.cmd == "serve":
-        from . import mcp_server; sys.argv = ["mcp","--db",_db(a)]; return mcp_server.main()
+        from . import mcp_server
+        sys.argv = ["mcp"]
+        if a.db is not None:
+            sys.argv += ["--db", a.db]
+        return mcp_server.main()
     if a.cmd == "api":
         from . import api; return api.run(_db(a), a.host, a.port)
     if a.cmd == "update":

@@ -5,22 +5,23 @@
 [![PyPI](https://img.shields.io/pypi/v/continuityos)](https://pypi.org/project/continuityos/) [![Python](https://img.shields.io/pypi/pyversions/continuityos)](https://pypi.org/project/continuityos/) [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 
-> ## 🛡️ ContinuityOS — AI Agent Governance Gateway
+> ## ContinuityOS — continuity engine + controlled governance runner
 >
-> **No dangerous tool runs unless ContinuityOS approves it.** A local-first, MCP-native
-> hard-boundary that AI coding agents (Claude Code, Cursor, Codex CLI) must pass through:
-> every risky shell/file/git action gets a preflight decision — `ALLOW · WARN · HOLD · DENY ·
-> REQUIRE_CONFIRMATION · DRY_RUN_ONLY` — with reasons, an append-only tamper-evident audit
-> ledger, and a rollback plan. Apache-2.0.
+> Calls explicitly routed through `continuity run` or a correctly installed host hook receive a
+> decision — `ALLOW · WARN · HOLD · DENY · REQUIRE_CONFIRMATION · DRY_RUN_ONLY` — with reasons,
+> a tamper-evident local ledger, and a local rollback plan where the controlled runner can
+> materialize one. ContinuityOS does **not** intercept raw shell/MCP/tool calls by merely being
+> installed; mandatory broker enforcement remains future work. Apache-2.0.
 >
 > ```bash
 > continuity run shell -- rm -rf /     # ⛔ BLOCKED — command was NOT executed
 > continuity run shell -- npm test     # ✓ ALLOW — runs
 > ```
 >
-> ContinuityBench v0: **100% decision accuracy, 9/9 dangerous actions stopped** (vs 0/9 with no
-> gateway). What makes it smarter than a static policy engine: it decides **with continuity
-> context** (your canon/rules/state), not just regex. See [BUILD_GATE_STATUS.md](BUILD_GATE_STATUS.md).
+> ContinuityBench v0 is a **30-case, hand-labeled regression corpus**, not a security-boundary
+> certification. The current verified run is summarized in [BUILD_GATE_STATUS.md](BUILD_GATE_STATUS.md),
+> and CI fails if the corpus regresses. The bundled MCP adapter supplies its local continuity
+> context; third-party adapters must explicitly provide and validate their own context.
 >
 > The memory + continuity layers below are the **context engine** that powers those decisions.
 
@@ -28,13 +29,20 @@
 
 ![ContinuityOS demo: bi-temporal recall and governance gate](docs/demo.gif)
 
-**Durable memory + continuity layer for AI agents and humans.** Local-first, zero external services, Apache-2.0.
+**Durable memory + continuity layer for AI agents and humans.** Local-first, with no required
+external service for the core memory path. Apache-2.0.
 
-Not just a vector store — ContinuityOS keeps the *thread* between sessions and between versions of you and the model: **memory** (hybrid recall) **+ continuity** (canon, frontiers, loops, checkpoints, anti-drift doctor, handoff) **+ a multi-agent council** (many agents + you on one memory, authority levels & roles) **+ a digital twin** (a behavioral model built from your own memory — the human↔AI co-evolution / dyad layer) **+ an operator control plane** (correct, redact, rollback, export).
+The tested core combines **memory** (hybrid recall) with **continuity** (canon, frontiers, loops,
+checkpoints, doctor, handoff). The repository also contains experimental primitives: an
+authority-tagged multi-agent wrapper, a retrieval/keyword-based `Twin`, simulation helpers, and an
+operator control plane. These experiments are not evidence of a validated behavioral twin,
+co-evolution outcome, or production multi-agent product.
 
 Your Claude / ChatGPT / agent forgets everything between sessions. ContinuityOS is a small local memory layer that stores what matters — who you are, your projects, your rules, decisions you've made — and gives it back when it's relevant. It recalls **both structurally** (folder-like namespaces + keyword search) **and semantically** (vector similarity), so the right memory surfaces whether you match the words or just the meaning.
 
-Nothing leaves your machine. One SQLite file. No cloud, no account, no telemetry.
+The core does not upload user memory content: the memory store is one local SQLite file, while
+governance and metering can create additional local databases. Update checks and optional model
+downloads can make outbound requests; there is no account requirement or product telemetry.
 
 ---
 
@@ -124,7 +132,7 @@ ContinuityOS ships an MCP stdio server so an agent can `remember` and `recall` o
 }
 ```
 
-Tools exposed: `remember`, `recall`, `context`, `forget`, `list_namespaces`, `checkpoint`, `handoff`, `doctor`, `set_frontier`, `predict`, `alignment`, `preflight_action` — **12 tools**.
+Tools are reported by the MCP `tools/list` response; use that response as the version-correct inventory.
 Now the agent pulls relevant memory automatically before answering — and writes new facts back as it learns it.
 
 **Recommended:** use the cross-platform bridge instead of `cos serve`:
@@ -169,7 +177,8 @@ from continuityos.embedders import FastEmbedEmbedder   # pip install "continuity
 m = Memory("memory.db", embedder=FastEmbedEmbedder())  # bge-small, ONNX, no torch
 ```
 
-Benchmark (see [BENCHMARKS.md](BENCHMARKS.md)): `recall@5` 0.50 → **1.00**, MRR 0.38 → 0.58. Real LoCoMo harness ready in `bench/locomo_bench.py`.
+The optional embedder path is available, but no current comparative result artifact is shipped.
+See [BENCHMARKS.md](BENCHMARKS.md) for the reproducible zero-dependency floor and its limitations.
 
 ### With Docker
 
@@ -224,7 +233,7 @@ the EU-AI-Act era (Article-12 queryable decision records), not the LoCoMo leader
   Auto-gated at `checkpoint`/`close`/`boot`. Rubric in `ADVOCATE.md`.
 - **`cos audit [--devil]`** — memory inventory + invariants (append-only integrity, bi-temporal
   ordering, canon, dangling pointers); emits an Article-12-style record.
-- **Governance gate** — before any dangerous tool/shell action, a hard/soft decision
+- **Governance preflight** — for actions explicitly routed through the runner or an installed hook, a decision
   (ALLOW / WARN / HOLD / DENY / REQUIRE_CONFIRMATION / DRY_RUN_ONLY) with reasons, rollback plan, and
   an append-only ledger.
 
@@ -269,21 +278,27 @@ cos audit --devil                                                   # invariants
 
 ## Privacy
 
-ContinuityOS never sends your data anywhere. Memory is a single SQLite file on your disk. `.gitignore` is pre-configured to keep `*.db`, `data/`, and `takeout/` out of version control by construction.
+ContinuityOS core does not upload memory content. Memory is a local SQLite file; governance and
+metering can create additional local databases. `.gitignore` excludes common SQLite artifacts and
+downloaded benchmark data, but operators remain responsible for excluding their own import/export
+directories and secrets.
 
 ---
 
-## Standards & competitive position
+## Governance boundary status
 
-The 2026 consensus is that **guardrails belong at the gateway, not embedded in application code** — a control point that intercepts every tool invocation, scores its risk, and approves or blocks before execution. ContinuityOS is exactly that control point, and maps onto the frameworks enterprises are now audited against:
+ContinuityOS currently provides a deterministic decision engine, an argv-only controlled CLI
+runner, and opt-in host hooks. These are useful enforcement points **inside the paths that are
+actually wired to them**. The MCP `preflight_action` tool is advisory: exposing it does not force
+an agent's other tools through it. Raw shell access, a direct SDK call, or an unconfigured host can
+bypass the gate entirely.
 
-- **OWASP LLM Top 10** — preflight classifies and gates the agentic risks directly: prompt-injection-driven destructive commands, tool poisoning (D3 schema/forbidden-pattern checks), excessive agency (SAP capability passports), and missing audit (append-only ledger).
-- **NIST AI RMF / EU AI Act (high-risk obligations, in force Aug 2026)** — the tamper-evident decision ledger + rollback plan provide the *record-level traceability* and *human-oversight* hooks these frameworks require. Every decision is logged with reasons, severity, and a restore command.
-- **MCP-native** — runs as an MCP server; the same preflight governs MCP tool calls, the layer competitors (Cisco AI Defense, Lasso) now target.
-
-**What no one else has.** The crowded 2026 field (Galileo Agent Control, Maxim Bifrost, Palo Alto Prisma AIRS, Lasso, Defend AI) enforces *generic* policy — regex, ML classifiers, org rules. ContinuityOS decides **with your continuity context**: the same engine that remembers *your* canon and non-negotiable rules uses them to judge each action (`_canon_check`). That makes it the only gateway whose verdicts are personalized to the operator, not just the org. Plus two things detection-only tools skip: an **instant local rollback module** (snapshot → `continuity rollback <id>`) and **sovereign-local execution** (zero data leaves the disk — no SaaS egress, which is itself the top enterprise blocker: only 14.4% of agents reached production with full security sign-off in 2026).
-
-Honest scope: rollback covers local files only; it cannot undo irreversible external side effects (network, prod, third-party APIs). The gateway raises the floor — it is not a guarantee.
+The ledger is append-only and hash-chained, with transactional concurrent appends, but it is not
+cryptographically signed or externally anchored. Local rollback is materialized by the controlled
+CLI immediately before approved execution for supported explicit file targets; advisory preflight
+responses do not claim that a snapshot already exists. These artifacts can support an audit, but
+they are not by themselves evidence of regulatory compliance. See [THREAT_MODEL.md](THREAT_MODEL.md)
+and [BUILD_GATE_STATUS.md](BUILD_GATE_STATUS.md).
 
 ## Two-tier memory & cost-aware routing
 
@@ -298,18 +313,26 @@ The strongest 2026 agents don't win on a bigger context window — they win on *
 
 1. Never put volatile values (`datetime.now()`, random IDs, per-turn counters) in the system prompt or any cached prefix — they reset the cache every call. Put them in the body of the last user message.
 2. Keep tool definitions and the memory block in a **stable, sorted order** so the cached prefix is byte-identical across turns (`compact=True` + deterministic packing does this).
-3. The cache threshold on Opus-4.8 is ~1024 tokens — keep the cached prefix above it to actually benefit.
+3. Cache thresholds and provider behavior change; verify the current provider documentation before
+   relying on a minimum prefix size.
 4. To change instructions mid-run without busting the cache, inject a `role:"system"` message *into the history* rather than editing the cached system prompt.
 
-**Cost-aware routing.** `estimate_cost(text, model_id, output_tokens)` prices a context block against a built-in `MODEL_REGISTRY` (Fable 5, Mythos 5, Opus 4.8, Haiku 4.5, GPT-5.5, Gemini 3.1 Pro / 3.5 Flash, Grok 4.3, DeepSeek V4 Pro — mid-2026 pricing). Same block costs ~28× more on Fable 5 than DeepSeek V4 Pro, so callers can route *commodity → interactive → high-stakes* tiers instead of always paying frontier price for trivial work.
+**Cost-aware routing.** `estimate_cost(text, model_id, output_tokens)` can compare a context block
+against the package's static `MODEL_REGISTRY`. Those entries are estimates, not a live price feed;
+verify provider pricing before a financial or routing decision.
 
 ## Why continuity, not just memory
 
-**Models are the consumable. Continuity is the asset.** Every model upgrade (or vendor switch) normally resets your agent — it forgets your rules, your context, your decision history. ContinuityOS stores the agent *outside* the model: one SQLite file (canon + rules + bi-temporal facts + decision checkpoints + a behavioral twin). Swap the model underneath and `cos boot` brings back the *same* agent. Model-agnostic by design — vendor memory locks you to their model; this doesn't.
+ContinuityOS stores continuity state outside a model: canon, rules, bi-temporal facts, and decision
+checkpoints can be reloaded after a model or vendor change. `cos boot` reconstructs a context pack;
+it does **not** prove that the new model is the same agent or will reproduce prior behavior.
 
 ## Sim-OS — closed-loop simulation on top of the memory core
 
-Beyond memory, ContinuityOS ships an experimentation layer: [`continuityos/sim/`](continuityos/sim/) is a durable OODA loop that lets an agent propose hypotheses, run them in an isolated simulation engine (Pandora), and crystallize only *verified* results into canon — with a risk-scoring governance gate, a hallucination-loop detector, and autonomous rollback. The point is epistemic safety: the agent can experiment and fail freely, but canon never gets poisoned.
+Beyond memory, ContinuityOS ships an experimental layer: [`continuityos/sim/`](continuityos/sim/)
+is a durable OODA-style loop with a mock simulation engine, risk scoring, loop detection, and local
+rollback hooks. It is designed to keep unverified results out of canon, but is not a sandbox or a
+guarantee against canon contamination.
 
 ```bash
 cos sim --objective edge --iters 6      # run the closed loop (mock engine)
@@ -317,21 +340,21 @@ cos sim --objective edge --iters 6      # run the closed loop (mock engine)
 
 See [continuityos/sim/README.md](continuityos/sim/README.md) for the architecture.
 
-## Composable — built on in the wild
+## Extension seams
 
-ContinuityOS is a memory + governance *engine*, not a closed product — the point is what other developers layer on top. Two independent integrations appeared in its first days:
-
-- **Sim-OS ↔ Pandora** (in this repo, [`continuityos/sim/`](continuityos/sim/)) — a closed-loop simulation bridge: the memory/governance core drives an external simulation engine (Pandora) and crystallizes only *verified* results into canon.
-- **A cognitive-memory layer** built independently *on* ContinuityOS as its engine — semantic keys, a write-time policy gate, and explainable ranking on top of the core store. That integration fed straight back upstream: the key-based `find(namespace, key)` and `upsert()` primitives added in v0.9 came from it — a real dependency, not a fork.
-
-That second loop is the design working as intended: keep the core a small, generic, stdlib-only engine, and let domain-specific layers compose on top and send missing primitives back. The [`Memory`](continuityos/memory.py) API, the governance gate, and [`sim/`](continuityos/sim/) are the extension seams.
+ContinuityOS is a memory + governance library, not a closed product. The [`Memory`](continuityos/memory.py)
+API, advisory governance preflight, and [`sim/`](continuityos/sim/) package are available extension
+seams. The in-repository Sim-OS/Pandora code is an experimental integration; no independent-user,
+retention, or production-dependency claim is made here without a linked receipt.
 
 ## Honest limits (threat model)
 
 We'd rather tell you the edges than oversell. Full detail in [THREAT_MODEL.md](THREAT_MODEL.md).
 
-- **The gateway is not magic.** It stops known-dangerous shell/file/git *commands* (rm -rf, force-push, secret reads, curl|sh). It does **not** understand arbitrary application logic — a subtle bug inside a script it's allowed to run is out of scope. `exec` mode is argv-only and refuses shell operators; `shell` mode runs them but is classified more strictly.
-- **Rollback is local-only.** It reverts local file/DB state. It **cannot** undo irreversible external side effects (a bad API call to prod, a deleted GitHub repo, a sent transaction). Gate those actions upstream; don't rely on rollback.
+- **Installation is not interception.** Only the controlled runner and correctly installed hooks enforce a result. The MCP preflight tool is advisory, and direct/raw tools remain outside this boundary.
+- **The classifier is not an oracle.** It covers known shell/file/git patterns and validates typed paths where supplied. It does **not** understand arbitrary application logic or close the symlink/path TOCTOU gap between decision and execution.
+- **Rollback is narrow and local-only.** The v1 executor snapshots explicit regular-file, SQLite, and not-yet-existing file targets. Directories, symlinks, remote APIs, GitHub operations, messages, and transactions are not reversible through this module.
+- **The ledger is tamper-evident, not tamper-proof.** Concurrent appends are serialized, but there is no signature, separate writer identity, or external anchor.
 - **Default embedder is weak on purpose.** The zero-dependency `HashingEmbedder` is fast but semantically shallow. For real synonym/paraphrase recall install `continuityos[fast]` (ONNX, ~bge-small) or `[m2v]` (30MB static). We publish honest LoCoMo *retrieval* numbers in `BENCHMARKS.md` — not answer-graded marketing figures.
 - **Memory can go stale.** A fact true last week can be wrong today. Use bi-temporal `supersede()` / `recall(current_only=True)` so corrections hide stale facts instead of contradicting them. Don't hand an agent raw memory without the current-only filter for state-sensitive decisions.
 - **It asks for discipline.** Continuity relies on session-close rituals (`cos checkpoint`) and periodic `cos doctor`. Skip them and the store drifts toward a log dump. This is a feature (auditable thread), but it is real operator work.
@@ -341,4 +364,5 @@ Best fit today: **operators and teams that need auditable, governed continuity**
 
 ## Status
 
-`v0.8.2` — **6 layers, 12 MCP tools, 37/37 tests, full audit passed.** Unified core, all tested (FastEmbed-accelerated recall, session rituals `boot/close/compress`, recall benchmark in `bench/`): **L1 Memory** (hybrid FTS+vector, WAL + thread-safe store) · **L2 Continuity** (canon/frontiers/loops/checkpoints/doctor/handoff) · *
+Package version: **v0.9.0**. Current test and governance-corpus results are recorded in
+[BUILD_GATE_STATUS.md](BUILD_GATE_STATUS.md); the CI workflow is the authoritative moving signal.
