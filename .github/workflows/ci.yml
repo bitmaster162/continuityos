@@ -20,6 +20,12 @@ jobs:
     name: ${{ matrix.label }} / Python 3.11
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
+    env:
+      CONTINUITYOS_SILENCE_EMBED_WARN: "1"
+      PYTHONNOUSERSITE: "1"
+      PYTHONUTF8: "1"
+      PYTHONPYCACHEPREFIX: ${{ runner.temp }}/continuityos-pycache
+      PYTEST_ADDOPTS: "-p no:cacheprovider"
     strategy:
       fail-fast: false
       matrix:
@@ -30,129 +36,240 @@ jobs:
             label: windows
     steps:
       - name: Check out exact review source
-        uses: actions/checkout@v4
+        id: checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        id: setup_python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
-          python-version: "3.11"
+          python-version: "3.11.9"
+          architecture: "x64"
 
-      - name: Install review tooling only
-        run: python -m pip install pytest==9.1.1 build==1.5.0
+      - name: Capture PRE exact index and secret scan
+        id: pre_index
+        run: >-
+          python -m tools.ci_review exact-index
+          --manifest "${{ runner.temp }}/continuityos-review-receipts/exact-index-pre.json"
+          --scan-output "${{ runner.temp }}/continuityos-review-receipts/exact-index-secret-scan.json"
 
-      - name: Validate review-only workflow policy
+      - name: Validate review dependency lock
+        id: lock_policy
+        run: >-
+          python -m tools.ci_review validate-lock
+          --lock requirements/review-ci-py311.lock
+          --output "${{ runner.temp }}/continuityos-review-receipts/review-lock-policy.json"
+
+      - name: Create isolated review environment
+        id: create_review_env
+        run: >-
+          python -m tools.ci_review create-review-environment
+          --directory "${{ runner.temp }}/continuityos-review-venv"
+          --output "${{ runner.temp }}/continuityos-review-receipts/create-review-environment.json"
+
+      - name: Install hash-locked review tooling
+        id: install_tooling
+        run: >-
+          python -m tools.ci_review run
+          --output "${{ runner.temp }}/continuityos-review-receipts/install-review-tooling.json"
+          -- python -m pip --isolated install --disable-pip-version-check
+          --no-cache-dir --no-deps --force-reinstall
+          --index-url https://pypi.org/simple
+          --require-hashes --only-binary=:all:
+          -r requirements/review-ci-py311.lock
+
+      - name: Verify exact locked review environment
+        id: pip_check
+        run: >-
+          python -m tools.ci_review verify-review-environment
+          --lock requirements/review-ci-py311.lock
+          --output "${{ runner.temp }}/continuityos-review-receipts/review-tooling-environment.json"
+
+      - name: Validate review-only workflow policy and YAML
+        id: workflow_policy
         run: >-
           python -m tools.ci_review validate-workflow
           --workflow .github/workflows/ci.yml
+          --review-lock requirements/review-ci-py311.lock
           --output "${{ runner.temp }}/continuityos-review-receipts/workflow-policy.json"
 
-      - name: Scan exact Git index and write manifest
+      - name: Materialize PRE-bound source outside checkout
+        id: materialize_source
         run: >-
-          python -m tools.ci_review exact-index
-          --manifest "${{ runner.temp }}/continuityos-review-receipts/exact-index.json"
-          --scan-output "${{ runner.temp }}/continuityos-review-receipts/exact-index-secret-scan.json"
+          python -m tools.ci_review materialize-source
+          --manifest "${{ runner.temp }}/continuityos-review-receipts/exact-index-pre.json"
+          --destination "${{ runner.temp }}/continuityos-materialized-source"
+          --output "${{ runner.temp }}/continuityos-review-receipts/materialized-source.json"
 
       - name: Prove package metadata is absent
+        id: clean_metadata
         run: >-
           python -m tools.ci_review metadata --mode absent --source-root .
           --output "${{ runner.temp }}/continuityos-review-receipts/clean-source-metadata.json"
 
       - name: Collect exact pytest node IDs
+        id: nodeids
         run: >-
           python -m tools.ci_review collect-nodeids
           --output "${{ runner.temp }}/continuityos-review-receipts/pytest-nodeids.json"
 
       - name: Test clean source without installed package metadata
-        env:
-          CONTINUITYOS_SILENCE_EMBED_WARN: "1"
-          PYTHONUTF8: "1"
+        id: clean_tests
         run: >-
           python -m tools.ci_review run
           --output "${{ runner.temp }}/continuityos-review-receipts/clean-source-pytest.json"
           -- python -m pytest -q
 
-      - name: Build wheel
+      - name: Build wheel from PRE-bound source
+        id: wheel_build
         run: >-
           python -m tools.ci_review run
+          --cwd "${{ runner.temp }}/continuityos-materialized-source"
           --output "${{ runner.temp }}/continuityos-review-receipts/wheel-build.json"
-          -- python -m build --wheel --outdir "${{ runner.temp }}/continuityos-wheelhouse"
+          -- python -m build --no-isolation --wheel
+          --outdir "${{ runner.temp }}/continuityos-wheelhouse"
 
-      - name: Download isolated wheel-test tooling
+      - name: Download hash-locked isolated wheel-test tooling
+        id: wheel_tooling
         run: >-
           python -m tools.ci_review run
           --output "${{ runner.temp }}/continuityos-review-receipts/wheel-test-tooling.json"
-          -- python -m pip download --only-binary=:all:
+          -- python -m pip --isolated download --disable-pip-version-check
+          --no-cache-dir
+          --index-url https://pypi.org/simple
+          --require-hashes --only-binary=:all:
           --dest "${{ runner.temp }}/continuityos-pytest-wheelhouse"
-          pytest==9.1.1
+          -r requirements/review-ci-py311.lock
 
       - name: Test wheel only from external site-packages
-        env:
-          CONTINUITYOS_SILENCE_EMBED_WARN: "1"
-          PYTHONUTF8: "1"
+        id: wheel_tests
         run: >-
           python -m tools.ci_review wheel-test
           --wheel-dir "${{ runner.temp }}/continuityos-wheelhouse"
           --test-wheel-dir "${{ runner.temp }}/continuityos-pytest-wheelhouse"
+          --review-lock requirements/review-ci-py311.lock
           --workspace "${{ runner.temp }}/continuityos-wheel-test"
-          --source-root .
+          --source-root "${{ runner.temp }}/continuityos-materialized-source"
           --output "${{ runner.temp }}/continuityos-review-receipts/wheel-only-pytest.json"
 
-      - name: Install editable package without optional runtime dependencies
+      - name: Install editable PRE-bound package without isolation or dependencies
+        id: editable_install
         run: >-
           python -m tools.ci_review run
+          --cwd "${{ runner.temp }}/continuityos-materialized-source"
           --output "${{ runner.temp }}/continuityos-review-receipts/editable-install.json"
-          -- python -m pip install --no-deps -e .
+          -- python -m pip --isolated install --disable-pip-version-check
+          --no-deps --no-build-isolation -e .
 
       - name: Prove editable metadata and import identity
+        id: editable_metadata
+        working-directory: ${{ runner.temp }}/continuityos-materialized-source
         run: >-
-          python -m tools.ci_review metadata --mode editable --source-root .
+          python -m tools.ci_review metadata --mode editable
+          --source-root "${{ runner.temp }}/continuityos-materialized-source"
           --output "${{ runner.temp }}/continuityos-review-receipts/editable-metadata.json"
 
       - name: Run full editable-install pytest
-        env:
-          CONTINUITYOS_SILENCE_EMBED_WARN: "1"
-          PYTHONUTF8: "1"
+        id: editable_tests
         run: >-
           python -m tools.ci_review run
+          --cwd "${{ runner.temp }}/continuityos-materialized-source"
           --output "${{ runner.temp }}/continuityos-review-receipts/editable-pytest.json"
           -- python -m pytest -q
 
-      - name: Compile source and test trees
+      - name: Compile source and test trees outside checkout
+        id: compileall
         run: >-
           python -m tools.ci_review run
+          --cwd "${{ runner.temp }}/continuityos-materialized-source"
           --output "${{ runner.temp }}/continuityos-review-receipts/compileall.json"
           -- python -m compileall -q continuityos tests bench gate_hook.py tools
 
       - name: Run governance regression corpus
-        env:
-          PYTHONUTF8: "1"
+        id: governance
         run: >-
           python -m tools.ci_review run
+          --cwd "${{ runner.temp }}/continuityos-materialized-source"
           --output "${{ runner.temp }}/continuityos-review-receipts/governance-corpus.json"
           -- python -m bench.continuitybench
           --json-out "${{ runner.temp }}/continuityos-review-receipts/governance-corpus-detail.json"
 
       - name: Run portable release-hardening probes
+        id: portable_probes
         if: always()
-        env:
-          PYTHONUTF8: "1"
         run: >-
           python -m tools.ci_review run
+          --cwd "${{ runner.temp }}/continuityos-materialized-source"
           --output "${{ runner.temp }}/continuityos-review-receipts/portable-probes-command.json"
           -- python tests/release_hardening_probes.py
           --json-out "${{ runner.temp }}/continuityos-review-receipts/portable-probes.json"
 
       - name: Run mandatory Linux symlink and realpath regression
+        id: linux_symlink
         if: always() && runner.os == 'Linux'
         run: >-
           python -m tools.ci_review run
+          --cwd "${{ runner.temp }}/continuityos-materialized-source"
           --output "${{ runner.temp }}/continuityos-review-receipts/linux-symlink-realpath.json"
           -- python -m pytest -q
           tests/test_ci_linux_symlink_realpath.py::test_linux_symlink_realpath_cannot_bypass_protected_path
 
+      - name: Rebind PRE-bound materialized source after tests
+        id: materialized_rebind
+        if: always()
+        run: >-
+          python -m tools.ci_review verify-materialized
+          --manifest "${{ runner.temp }}/continuityos-review-receipts/exact-index-pre.json"
+          --directory "${{ runner.temp }}/continuityos-materialized-source"
+          --output "${{ runner.temp }}/continuityos-review-receipts/materialized-post-bind.json"
+
+      - name: Rebind exact source after all tests and builds
+        id: post_rebind
+        if: always()
+        run: >-
+          python -m tools.ci_review source-rebind
+          --pre-manifest "${{ runner.temp }}/continuityos-review-receipts/exact-index-pre.json"
+          --post-manifest "${{ runner.temp }}/continuityos-review-receipts/exact-index-post.json"
+          --output "${{ runner.temp }}/continuityos-review-receipts/post-source-bind.json"
+
+      - name: Run deterministic release-review final gate
+        id: final_gate
+        if: always()
+        run: >-
+          python -m tools.ci_review final-gate
+          --directory "${{ runner.temp }}/continuityos-review-receipts"
+          --runner-os "${{ runner.os }}"
+          --runner-arch "${{ runner.arch }}"
+          --github-sha "${{ github.sha }}"
+          --github-ref "${{ github.ref }}"
+          --step "lock_policy=${{ steps.lock_policy.outcome }}"
+          --step "create_review_env=${{ steps.create_review_env.outcome }}"
+          --step "install_tooling=${{ steps.install_tooling.outcome }}"
+          --step "pip_check=${{ steps.pip_check.outcome }}"
+          --step "workflow_policy=${{ steps.workflow_policy.outcome }}"
+          --step "pre_index=${{ steps.pre_index.outcome }}"
+          --step "materialize_source=${{ steps.materialize_source.outcome }}"
+          --step "clean_metadata=${{ steps.clean_metadata.outcome }}"
+          --step "nodeids=${{ steps.nodeids.outcome }}"
+          --step "clean_tests=${{ steps.clean_tests.outcome }}"
+          --step "wheel_build=${{ steps.wheel_build.outcome }}"
+          --step "wheel_tooling=${{ steps.wheel_tooling.outcome }}"
+          --step "wheel_tests=${{ steps.wheel_tests.outcome }}"
+          --step "editable_install=${{ steps.editable_install.outcome }}"
+          --step "editable_metadata=${{ steps.editable_metadata.outcome }}"
+          --step "editable_tests=${{ steps.editable_tests.outcome }}"
+          --step "compileall=${{ steps.compileall.outcome }}"
+          --step "governance=${{ steps.governance.outcome }}"
+          --step "portable_probes=${{ steps.portable_probes.outcome }}"
+          --step "linux_symlink=${{ steps.linux_symlink.outcome }}"
+          --step "materialized_rebind=${{ steps.materialized_rebind.outcome }}"
+          --step "post_rebind=${{ steps.post_rebind.outcome }}"
+          --output "${{ runner.temp }}/continuityos-review-receipts/final-gate.json"
+
       - name: Write SHA-256 receipt manifest
+        id: receipt_manifest
         if: always()
         run: >-
           python -m tools.ci_review receipt-manifest
@@ -160,10 +277,20 @@ jobs:
           --output "${{ runner.temp }}/continuityos-review-receipts/SHA256SUMS"
 
       - name: Upload review receipts
+        id: upload_receipts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: review-receipts-${{ matrix.label }}-py311-${{ github.run_id }}
           path: ${{ runner.temp }}/continuityos-review-receipts/
           if-no-files-found: error
           retention-days: 14
+
+      - name: Enforce final evidence conclusions
+        id: enforce_conclusions
+        if: always()
+        run: >-
+          python -m tools.ci_review enforce-conclusions
+          --step "final_gate=${{ steps.final_gate.outcome }}"
+          --step "receipt_manifest=${{ steps.receipt_manifest.outcome }}"
+          --step "upload_receipts=${{ steps.upload_receipts.outcome }}"
