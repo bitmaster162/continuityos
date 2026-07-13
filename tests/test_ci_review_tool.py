@@ -754,7 +754,11 @@ def test_workflow_policy_requires_fresh_forced_hash_install(tmp_path):
     )
 
 
-def test_create_review_environment_exports_isolated_interpreter(tmp_path):
+def test_create_review_environment_exports_isolated_interpreter(
+    tmp_path, monkeypatch
+):
+    host_version = ".".join(map(str, sys.version_info[:3]))
+    monkeypatch.setattr(ci_review, "REVIEW_PYTHON_VERSION", host_version)
     environment = tmp_path / "review-venv"
     github_path = tmp_path / "github-path"
     output = tmp_path / "create-review-environment.json"
@@ -773,10 +777,40 @@ def test_create_review_environment_exports_isolated_interpreter(tmp_path):
     assert payload["interpreter_probe"]["prefix"] != payload["interpreter_probe"][
         "base_prefix"
     ]
-    assert payload["interpreter_probe"]["version"] == ci_review.REVIEW_PYTHON_VERSION
+    assert payload["expected_python_version"] == host_version
+    assert payload["interpreter_probe"]["version"] == host_version
     assert github_path.read_text(encoding="utf-8").strip() == payload[
         "scripts_directory"
     ]
+
+
+def test_create_review_environment_rejects_host_version_mismatch(
+    tmp_path, monkeypatch
+):
+    host_version = ".".join(map(str, sys.version_info[:3]))
+    mismatched_version = "0.0.0" if host_version != "0.0.0" else "999.999.999"
+    monkeypatch.setattr(
+        ci_review, "REVIEW_PYTHON_VERSION", mismatched_version
+    )
+    environment = tmp_path / "review-venv"
+    github_path = tmp_path / "github-path"
+    output = tmp_path / "create-review-environment.json"
+
+    exit_code = ci_review.create_review_environment(
+        SimpleNamespace(
+            directory=str(environment),
+            path_file=str(github_path),
+            output=str(output),
+        )
+    )
+    payload = json.loads(output.read_text(encoding="utf-8"))
+
+    assert exit_code == 1
+    assert payload["status"] == "FAIL"
+    assert payload["expected_python_version"] == mismatched_version
+    assert payload["interpreter_probe"]["version"] == host_version
+    assert payload["failure_codes"] == ["review_python_version_not_exact"]
+    assert not github_path.exists()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="native venv interpreter symlink control")
