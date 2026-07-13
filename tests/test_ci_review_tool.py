@@ -517,6 +517,417 @@ def test_final_gate_rejects_pre_post_manifest_mismatch(tmp_path, monkeypatch):
     assert "pre_post_exact_index_not_equal" in payload["failure_codes"]
 
 
+def test_workflow_context_accepts_github_ref_in_job_env():
+    evidence = ci_review._workflow_expression_context_evidence(
+        {"jobs": {"review": {"env": {"REFERENCE": "${{ github.ref }}"}}}}
+    )
+
+    assert evidence["status"] == "PASS"
+    assert evidence["failure_codes"] == []
+    assert evidence["references"] == [
+        {
+            "allowed_contexts": [
+                "github",
+                "inputs",
+                "matrix",
+                "needs",
+                "secrets",
+                "strategy",
+                "vars",
+            ],
+            "allowed_functions": [
+                "contains",
+                "endswith",
+                "format",
+                "fromjson",
+                "join",
+                "startswith",
+                "tojson",
+            ],
+            "contexts": ["github"],
+            "functions": [],
+            "path": "jobs.review.env.REFERENCE",
+        }
+    ]
+
+
+def test_workflow_context_accepts_matrix_label_in_job_name():
+    evidence = ci_review._workflow_expression_context_evidence(
+        {"jobs": {"review": {"name": "${{ matrix.label }} / Python 3.11"}}}
+    )
+
+    assert evidence["status"] == "PASS"
+    assert evidence["checked_expression_count"] == 1
+    assert evidence["references"][0]["contexts"] == ["matrix"]
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        {"run": "echo ${{ runner.temp }}"},
+        {"env": {"CACHE": "${{ runner.temp }}/cache"}},
+        {"with": {"path": "${{ runner.temp }}/receipts"}},
+        {"working-directory": "${{ runner.temp }}/source"},
+    ],
+)
+def test_workflow_context_allows_runner_temp_in_step_runtime_fields(step):
+    evidence = ci_review._workflow_expression_context_evidence(
+        {"jobs": {"review": {"steps": [step]}}}
+    )
+
+    assert evidence["status"] == "PASS"
+    assert evidence["checked_expression_count"] == 1
+    assert evidence["references"][0]["contexts"] == ["runner"]
+
+
+@pytest.mark.parametrize(
+    ("expression", "context"),
+    [
+        ("${{ runner.temp }}", "runner"),
+        ("${{ env.VALUE }}", "env"),
+        ("${{ job.status }}", "job"),
+        ("${{ jobs.audit.result }}", "jobs"),
+        ("${{ steps.setup_python.outcome }}", "steps"),
+    ],
+)
+def test_workflow_context_rejects_runtime_context_at_job_env(
+    expression, context
+):
+    evidence = ci_review._workflow_expression_context_evidence(
+        {"jobs": {"review": {"env": {"INVALID": expression}}}}
+    )
+
+    assert evidence["status"] == "FAIL"
+    assert evidence["findings"] == [
+        {
+            "code": "context_not_available",
+            "context": context,
+            "path": "jobs.review.env.INVALID",
+        }
+    ]
+
+
+def test_workflow_context_rejects_runner_at_job_name():
+    evidence = ci_review._workflow_expression_context_evidence(
+        {"jobs": {"review": {"name": "${{ runner.os }}"}}}
+    )
+
+    assert evidence["status"] == "FAIL"
+    assert evidence["findings"] == [
+        {
+            "code": "context_not_available",
+            "context": "runner",
+            "path": "jobs.review.name",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("expression", "detail"),
+    [
+        ("${{ github.ref", "unclosed_expression"),
+        ("${{ }}", "empty_expression"),
+        ("${{ github['ref' }}", "unclosed_index"),
+    ],
+)
+def test_workflow_context_rejects_malformed_expression(expression, detail):
+    evidence = ci_review._workflow_expression_context_evidence(
+        {"jobs": {"review": {"env": {"INVALID": expression}}}}
+    )
+
+    assert evidence["status"] == "FAIL"
+    assert any(
+        finding["code"] == "malformed_expression"
+        and finding.get("detail") == detail
+        for finding in evidence["findings"]
+    )
+
+
+def test_workflow_context_rejects_unknown_context():
+    evidence = ci_review._workflow_expression_context_evidence(
+        {"jobs": {"review": {"env": {"INVALID": "${{ mystery.value }}"}}}}
+    )
+
+    assert evidence["status"] == "FAIL"
+    assert evidence["findings"] == [
+        {
+            "code": "unknown_context",
+            "context": "mystery",
+            "path": "jobs.review.env.INVALID",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "${{ github.ref && }}",
+        "${{ github..ref }}",
+        '${{ "hello" }}',
+        "${{ .mystery.value }}",
+        "${{ тайна.value }}",
+        "${{ [] }}",
+        "${{ () }}",
+        "${{ !!! }}",
+        "${{ $ }}",
+        "${{ 1 + 2 }}",
+        "${{ github/**/.ref }}",
+        "${{ github.ref; }}",
+        "${{ github.ref, }}",
+        '${{ github["ref"] }}',
+    ],
+)
+def test_workflow_context_rejects_malformed_expression_grammar(expression):
+    evidence = ci_review._workflow_expression_context_evidence(
+        {"jobs": {"review": {"env": {"INVALID": expression}}}}
+    )
+
+    assert evidence["status"] == "FAIL"
+    assert any(
+        finding["code"] == "malformed_expression"
+        for finding in evidence["findings"]
+    )
+
+
+@pytest.mark.parametrize("function", ["always", "hashFiles"])
+def test_workflow_context_rejects_unavailable_function_at_job_env(function):
+    evidence = ci_review._workflow_expression_context_evidence(
+        {
+            "jobs": {
+                "review": {
+                    "env": {"INVALID": f"${{{{ {function}('value') }}}}"}
+                }
+            }
+        }
+    )
+
+    assert evidence["status"] == "FAIL"
+    assert any(
+        finding["code"] == "function_not_available"
+        and finding.get("function") == function.casefold()
+        for finding in evidence["findings"]
+    )
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "always('value')",
+        "success(github.ref)",
+        "contains(github.ref)",
+        "fromJSON('value', 'extra')",
+        "format()",
+        "hashFiles()",
+        "join('a', 'b', 'c')",
+        "toJSON()",
+    ],
+)
+def test_workflow_context_rejects_invalid_function_arity(expression):
+    evidence = ci_review._workflow_expression_context_evidence(
+        {"jobs": {"review": {"steps": [{"if": expression}]}}}
+    )
+
+    assert evidence["status"] == "FAIL"
+    assert any(
+        finding["code"] == "malformed_expression"
+        and finding.get("detail") == "invalid_function_arity"
+        for finding in evidence["findings"]
+    )
+
+
+@pytest.mark.parametrize("function", ["format", "hashFiles"])
+def test_workflow_context_rejects_excessive_variadic_function_arity(function):
+    arguments = ", ".join("'value'" for _ in range(256))
+    evidence = ci_review._workflow_expression_context_evidence(
+        {
+            "jobs": {
+                "review": {
+                    "steps": [{"if": f"{function}({arguments})"}]
+                }
+            }
+        }
+    )
+
+    assert evidence["status"] == "FAIL"
+    assert any(
+        finding["code"] == "malformed_expression"
+        and finding.get("detail") == "invalid_function_arity"
+        for finding in evidence["findings"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("expression", "detail"),
+    [
+        ("!" * 2000 + "github.ref", "expression_token_limit"),
+        ("(" * 1200 + "github.ref" + ")" * 1200, "expression_token_limit"),
+    ],
+)
+def test_workflow_context_fails_closed_at_expression_resource_limit(
+    expression, detail
+):
+    evidence = ci_review._workflow_expression_context_evidence(
+        {"jobs": {"review": {"env": {"INVALID": f"${{{{ {expression} }}}}"}}}}
+    )
+
+    assert evidence["status"] == "FAIL"
+    assert any(
+        finding["code"] == "malformed_expression"
+        and finding.get("detail") == detail
+        for finding in evidence["findings"]
+    )
+
+
+def test_workflow_context_fails_closed_at_document_nesting_limit():
+    document = "${{ github.ref }}"
+    for _ in range(1200):
+        document = [document]
+
+    evidence = ci_review._workflow_expression_context_evidence(document)
+
+    assert evidence["status"] == "FAIL"
+    assert evidence["findings"] == [
+        {
+            "code": "malformed_expression",
+            "detail": "document_nesting_limit",
+            "path": "<document>",
+        }
+    ]
+
+
+def test_workflow_context_rejects_unmatched_closing_delimiter():
+    document = {"jobs": {"review": {"env": {}}}}
+    document["jobs"]["review"]["env"]["INVALID"] = "github.ref }}"
+    evidence = ci_review._workflow_expression_context_evidence(
+        document
+    )
+
+    assert evidence["status"] == "FAIL"
+    assert evidence["findings"] == [
+        {
+            "code": "malformed_expression",
+            "detail": "unexpected_closing_delimiter",
+            "path": "jobs.review.env.INVALID",
+        }
+    ]
+
+
+def test_workflow_context_accepts_quoted_closing_delimiter_and_bracket_access():
+    evidence = ci_review._workflow_expression_context_evidence(
+        {
+            "jobs": {
+                "review": {
+                    "env": {
+                        "REFERENCE": "${{ format('}}', github['ref']) }}"
+                    }
+                }
+            }
+        }
+    )
+
+    assert evidence["status"] == "PASS"
+    assert evidence["checked_expression_count"] == 1
+    assert evidence["references"][0]["contexts"] == ["github"]
+    assert evidence["references"][0]["functions"] == ["format"]
+
+
+def test_workflow_context_rejects_mixed_wrapped_and_implicit_if_expression():
+    evidence = ci_review._workflow_expression_context_evidence(
+        {
+            "jobs": {
+                "review": {
+                    "steps": [
+                        {
+                            "if": "${{ github.ref }} && secrets.TOKEN != null",
+                            "run": "echo never",
+                        }
+                    ]
+                }
+            }
+        }
+    )
+
+    assert evidence["status"] == "FAIL"
+    assert any(
+        finding["code"] == "malformed_expression"
+        and finding.get("detail") == "mixed_if_expression_syntax"
+        for finding in evidence["findings"]
+    )
+
+
+def test_workflow_context_rejects_expression_in_mapping_key():
+    evidence = ci_review._workflow_expression_context_evidence(
+        {"jobs": {"review": {"env": {"${{ runner.temp }}": "value"}}}}
+    )
+
+    assert evidence["status"] == "FAIL"
+    assert any(
+        finding["code"] == "unsupported_expression_key_path"
+        for finding in evidence["findings"]
+    )
+
+
+def test_workflow_context_rejects_unsupported_expression_key_path():
+    evidence = ci_review._workflow_expression_context_evidence(
+        {"jobs": {"review": {"timeout-minutes": "${{ github.run_id }}"}}}
+    )
+
+    assert evidence["status"] == "FAIL"
+    assert evidence["findings"] == [
+        {
+            "code": "unsupported_expression_key_path",
+            "path": "jobs.review.timeout-minutes",
+        }
+    ]
+
+
+def test_workflow_context_policy_integration_rejects_runner_at_job_env(tmp_path):
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    text = text.replace(
+        '      PYTHONNOUSERSITE: "1"\n',
+        "      PYTHONNOUSERSITE: ${{ runner.temp }}\n",
+        1,
+    )
+
+    exit_code, payload = _validate_workflow_text(tmp_path, text)
+
+    assert exit_code == 1
+    assert payload["context_validation"]["status"] == "FAIL"
+    assert {
+        "code": "context_not_available",
+        "context": "runner",
+        "path": "jobs.review.env.PYTHONNOUSERSITE",
+    } in payload["context_validation"]["findings"]
+
+
+def test_workflow_context_configure_pycache_step_appends_github_env(
+    tmp_path, monkeypatch
+):
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    document = ci_review._parse_workflow_yaml(text)
+    step = next(
+        candidate
+        for candidate in document["jobs"]["review"]["steps"]
+        if candidate.get("id") == "configure_pycache"
+    )
+    github_env = tmp_path / "GITHUB_ENV"
+    github_env.write_text("EXISTING=value\n", encoding="utf-8", newline="\n")
+    pycache = tmp_path / "runner-temp" / "continuityos-pycache"
+    monkeypatch.setenv("GITHUB_ENV", str(github_env))
+    monkeypatch.setenv("PYTHONPYCACHEPREFIX", str(pycache))
+
+    exec(compile(step["run"], "<configure_pycache>", "exec"), {})
+
+    assert github_env.read_text(encoding="utf-8").splitlines() == [
+        "EXISTING=value",
+        f"PYTHONPYCACHEPREFIX={pycache}",
+    ]
+
+
 def test_workflow_policy_accepts_reviewed_immutable_actions_and_lock(tmp_path):
     text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
@@ -526,6 +937,9 @@ def test_workflow_policy_accepts_reviewed_immutable_actions_and_lock(tmp_path):
     assert payload["status"] == "PASS"
     assert payload["action_refs"] == ci_review.REVIEWED_ACTION_REFS
     assert payload["review_lock"]["status"] == "PASS"
+    assert payload["context_validation"]["status"] == "PASS"
+    assert payload["context_validation"]["failure_codes"] == []
+    assert payload["context_validation"]["checked_expression_count"] > 0
 
 
 def test_workflow_policy_rejects_mutable_action_ref(tmp_path):
@@ -633,6 +1047,30 @@ def test_final_gate_accepts_exact_unchanged_source_and_counts(
     assert payload["pre_entry_count"] == payload["post_entry_count"] == 2
     assert payload["governance_exact"] is True
     assert payload["portable_probes_exact"] is True
+
+
+def test_final_gate_rejects_missing_configure_pycache_outcome(
+    tmp_path, monkeypatch
+):
+    repo, receipts, steps = _complete_final_gate_fixture(tmp_path, "Windows")
+    steps = [
+        conclusion
+        for conclusion in steps
+        if not conclusion.startswith("configure_pycache=")
+    ]
+    output = tmp_path / "final-gate-missing-configure-pycache.json"
+    monkeypatch.chdir(repo)
+
+    exit_code = ci_review.final_gate(
+        _final_gate_args(receipts, output, repo, "Windows", steps)
+    )
+    payload = json.loads(output.read_text(encoding="utf-8"))
+
+    assert exit_code == 1
+    assert (
+        "step_conclusion:configure_pycache:expected_success:observed_None"
+        in payload["failure_codes"]
+    )
 
 
 def test_final_gate_rejects_inventory_from_different_environment(

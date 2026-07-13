@@ -24,7 +24,6 @@ jobs:
       CONTINUITYOS_SILENCE_EMBED_WARN: "1"
       PYTHONNOUSERSITE: "1"
       PYTHONUTF8: "1"
-      PYTHONPYCACHEPREFIX: ${{ runner.temp }}/continuityos-pycache
       PYTEST_ADDOPTS: "-p no:cacheprovider"
     strategy:
       fail-fast: false
@@ -47,6 +46,22 @@ jobs:
         with:
           python-version: "3.11.9"
           architecture: "x64"
+
+      - name: Configure runner-scoped Python bytecode cache
+        id: configure_pycache
+        env:
+          PYTHONPYCACHEPREFIX: ${{ runner.temp }}/continuityos-pycache
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+
+          with Path(os.environ["GITHUB_ENV"]).open(
+              "a", encoding="utf-8", newline="\n"
+          ) as handle:
+              handle.write(
+                  f"PYTHONPYCACHEPREFIX={os.environ['PYTHONPYCACHEPREFIX']}\n"
+              )
 
       - name: Capture PRE exact index and secret scan
         id: pre_index
@@ -244,6 +259,7 @@ jobs:
           --runner-arch "${{ runner.arch }}"
           --github-sha "${{ github.sha }}"
           --github-ref "${{ github.ref }}"
+          --step "configure_pycache=${{ steps.configure_pycache.outcome }}"
           --step "lock_policy=${{ steps.lock_policy.outcome }}"
           --step "create_review_env=${{ steps.create_review_env.outcome }}"
           --step "install_tooling=${{ steps.install_tooling.outcome }}"

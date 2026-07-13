@@ -45,7 +45,7 @@ REVIEWED_ACTION_REFS = {
 }
 
 REVIEWED_WORKFLOW_SHA256 = (
-    "e6d18f3c224140f9c5a608670472b84c8b1a25f6017f811aa4b14db294a233f2"
+    "736853ca94833ad20f7ceb0368a6b78528d08c6eb5e8ca95aa0ec5c0339b84c7"
 )
 
 REVIEW_PYTHON_VERSION = "3.11.9"
@@ -66,6 +66,7 @@ REVIEW_LOCK_PACKAGES = {
 }
 
 MANDATORY_STEP_IDS = (
+    "configure_pycache",
     "lock_policy",
     "create_review_env",
     "install_tooling",
@@ -93,6 +94,7 @@ MANDATORY_STEP_IDS = (
 WORKFLOW_STEP_IDS = (
     "checkout",
     "setup_python",
+    "configure_pycache",
     "pre_index",
     "lock_policy",
     "create_review_env",
@@ -120,6 +122,90 @@ WORKFLOW_STEP_IDS = (
     "upload_receipts",
     "enforce_conclusions",
 )
+
+WORKFLOW_CONTEXT_NAMES = frozenset(
+    {
+        "env",
+        "github",
+        "inputs",
+        "job",
+        "jobs",
+        "matrix",
+        "needs",
+        "runner",
+        "secrets",
+        "steps",
+        "strategy",
+        "vars",
+    }
+)
+
+WORKFLOW_PRE_DISPATCH_CONTEXTS = frozenset(
+    {"github", "inputs", "matrix", "needs", "strategy", "vars"}
+)
+
+WORKFLOW_JOB_ENV_CONTEXTS = WORKFLOW_PRE_DISPATCH_CONTEXTS | {"secrets"}
+
+WORKFLOW_STEP_CONTEXTS = frozenset(
+    {
+        "env",
+        "github",
+        "inputs",
+        "job",
+        "matrix",
+        "needs",
+        "runner",
+        "secrets",
+        "steps",
+        "strategy",
+        "vars",
+    }
+)
+
+WORKFLOW_STEP_IF_CONTEXTS = WORKFLOW_STEP_CONTEXTS - {"secrets"}
+
+WORKFLOW_GENERAL_EXPRESSION_FUNCTIONS = frozenset(
+    {
+        "contains",
+        "endswith",
+        "format",
+        "fromjson",
+        "join",
+        "startswith",
+        "tojson",
+    }
+)
+
+WORKFLOW_STATUS_EXPRESSION_FUNCTIONS = frozenset(
+    {"always", "cancelled", "failure", "success"}
+)
+
+WORKFLOW_HASH_EXPRESSION_FUNCTIONS = frozenset({"hashfiles"})
+
+WORKFLOW_EXPRESSION_FUNCTIONS = (
+    WORKFLOW_GENERAL_EXPRESSION_FUNCTIONS
+    | WORKFLOW_STATUS_EXPRESSION_FUNCTIONS
+    | WORKFLOW_HASH_EXPRESSION_FUNCTIONS
+)
+
+WORKFLOW_EXPRESSION_FUNCTION_ARITY = {
+    "always": (0, 0),
+    "cancelled": (0, 0),
+    "contains": (2, 2),
+    "endswith": (2, 2),
+    "failure": (0, 0),
+    "format": (1, 255),
+    "fromjson": (1, 1),
+    "hashfiles": (1, 255),
+    "join": (1, 2),
+    "startswith": (2, 2),
+    "success": (0, 0),
+    "tojson": (1, 1),
+}
+
+WORKFLOW_EXPRESSION_KEYWORDS = frozenset({"false", "null", "true"})
+WORKFLOW_EXPRESSION_MAX_LENGTH = 16384
+WORKFLOW_EXPRESSION_MAX_TOKENS = 1024
 
 
 def _sha256(data: bytes) -> str:
@@ -1302,6 +1388,543 @@ def _parse_workflow_yaml(text: str):
     return yaml.load(text, Loader=UniqueSafeLoader)
 
 
+def _workflow_key_path(path: tuple[object, ...]) -> str:
+    rendered = ""
+    for item in path:
+        if isinstance(item, int):
+            rendered += f"[{item}]"
+        elif rendered:
+            rendered += f".{item}"
+        else:
+            rendered = str(item)
+    return rendered or "<document>"
+
+
+def _walk_workflow_scalars(value, path=(), active_container_ids=None):
+    if active_container_ids is None:
+        active_container_ids = set()
+    if isinstance(value, str):
+        yield path, value
+        return
+    if not isinstance(value, (dict, list)):
+        return
+
+    container_id = id(value)
+    if container_id in active_container_ids:
+        raise ValueError(f"cyclic YAML value at {_workflow_key_path(path)}")
+    active_container_ids.add(container_id)
+    try:
+        if isinstance(value, dict):
+            for index, (key, child) in enumerate(value.items()):
+                child_key = str(key)
+                if isinstance(key, str) and ("${{" in key or "}}" in key):
+                    yield path + (f"<key[{index}]>",), key
+                    child_key = f"<expression-key[{index}]>"
+                yield from _walk_workflow_scalars(
+                    child,
+                    path + (child_key,),
+                    active_container_ids,
+                )
+        else:
+            for index, child in enumerate(value):
+                yield from _walk_workflow_scalars(
+                    child,
+                    path + (index,),
+                    active_container_ids,
+                )
+    finally:
+        active_container_ids.remove(container_id)
+
+
+def _github_expression_bodies(value: str, *, implicit: bool = False):
+    bodies = []
+    errors = []
+    spans = []
+    position = 0
+    while position < len(value):
+        opening = value.find("${{", position)
+        if opening < 0:
+            break
+
+        closing = -1
+        nested = False
+        quote = None
+        cursor = opening + 3
+        while cursor < len(value) - 1:
+            character = value[cursor]
+            if quote is not None:
+                if character == quote:
+                    if quote == "'" and value.startswith("''", cursor):
+                        cursor += 2
+                        continue
+                    quote = None
+                elif quote == '"' and character == "\\":
+                    cursor += 2
+                    continue
+                cursor += 1
+                continue
+            if character in {"'", '"'}:
+                quote = character
+                cursor += 1
+                continue
+            if value.startswith("${{", cursor):
+                nested = True
+                cursor += 3
+                continue
+            if value.startswith("}}", cursor):
+                closing = cursor
+                break
+            cursor += 1
+
+        if closing < 0:
+            errors.append("unclosed_expression")
+            break
+        body = value[opening + 3 : closing]
+        spans.append((opening, closing + 2))
+        if nested:
+            errors.append("nested_expression")
+        elif not body.strip():
+            errors.append("empty_expression")
+        else:
+            bodies.append(body.strip())
+        position = closing + 2
+
+    outside = []
+    previous = 0
+    for opening, closing in spans:
+        outside.append(value[previous:opening])
+        previous = closing
+    outside.append(value[previous:])
+    outside_text = "".join(outside)
+    if "}}" in outside_text:
+        errors.append("unexpected_closing_delimiter")
+
+    if implicit:
+        if not spans and value.strip():
+            bodies.append(value.strip())
+        elif spans:
+            if len(spans) != 1 or outside_text.strip():
+                errors.append("mixed_if_expression_syntax")
+    return bodies, errors
+
+
+def _tokenize_workflow_expression(body: str):
+    tokens = []
+    errors = []
+    position = 0
+    punctuation = {
+        ".": "DOT",
+        ",": "COMMA",
+        "(": "LPAREN",
+        ")": "RPAREN",
+        "[": "LBRACKET",
+        "]": "RBRACKET",
+        "*": "STAR",
+    }
+    while position < len(body):
+        character = body[position]
+        if character.isspace():
+            position += 1
+            continue
+        if body.startswith(("&&", "||", "==", "!=", "<=", ">="), position):
+            tokens.append(("OP", body[position : position + 2]))
+            position += 2
+            continue
+        if character in "!<>":
+            tokens.append(("OP", character))
+            position += 1
+            continue
+        if character in punctuation:
+            tokens.append((punctuation[character], character))
+            position += 1
+            continue
+        if character == "'":
+            cursor = position + 1
+            closed = False
+            while cursor < len(body):
+                if body[cursor] == "'":
+                    if body.startswith("''", cursor):
+                        cursor += 2
+                        continue
+                    closed = True
+                    cursor += 1
+                    break
+                cursor += 1
+            if not closed:
+                errors.append("unclosed_quote")
+                position = len(body)
+                continue
+            tokens.append(("STRING", ""))
+            position = cursor
+            continue
+        if character == '"':
+            errors.append("double_quoted_string")
+            cursor = position + 1
+            while cursor < len(body):
+                if body[cursor] == "\\":
+                    cursor += 2
+                    continue
+                if body[cursor] == '"':
+                    cursor += 1
+                    break
+                cursor += 1
+            tokens.append(("STRING", ""))
+            position = cursor
+            continue
+        number = re.match(
+            r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?",
+            body[position:],
+        )
+        if number:
+            tokens.append(("NUMBER", number.group(0)))
+            position += len(number.group(0))
+            continue
+        identifier = re.match(r"[A-Za-z_][A-Za-z0-9_-]*", body[position:])
+        if identifier:
+            tokens.append(("IDENT", identifier.group(0)))
+            position += len(identifier.group(0))
+            continue
+        errors.append("invalid_token")
+        position += 1
+    tokens.append(("EOF", ""))
+    return tokens, sorted(set(errors))
+
+
+class _WorkflowExpressionParser:
+    def __init__(self, tokens):
+        self.tokens = tokens
+        self.position = 0
+        self.contexts = set()
+        self.functions = set()
+        self.unknown = set()
+        self.errors = []
+
+    def _current(self):
+        return self.tokens[self.position]
+
+    def _advance(self):
+        token = self._current()
+        if token[0] != "EOF":
+            self.position += 1
+        return token
+
+    def _accept(self, kind, value=None):
+        token = self._current()
+        if token[0] != kind or (value is not None and token[1] != value):
+            return False
+        self._advance()
+        return True
+
+    def _expect(self, kind, detail):
+        if self._accept(kind):
+            return True
+        self.errors.append(detail)
+        return False
+
+    def parse(self):
+        self._parse_or()
+        if self._current()[0] != "EOF":
+            self.errors.append("trailing_token")
+        return (
+            sorted(self.contexts),
+            sorted(self.unknown),
+            sorted(self.functions),
+            sorted(set(self.errors)),
+        )
+
+    def _parse_or(self):
+        self._parse_and()
+        while self._accept("OP", "||"):
+            self._parse_and()
+
+    def _parse_and(self):
+        self._parse_equality()
+        while self._accept("OP", "&&"):
+            self._parse_equality()
+
+    def _parse_equality(self):
+        self._parse_relational()
+        while self._current() in {("OP", "=="), ("OP", "!=")}:
+            self._advance()
+            self._parse_relational()
+
+    def _parse_relational(self):
+        self._parse_unary()
+        while self._current() in {
+            ("OP", "<"),
+            ("OP", "<="),
+            ("OP", ">"),
+            ("OP", ">="),
+        }:
+            self._advance()
+            self._parse_unary()
+
+    def _parse_unary(self):
+        if self._accept("OP", "!"):
+            self._parse_unary()
+            return
+        self._parse_primary()
+
+    def _parse_primary(self):
+        kind, value = self._current()
+        allow_suffix = False
+        if kind == "IDENT":
+            self._advance()
+            lowered = value.casefold()
+            if self._accept("LPAREN"):
+                allow_suffix = True
+                self.functions.add(lowered)
+                if lowered not in WORKFLOW_EXPRESSION_FUNCTIONS:
+                    self.unknown.add(value)
+                argument_count = 0
+                if not self._accept("RPAREN"):
+                    self._parse_or()
+                    argument_count = 1
+                    while self._accept("COMMA"):
+                        self._parse_or()
+                        argument_count += 1
+                    self._expect("RPAREN", "unclosed_function_call")
+                arity = WORKFLOW_EXPRESSION_FUNCTION_ARITY.get(lowered)
+                if arity is not None:
+                    minimum, maximum = arity
+                    if argument_count < minimum or (
+                        maximum is not None and argument_count > maximum
+                    ):
+                        self.errors.append("invalid_function_arity")
+            elif lowered in WORKFLOW_EXPRESSION_KEYWORDS:
+                pass
+            else:
+                allow_suffix = True
+                if value in WORKFLOW_CONTEXT_NAMES:
+                    self.contexts.add(value)
+                else:
+                    self.unknown.add(value)
+        elif kind in {"NUMBER", "STRING"}:
+            self._advance()
+        elif self._accept("LPAREN"):
+            allow_suffix = True
+            self._parse_or()
+            self._expect("RPAREN", "unclosed_group")
+        else:
+            self.errors.append("expected_operand")
+            self._advance()
+            return
+
+        while allow_suffix:
+            if self._accept("DOT"):
+                if not (self._accept("IDENT") or self._accept("STAR")):
+                    self.errors.append("invalid_dereference")
+                    return
+                continue
+            if self._accept("LBRACKET"):
+                if not (
+                    self._accept("STRING")
+                    or self._accept("NUMBER")
+                    or self._accept("STAR")
+                ):
+                    self.errors.append("invalid_index")
+                    return
+                if not self._expect("RBRACKET", "unclosed_index"):
+                    return
+                continue
+            break
+
+
+def _workflow_expression_contexts(body: str):
+    if len(body) > WORKFLOW_EXPRESSION_MAX_LENGTH:
+        return [], [], [], ["expression_length_limit"]
+    tokens, token_errors = _tokenize_workflow_expression(body)
+    if len(tokens) > WORKFLOW_EXPRESSION_MAX_TOKENS:
+        return [], [], [], sorted(set(token_errors + ["expression_token_limit"]))
+    parser = _WorkflowExpressionParser(tokens)
+    try:
+        contexts, unknown, functions, parse_errors = parser.parse()
+    except RecursionError:
+        return [], [], [], sorted(
+            set(token_errors + ["expression_nesting_limit"])
+        )
+    return contexts, unknown, functions, sorted(set(token_errors + parse_errors))
+
+
+def _allowed_workflow_contexts(path: tuple[object, ...]):
+    if any(isinstance(item, str) and item.startswith("<") for item in path):
+        return None
+    if path == ("concurrency", "group"):
+        return frozenset({"github", "inputs", "vars"})
+    if (
+        len(path) == 3
+        and path[0] == "jobs"
+        and path[2] in {"name", "runs-on"}
+    ):
+        return WORKFLOW_PRE_DISPATCH_CONTEXTS
+    if (
+        len(path) == 4
+        and path[0] == "jobs"
+        and path[2] == "env"
+    ):
+        return WORKFLOW_JOB_ENV_CONTEXTS
+    if (
+        len(path) >= 5
+        and path[0] == "jobs"
+        and path[2] == "steps"
+        and isinstance(path[3], int)
+    ):
+        if len(path) == 5 and path[4] in {"run", "working-directory"}:
+            return WORKFLOW_STEP_CONTEXTS
+        if len(path) == 5 and path[4] == "if":
+            return WORKFLOW_STEP_IF_CONTEXTS
+        if len(path) == 6 and path[4] in {"env", "with"}:
+            return WORKFLOW_STEP_CONTEXTS
+    return None
+
+
+def _allowed_workflow_functions(path: tuple[object, ...]):
+    if _allowed_workflow_contexts(path) is None:
+        return frozenset()
+    allowed = WORKFLOW_GENERAL_EXPRESSION_FUNCTIONS
+    if (
+        len(path) >= 5
+        and path[0] == "jobs"
+        and path[2] == "steps"
+        and isinstance(path[3], int)
+    ):
+        allowed |= WORKFLOW_HASH_EXPRESSION_FUNCTIONS
+        if len(path) == 5 and path[4] == "if":
+            allowed |= WORKFLOW_STATUS_EXPRESSION_FUNCTIONS
+    return allowed
+
+
+def _workflow_if_path(path: tuple[object, ...]) -> bool:
+    return (
+        len(path) == 5
+        and path[0] == "jobs"
+        and path[2] == "steps"
+        and isinstance(path[3], int)
+        and path[4] == "if"
+    )
+
+
+def _workflow_expression_context_evidence(document):
+    references = []
+    findings = []
+    checked_expression_count = 0
+    try:
+        scalars = list(_walk_workflow_scalars(document))
+    except (ValueError, RecursionError) as exc:
+        detail = (
+            "document_nesting_limit"
+            if isinstance(exc, RecursionError)
+            else "cyclic_yaml_value"
+        )
+        findings.append(
+            {
+                "code": "malformed_expression",
+                "detail": detail,
+                "path": "<document>",
+            }
+        )
+        scalars = []
+
+    for path, value in scalars:
+        key_path = _workflow_key_path(path)
+        bodies, delimiter_errors = _github_expression_bodies(
+            value,
+            implicit=_workflow_if_path(path),
+        )
+        for detail in delimiter_errors:
+            findings.append(
+                {
+                    "code": "malformed_expression",
+                    "detail": detail,
+                    "path": key_path,
+                }
+            )
+        for body in bodies:
+            checked_expression_count += 1
+            allowed = _allowed_workflow_contexts(path)
+            allowed_functions = _allowed_workflow_functions(path)
+            contexts, unknown_symbols, functions, syntax_errors = (
+                _workflow_expression_contexts(body)
+            )
+            references.append(
+                {
+                    "allowed_contexts": sorted(allowed or ()),
+                    "allowed_functions": sorted(allowed_functions),
+                    "contexts": contexts,
+                    "functions": functions,
+                    "path": key_path,
+                }
+            )
+            if allowed is None:
+                findings.append(
+                    {
+                        "code": "unsupported_expression_key_path",
+                        "path": key_path,
+                    }
+                )
+            for detail in syntax_errors:
+                findings.append(
+                    {
+                        "code": "malformed_expression",
+                        "detail": detail,
+                        "path": key_path,
+                    }
+                )
+            for context in unknown_symbols:
+                findings.append(
+                    {
+                        "code": "unknown_context",
+                        "context": context,
+                        "path": key_path,
+                    }
+                )
+            for function in sorted(set(functions) - allowed_functions):
+                findings.append(
+                    {
+                        "code": "function_not_available",
+                        "function": function,
+                        "path": key_path,
+                    }
+                )
+            if allowed is not None:
+                for context in sorted(set(contexts) - allowed):
+                    findings.append(
+                        {
+                            "code": "context_not_available",
+                            "context": context,
+                            "path": key_path,
+                        }
+                    )
+
+    findings.sort(
+        key=lambda item: (
+            item["path"],
+            item["code"],
+            item.get("context", ""),
+            item.get("function", ""),
+            item.get("detail", ""),
+        )
+    )
+    references.sort(key=lambda item: (item["path"], item["contexts"]))
+    failure_codes = []
+    for finding in findings:
+        parts = [finding["code"], finding["path"]]
+        if finding.get("context"):
+            parts.append(finding["context"])
+        if finding.get("function"):
+            parts.append(finding["function"])
+        if finding.get("detail"):
+            parts.append(finding["detail"])
+        failure_codes.append(":".join(parts))
+    return {
+        "checked_expression_count": checked_expression_count,
+        "failure_codes": failure_codes,
+        "findings": findings,
+        "references": references,
+        "status": "PASS" if not findings else "FAIL",
+    }
+
+
 def workflow_policy(args: argparse.Namespace) -> int:
     workflow = Path(args.workflow).resolve()
     text = workflow.read_text(encoding="utf-8")
@@ -1368,7 +1991,26 @@ def workflow_policy(args: argparse.Namespace) -> int:
     except Exception as exc:
         yaml_error = f"{type(exc).__name__}: {exc}"
         missing.append("valid unique-key workflow YAML")
+        document = None
         steps = []
+
+    if document is None:
+        context_validation = {
+            "checked_expression_count": 0,
+            "failure_codes": ["yaml_document_unavailable"],
+            "findings": [
+                {
+                    "code": "yaml_document_unavailable",
+                    "path": "<document>",
+                }
+            ],
+            "references": [],
+            "status": "FAIL",
+        }
+    else:
+        context_validation = _workflow_expression_context_evidence(document)
+    for failure_code in context_validation["failure_codes"]:
+        findings.append(f"workflow context: {failure_code}")
 
     if document is not None:
         normalized_top_keys = {
@@ -1423,7 +2065,6 @@ def workflow_policy(args: argparse.Namespace) -> int:
                 "CONTINUITYOS_SILENCE_EMBED_WARN": "1",
                 "PYTHONNOUSERSITE": "1",
                 "PYTHONUTF8": "1",
-                "PYTHONPYCACHEPREFIX": "${{ runner.temp }}/continuityos-pycache",
                 "PYTEST_ADDOPTS": "-p no:cacheprovider",
             }:
                 findings.append("job environment not exact")
@@ -1478,7 +2119,26 @@ def workflow_policy(args: argparse.Namespace) -> int:
     }:
         findings.append("setup-python inputs not exact")
 
+    configure_pycache_step = step_by_id.get("configure_pycache", {})
+    if set(configure_pycache_step) != {"name", "id", "env", "shell", "run"}:
+        findings.append("runner-scoped pycache step keys not exact")
+    if configure_pycache_step.get("name") != (
+        "Configure runner-scoped Python bytecode cache"
+    ):
+        findings.append("runner-scoped pycache step name not exact")
+    if configure_pycache_step.get("env") != {
+        "PYTHONPYCACHEPREFIX": "${{ runner.temp }}/continuityos-pycache"
+    }:
+        findings.append("runner-scoped pycache environment not exact")
+    if configure_pycache_step.get("shell") != "python":
+        findings.append("runner-scoped pycache shell not exact")
+
     required_step_tokens = {
+        "configure_pycache": (
+            'os.environ["GITHUB_ENV"]',
+            "PYTHONPYCACHEPREFIX",
+            '"a", encoding="utf-8", newline="\\n"',
+        ),
         "create_review_env": (
             "create-review-environment",
             "${{ runner.temp }}/continuityos-review-venv",
@@ -1509,6 +2169,9 @@ def workflow_policy(args: argparse.Namespace) -> int:
         "pip_check": (
             "verify-review-environment",
             "--lock requirements/review-ci-py311.lock",
+        ),
+        "final_gate": (
+            '--step "configure_pycache=${{ steps.configure_pycache.outcome }}"',
         ),
     }
     for step_id, tokens in required_step_tokens.items():
@@ -1582,13 +2245,14 @@ def workflow_policy(args: argparse.Namespace) -> int:
     ):
         findings.append("non-mandatory step")
     payload = {
-        "schema": "continuityos-review-workflow-policy-v2",
+        "schema": "continuityos-review-workflow-policy-v3",
         "workflow": str(workflow),
         "workflow_sha256": _sha256_file(workflow),
         "normalized_workflow_sha256": normalized_workflow_sha256,
         "reviewed_workflow_sha256": REVIEWED_WORKFLOW_SHA256,
         "yaml_parse_status": "PASS" if not yaml_error else "FAIL",
         "yaml_error": yaml_error,
+        "context_validation": context_validation,
         "step_ids": ordered_step_ids,
         "duplicate_step_ids": duplicate_ids,
         "action_refs": action_refs,
