@@ -132,8 +132,10 @@ jobs:
           python -m tools.ci_review run
           --output "${{ runner.temp }}/continuityos-review-receipts/governance-corpus.json"
           -- python -m bench.continuitybench
+          --json-out "${{ runner.temp }}/continuityos-review-receipts/governance-corpus-detail.json"
 
       - name: Run portable release-hardening probes
+        if: always()
         env:
           PYTHONUTF8: "1"
         run: >-
@@ -143,7 +145,7 @@ jobs:
           --json-out "${{ runner.temp }}/continuityos-review-receipts/portable-probes.json"
 
       - name: Run mandatory Linux symlink and realpath regression
-        if: runner.os == 'Linux'
+        if: always() && runner.os == 'Linux'
         run: >-
           python -m tools.ci_review run
           --output "${{ runner.temp }}/continuityos-review-receipts/linux-symlink-realpath.json"

@@ -74,15 +74,94 @@ def _run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None):
     return completed, round(time.time() - started, 3)
 
 
+def _emit_text(text: str, stream) -> None:
+    value = text if text.endswith("\n") else text + "\n"
+    try:
+        stream.write(value)
+    except UnicodeEncodeError:
+        encoding = getattr(stream, "encoding", None) or "utf-8"
+        safe_value = value.encode(encoding, errors="backslashreplace").decode(encoding)
+        stream.write(safe_value)
+
+
 def _emit_completed(completed: subprocess.CompletedProcess[str]) -> None:
     if completed.stdout:
-        print(completed.stdout, end="" if completed.stdout.endswith("\n") else "\n")
+        _emit_text(completed.stdout, sys.stdout)
     if completed.stderr:
-        print(
-            completed.stderr,
-            end="" if completed.stderr.endswith("\n") else "\n",
-            file=sys.stderr,
+        _emit_text(completed.stderr, sys.stderr)
+
+
+def _normalized_path_sha256(path: Path) -> str:
+    """Fingerprint a path without placing the path value in a receipt."""
+    normalized = os.path.normcase(os.path.normpath(str(path)))
+    return _sha256(normalized.encode("utf-8", errors="surrogatepass"))
+
+
+def _safe_execution_context() -> dict:
+    """Return non-secret context sufficient to explain runner path differences."""
+    cwd = Path.cwd().resolve()
+    home_value = os.environ.get("HOME")
+    home_source = "HOME"
+    if home_value is None and os.name == "nt":
+        home_value = os.environ.get("USERPROFILE")
+        home_source = "USERPROFILE"
+
+    home_path = None
+    if not home_value:
+        home_class = "unset"
+    elif not os.path.isabs(os.path.expandvars(home_value)):
+        home_class = "relative"
+    else:
+        home_class = "absolute"
+        try:
+            home_path = Path(os.path.expandvars(home_value)).resolve()
+        except OSError:
+            home_class = "unresolvable"
+
+    if home_path is None:
+        cwd_class = "home_unavailable"
+    elif cwd == home_path:
+        cwd_class = "home"
+    else:
+        try:
+            cwd_class = "inside_home" if cwd.is_relative_to(home_path) else "outside_home"
+        except (OSError, ValueError):
+            cwd_class = "outside_home"
+
+    policy = {
+        "source": "continuityos.gate.policy.default_policy",
+        "status": "unavailable",
+        "sha256": None,
+        "version": None,
+    }
+    try:
+        from continuityos.gate.policy import default_policy, policy_fingerprint
+
+        effective_policy = default_policy()
+        policy.update(
+            {
+                "status": "available",
+                "sha256": policy_fingerprint(effective_policy),
+                "version": effective_policy.get("version"),
+            }
         )
+    except Exception as exc:  # pragma: no cover - exercised only in damaged installs
+        policy["error_class"] = type(exc).__name__
+
+    return {
+        "home": {
+            "class": home_class,
+            "source": home_source,
+            "path_sha256": (
+                _normalized_path_sha256(home_path) if home_path is not None else None
+            ),
+        },
+        "cwd": {
+            "class": cwd_class,
+            "path_sha256": _normalized_path_sha256(cwd),
+        },
+        "policy": policy,
+    }
 
 
 def command_receipt(args: argparse.Namespace) -> int:
@@ -96,9 +175,10 @@ def command_receipt(args: argparse.Namespace) -> int:
     _write_json(
         Path(args.output),
         {
-            "schema": "continuityos-ci-command-receipt-v1",
+            "schema": "continuityos-ci-command-receipt-v2",
             "command": command,
             "cwd": str(Path.cwd().resolve()),
+            "execution_context": _safe_execution_context(),
             "duration_seconds": duration,
             "exit_code": completed.returncode,
             "platform": platform.platform(),
@@ -422,6 +502,7 @@ print(json.dumps({{"package_path": str(package_path), "purelib": str(purelib),
         "--import-mode=importlib",
         "tests",
         "--ignore=tests/test_ci_review_tool.py",
+        "--ignore=tests/test_continuitybench_portable_context.py",
         "--ignore=tests/test_version_consistency.py",
         "--ignore=tests/test_packaging_hygiene.py",
     ]
@@ -468,6 +549,14 @@ print(json.dumps({{"package_path": str(package_path), "purelib": str(purelib),
     return 0 if passed else 1
 
 
+def _workflow_step_block(text: str, name: str) -> str:
+    match = re.search(
+        rf"(?ms)^\s*- name: {re.escape(name)}\s*$.*?(?=^\s*- name: |\Z)",
+        text,
+    )
+    return match.group(0) if match else ""
+
+
 def workflow_policy(args: argparse.Namespace) -> int:
     workflow = Path(args.workflow).resolve()
     text = workflow.read_text(encoding="utf-8")
@@ -480,6 +569,7 @@ def workflow_policy(args: argparse.Namespace) -> int:
         "tag trigger": "tags:",
         "privileged PR trigger": "pull_request_target:",
         "GitHub environment": "environment:",
+        "non-mandatory step": "continue-on-error:",
     }
     findings = [name for name, token in forbidden.items() if token in lowered]
     if re.search(r"(?mi)^\s+[a-z][a-z-]*:\s*write\s*$", text):
@@ -495,10 +585,25 @@ def workflow_policy(args: argparse.Namespace) -> int:
         "compileall",
         "release_hardening_probes.py",
         "bench.continuitybench",
+        "governance-corpus-detail.json",
         "test_ci_linux_symlink_realpath.py",
         "actions/upload-artifact@v4",
     ]
     missing = [token for token in required if token not in text]
+    always_steps = (
+        "Run portable release-hardening probes",
+        "Run mandatory Linux symlink and realpath regression",
+    )
+    for name in always_steps:
+        block = _workflow_step_block(text, name)
+        if not re.search(
+            r"(?m)^\s+if:\s*(?:\$\{\{\s*)?always\(\)",
+            block,
+        ):
+            missing.append(f"always gate: {name}")
+    linux_name = "Run mandatory Linux symlink and realpath regression"
+    if "runner.os == 'Linux'" not in _workflow_step_block(text, linux_name):
+        missing.append(f"Linux runner condition: {linux_name}")
     payload = {
         "schema": "continuityos-review-workflow-policy-v1",
         "workflow": str(workflow),
