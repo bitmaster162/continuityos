@@ -45,7 +45,7 @@ REVIEWED_ACTION_REFS = {
 }
 
 REVIEWED_WORKFLOW_SHA256 = (
-    "736853ca94833ad20f7ceb0368a6b78528d08c6eb5e8ca95aa0ec5c0339b84c7"
+    "9032fe4ef70aff7c472350e976730b5269bdc3810fdfec7ba9823a3500d72258"
 )
 
 REVIEW_PYTHON_VERSION = "3.11.9"
@@ -121,6 +121,30 @@ WORKFLOW_STEP_IDS = (
     "receipt_manifest",
     "upload_receipts",
     "enforce_conclusions",
+)
+
+REVIEW_PYTHON_STEP_RECEIPTS = {
+    "install_tooling": "install-review-tooling.json",
+    "pip_check": "review-tooling-environment-command.json",
+    "workflow_policy": "workflow-policy-command.json",
+    "clean_metadata": "clean-source-metadata-command.json",
+    "nodeids": "pytest-nodeids-command.json",
+    "clean_tests": "clean-source-pytest.json",
+    "wheel_build": "wheel-build.json",
+    "wheel_tooling": "wheel-test-tooling.json",
+    "wheel_tests": "wheel-only-pytest-command.json",
+    "editable_install": "editable-install.json",
+    "editable_metadata": "editable-metadata-command.json",
+    "editable_tests": "editable-pytest.json",
+    "compileall": "compileall.json",
+    "governance": "governance-corpus.json",
+    "portable_probes": "portable-probes-command.json",
+    "linux_symlink": "linux-symlink-realpath.json",
+}
+
+REVIEW_ENVIRONMENT_RECEIPT_WORKFLOW_PATH = (
+    "${{ runner.temp }}/continuityos-review-receipts/"
+    "create-review-environment.json"
 )
 
 WORKFLOW_CONTEXT_NAMES = frozenset(
@@ -939,18 +963,32 @@ def review_lock_policy(args: argparse.Namespace) -> int:
     return 0 if payload["status"] == "PASS" else 1
 
 
+def _review_environment_layout(
+    environment: Path,
+    *,
+    runner_os: str | None = None,
+) -> tuple[Path, Path]:
+    windows = (
+        runner_os.lower() == "windows" if runner_os is not None else os.name == "nt"
+    )
+    scripts_directory = environment / ("Scripts" if windows else "bin")
+    interpreter = scripts_directory / ("python.exe" if windows else "python")
+    return scripts_directory, interpreter
+
+
 def create_review_environment(args: argparse.Namespace) -> int:
-    """Create a one-use venv and expose only its scripts directory to later steps."""
+    """Create a one-use venv; an optional PATH export is convenience-only."""
     destination = Path(args.directory).resolve()
     output = Path(args.output)
-    path_file_value = args.path_file or os.environ.get("GITHUB_PATH", "")
+    path_file_value = args.path_file or ""
     path_file = Path(path_file_value).resolve() if path_file_value else None
-    scripts_dir = destination / ("Scripts" if os.name == "nt" else "bin")
-    interpreter = scripts_dir / ("python.exe" if os.name == "nt" else "python")
+    scripts_dir, interpreter = _review_environment_layout(destination)
     environment_preexisted = destination.exists()
     failure_codes = []
     probe = None
     probe_stderr = ""
+    path_file_status = "NOT_REQUESTED"
+    path_file_error_class = None
 
     if environment_preexisted:
         failure_codes.append("review_environment_already_exists")
@@ -993,15 +1031,16 @@ def create_review_environment(args: argparse.Namespace) -> int:
         if probe and probe.get("version") != REVIEW_PYTHON_VERSION:
             failure_codes.append("review_python_version_not_exact")
 
-    if path_file is None:
-        failure_codes.append("github_path_file_missing")
-    elif not failure_codes:
+    if path_file is not None and not failure_codes:
         try:
             path_file.parent.mkdir(parents=True, exist_ok=True)
             with path_file.open("a", encoding="utf-8", newline="\n") as handle:
                 handle.write(str(scripts_dir) + "\n")
-        except OSError:
-            failure_codes.append("github_path_file_write_failed")
+        except OSError as exc:
+            path_file_status = "FAIL"
+            path_file_error_class = type(exc).__name__
+        else:
+            path_file_status = "PASS"
 
     payload = {
         "schema": "continuityos-review-environment-create-v1",
@@ -1013,7 +1052,11 @@ def create_review_environment(args: argparse.Namespace) -> int:
         "scripts_directory": str(scripts_dir),
         "interpreter": str(interpreter),
         "interpreter_probe": probe,
-        "path_file_configured": path_file is not None,
+        "path_file_requested": path_file is not None,
+        "path_file_configured": path_file_status == "PASS",
+        "path_file_status": path_file_status,
+        "path_file_error_class": path_file_error_class,
+        "path_has_authority": False,
         "probe_stderr": probe_stderr,
         "failure_codes": sorted(set(failure_codes)),
         "status": "PASS" if not failure_codes else "FAIL",
@@ -1021,6 +1064,492 @@ def create_review_environment(args: argparse.Namespace) -> int:
     _write_json(output, payload)
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     return 0 if payload["status"] == "PASS" else 1
+
+
+def _normalized_lexical_path(path: str | Path) -> str:
+    return os.path.normcase(os.path.normpath(os.path.abspath(os.fspath(path))))
+
+
+def _lexical_paths_equal(left: str | Path, right: str | Path) -> bool:
+    return _normalized_lexical_path(left) == _normalized_lexical_path(right)
+
+
+def _outer_python_identity() -> dict:
+    return {
+        "executable": str(Path(os.path.abspath(sys.executable))),
+        "prefix": str(Path(os.path.abspath(sys.prefix))),
+        "base_prefix": str(Path(os.path.abspath(sys.base_prefix))),
+        "version": platform.python_version(),
+    }
+
+
+def _path_order_evidence(environment: Path | None, interpreter: Path | None) -> dict:
+    """Fingerprint PATH and classify ordering without recording its path values."""
+    raw_path = os.environ.get("PATH", "")
+    entries = raw_path.split(os.pathsep)
+    environment_scripts = interpreter.parent if interpreter is not None else None
+    outer_scripts = Path(os.path.abspath(sys.executable)).parent
+
+    def first_index(candidate: Path | None):
+        if candidate is None:
+            return None
+        for index, entry in enumerate(entries):
+            if not entry:
+                continue
+            try:
+                if _lexical_paths_equal(entry, candidate):
+                    return index
+            except (OSError, ValueError):
+                continue
+        return None
+
+    environment_index = first_index(environment_scripts)
+    outer_index = first_index(outer_scripts)
+    generic_python = shutil.which("python", path=raw_path)
+    if environment_scripts is not None and _lexical_paths_equal(
+        environment_scripts, outer_scripts
+    ):
+        order_class = "same_interpreter_directory"
+    elif environment_index is None and outer_index is None:
+        order_class = "both_absent"
+    elif environment_index is None:
+        order_class = "environment_absent"
+    elif outer_index is None:
+        order_class = "outer_absent"
+    elif environment_index < outer_index:
+        order_class = "environment_precedes_outer"
+    elif outer_index < environment_index:
+        order_class = "outer_precedes_environment"
+    else:
+        order_class = "same_path_entry"
+
+    if generic_python is None:
+        generic_resolution_class = "missing"
+    elif interpreter is not None and _lexical_paths_equal(
+        generic_python, interpreter
+    ):
+        generic_resolution_class = "exact_review_interpreter"
+    elif _lexical_paths_equal(generic_python, sys.executable):
+        generic_resolution_class = "outer_interpreter"
+    else:
+        generic_resolution_class = "other_interpreter"
+
+    return {
+        "path_sha256": _sha256(raw_path.encode("utf-8", errors="surrogatepass")),
+        "entry_count": len(entries),
+        "empty_entry_count": sum(not entry for entry in entries),
+        "environment_scripts_index": environment_index,
+        "outer_interpreter_directory_index": outer_index,
+        "order_class": order_class,
+        "generic_python_resolution_class": generic_resolution_class,
+        "generic_python_path_sha256": (
+            _normalized_path_sha256(Path(generic_python))
+            if generic_python is not None
+            else None
+        ),
+        "environment_is_absolute": bool(
+            environment is not None and os.path.isabs(str(environment))
+        ),
+    }
+
+
+def _review_python_argument_failure(command: list[str]) -> str:
+    """Accept Python arguments, never a caller-supplied replacement executable."""
+    if not command:
+        return "review_python_arguments_missing"
+    index = 0
+    while index < len(command) and command[index] in {
+        "-B",
+        "-E",
+        "-I",
+        "-S",
+        "-s",
+        "-u",
+    }:
+        index += 1
+    if index >= len(command):
+        return "review_python_payload_missing"
+    token = command[index]
+    if token in {"-m", "-c"}:
+        if index + 1 >= len(command) or not command[index + 1]:
+            return "review_python_payload_missing"
+        return ""
+    if token.lower().endswith(".py"):
+        return ""
+    return "caller_replacement_interpreter_rejected"
+
+
+_REVIEW_PYTHON_IDENTITY_PROBE = (
+    "import importlib.metadata,json,re,site,sys;"
+    "packages=[];"
+    "[(packages.append({'name':re.sub(r'[-_.]+','-',n).lower(),"
+    "'version':d.version}) if (n:=d.metadata.get('Name')) else None) "
+    "for d in importlib.metadata.distributions()];"
+    "print(json.dumps({'base_prefix':sys.base_prefix,"
+    "'executable':sys.executable,'installed_packages':sorted(packages,"
+    "key=lambda item:(item['name'],item['version'])),'prefix':sys.prefix,"
+    "'user_site_enabled':site.ENABLE_USER_SITE,"
+    "'version':'.'.join(map(str,sys.version_info[:3]))},sort_keys=True))"
+)
+
+
+def _probe_review_python(interpreter: Path, environment: Path):
+    command = [str(interpreter), "-I", "-c", _REVIEW_PYTHON_IDENTITY_PROBE]
+    try:
+        completed, duration = _run(command, cwd=environment)
+    except OSError as exc:
+        return None, {
+            "command": [str(interpreter), "-I", "-c", "<identity probe>"],
+            "duration_seconds": 0.0,
+            "exit_code": None,
+            "stdout": "",
+            "stderr": "",
+            "error_class": type(exc).__name__,
+        }
+    evidence = {
+        "command": [str(interpreter), "-I", "-c", "<identity probe>"],
+        "duration_seconds": duration,
+        "exit_code": completed.returncode,
+        "stdout": completed.stdout,
+        "stderr": completed.stderr,
+    }
+    if completed.returncode != 0:
+        return None, evidence
+    try:
+        identity = json.loads(completed.stdout.strip())
+    except (json.JSONDecodeError, TypeError):
+        return None, evidence
+    installed = identity.get("installed_packages")
+    if isinstance(installed, list):
+        serialized = json.dumps(
+            installed, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
+        identity["installed_package_count"] = len(installed)
+        identity["installed_packages_sha256"] = _sha256(serialized)
+    return identity, evidence
+
+
+def _review_python_identity_failures(
+    identity: dict | None,
+    *,
+    creation_probe: dict,
+    environment: Path,
+    interpreter: Path,
+    phase: str,
+) -> list[str]:
+    if not isinstance(identity, dict):
+        return [f"child_identity_{phase}_unavailable"]
+    failures = []
+    executable = identity.get("executable")
+    prefix = identity.get("prefix")
+    base_prefix = identity.get("base_prefix")
+    if not executable or not os.path.isabs(str(executable)):
+        failures.append(f"child_executable_{phase}_not_absolute")
+    elif not _lexical_paths_equal(executable, interpreter):
+        failures.append(f"child_executable_{phase}_not_creation_interpreter")
+    if not prefix or not os.path.isabs(str(prefix)):
+        failures.append(f"child_prefix_{phase}_not_absolute")
+    elif not _lexical_paths_equal(prefix, environment):
+        failures.append(f"child_prefix_{phase}_not_creation_environment")
+    if not base_prefix or not os.path.isabs(str(base_prefix)):
+        failures.append(f"child_base_prefix_{phase}_not_absolute")
+    else:
+        if prefix and _lexical_paths_equal(prefix, base_prefix):
+            failures.append(f"child_interpreter_{phase}_not_isolated")
+        creation_base_prefix = creation_probe.get("base_prefix")
+        if not creation_base_prefix or not _lexical_paths_equal(
+            base_prefix, creation_base_prefix
+        ):
+            failures.append(f"child_base_prefix_{phase}_not_creation_identity")
+    if identity.get("version") != REVIEW_PYTHON_VERSION:
+        failures.append(f"child_python_version_{phase}_not_exact")
+    if identity.get("user_site_enabled") is not False:
+        failures.append(f"child_user_site_{phase}_enabled")
+    installed = identity.get("installed_packages")
+    if not isinstance(installed, list):
+        failures.append(f"child_inventory_{phase}_missing")
+    return failures
+
+
+def review_python_command_receipt(args: argparse.Namespace) -> int:
+    """Execute Python arguments with the exact interpreter bound by a creation receipt."""
+    command_arguments = list(args.command)
+    if command_arguments and command_arguments[0] == "--":
+        command_arguments.pop(0)
+    output = Path(args.output)
+    cwd = Path(getattr(args, "cwd", None) or Path.cwd()).resolve()
+    receipt_path = Path(args.environment_receipt)
+    failure_codes = []
+    required_post_lock_value = getattr(args, "require_post_lock", None)
+    required_post_lock = (
+        Path(required_post_lock_value).resolve()
+        if required_post_lock_value
+        else None
+    )
+    required_post_lock_evidence = None
+    required_post_versions = None
+    post_inventory_exact = None
+    if required_post_lock is not None:
+        required_post_lock_evidence = _review_lock_evidence(required_post_lock)
+        if required_post_lock_evidence.get("status") != "PASS":
+            failure_codes.append("required_post_lock_not_exact")
+        else:
+            required_post_versions = {
+                item["name"]: item["version"]
+                for item in required_post_lock_evidence["packages"]
+            }
+    receipt_sha256 = None
+    creation = None
+    receipt_error = ""
+    try:
+        receipt_bytes = receipt_path.read_bytes()
+        receipt_sha256 = _sha256(receipt_bytes)
+    except OSError as exc:
+        receipt_bytes = None
+        receipt_error = type(exc).__name__
+        failure_codes.append("environment_receipt_missing")
+    if receipt_bytes is not None:
+        try:
+            creation = json.loads(receipt_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            receipt_error = "invalid_json"
+            failure_codes.append("environment_receipt_invalid_json")
+    if creation is not None and not isinstance(creation, dict):
+        creation = None
+        failure_codes.append("environment_receipt_not_object")
+
+    environment = None
+    interpreter = None
+    creation_probe = None
+    if creation is not None:
+        if creation.get("schema") != "continuityos-review-environment-create-v1":
+            failure_codes.append("environment_receipt_schema_not_exact")
+        if creation.get("status") != "PASS":
+            failure_codes.append("environment_receipt_status_not_pass")
+        if creation.get("failure_codes") != []:
+            failure_codes.append("environment_receipt_failure_codes_present")
+        if creation.get("environment_preexisted") is not False:
+            failure_codes.append("environment_receipt_not_fresh")
+        if creation.get("path_has_authority") is not False:
+            failure_codes.append("environment_receipt_path_authority_not_false")
+        if creation.get("expected_python_version") != REVIEW_PYTHON_VERSION:
+            failure_codes.append("environment_receipt_python_version_not_exact")
+        environment_value = creation.get("environment")
+        interpreter_value = creation.get("interpreter")
+        if not environment_value or not os.path.isabs(str(environment_value)):
+            failure_codes.append("environment_path_not_absolute")
+        else:
+            environment = Path(str(environment_value))
+            try:
+                environment_exists = environment.is_dir()
+            except (OSError, ValueError):
+                environment_exists = False
+            if not environment_exists:
+                failure_codes.append("environment_directory_missing")
+        if not interpreter_value or not os.path.isabs(str(interpreter_value)):
+            failure_codes.append("interpreter_path_not_absolute")
+        else:
+            interpreter = Path(str(interpreter_value))
+            if environment is not None:
+                _, expected_interpreter = _review_environment_layout(environment)
+                if not _lexical_paths_equal(interpreter, expected_interpreter):
+                    failure_codes.append("interpreter_path_not_canonical")
+                if not _lexical_path_is_within(interpreter, environment):
+                    failure_codes.append("interpreter_outside_environment")
+            try:
+                interpreter_exists = interpreter.is_file()
+            except (OSError, ValueError):
+                interpreter_exists = False
+            if not interpreter_exists:
+                failure_codes.append("interpreter_missing")
+        scripts_value = creation.get("scripts_directory")
+        if not scripts_value or not os.path.isabs(str(scripts_value)):
+            failure_codes.append("scripts_directory_not_absolute")
+        elif environment is not None:
+            expected_scripts, _ = _review_environment_layout(environment)
+            if not _lexical_paths_equal(scripts_value, expected_scripts):
+                failure_codes.append("scripts_directory_not_canonical")
+            if interpreter is not None and not _lexical_paths_equal(
+                scripts_value, interpreter.parent
+            ):
+                failure_codes.append("scripts_directory_not_interpreter_parent")
+        creation_probe = creation.get("interpreter_probe")
+        if not isinstance(creation_probe, dict):
+            failure_codes.append("creation_interpreter_probe_missing")
+        elif environment is not None and interpreter is not None:
+            probe_executable = creation_probe.get("executable")
+            probe_prefix = creation_probe.get("prefix")
+            probe_base_prefix = creation_probe.get("base_prefix")
+            if not probe_executable or not os.path.isabs(str(probe_executable)):
+                failure_codes.append("creation_probe_executable_not_absolute")
+            elif not _lexical_paths_equal(probe_executable, interpreter):
+                failure_codes.append("creation_probe_executable_mismatch")
+            if not probe_prefix or not os.path.isabs(str(probe_prefix)):
+                failure_codes.append("creation_probe_prefix_not_absolute")
+            elif not _lexical_paths_equal(probe_prefix, environment):
+                failure_codes.append("creation_probe_prefix_mismatch")
+            if not probe_base_prefix or not os.path.isabs(str(probe_base_prefix)):
+                failure_codes.append("creation_probe_base_prefix_not_absolute")
+            elif probe_prefix and _lexical_paths_equal(
+                probe_prefix, probe_base_prefix
+            ):
+                failure_codes.append("creation_probe_not_isolated")
+            if creation_probe.get("version") != REVIEW_PYTHON_VERSION:
+                failure_codes.append("creation_probe_version_mismatch")
+
+    argument_failure = _review_python_argument_failure(command_arguments)
+    if argument_failure:
+        failure_codes.append(argument_failure)
+    if not cwd.is_dir():
+        failure_codes.append("command_cwd_missing")
+
+    outer_identity_before = _outer_python_identity()
+    path_evidence_before = _path_order_evidence(environment, interpreter)
+    exact_command = (
+        [str(interpreter), *command_arguments] if interpreter is not None else None
+    )
+    child_before = None
+    child_after = None
+    pre_probe = None
+    post_probe = None
+    execution_attempted = False
+    completed = None
+    duration = 0.0
+
+    if not failure_codes and interpreter is not None and environment is not None:
+        child_before, pre_probe = _probe_review_python(interpreter, environment)
+        failure_codes.extend(
+            _review_python_identity_failures(
+                child_before,
+                creation_probe=creation_probe,
+                environment=environment,
+                interpreter=interpreter,
+                phase="before",
+            )
+        )
+
+    if not failure_codes and exact_command is not None:
+        child_env = dict(os.environ)
+        child_env.pop("PYTHONPATH", None)
+        child_env.pop("PYTHONHOME", None)
+        child_env["PYTHONNOUSERSITE"] = "1"
+        child_env["PYTHONUTF8"] = "1"
+        execution_attempted = True
+        try:
+            completed, duration = _run(exact_command, cwd=cwd, env=child_env)
+        except OSError as exc:
+            failure_codes.append(f"child_command_launch_failed:{type(exc).__name__}")
+        if completed is not None:
+            _emit_completed(completed)
+            if completed.returncode != 0:
+                failure_codes.append("child_command_failed")
+        child_after, post_probe = _probe_review_python(interpreter, environment)
+        failure_codes.extend(
+            _review_python_identity_failures(
+                child_after,
+                creation_probe=creation_probe,
+                environment=environment,
+                interpreter=interpreter,
+                phase="after",
+            )
+        )
+        if required_post_versions is not None:
+            installed = (
+                child_after.get("installed_packages")
+                if isinstance(child_after, dict)
+                else None
+            )
+            installed_versions, installed_duplicates = _inventory_versions(installed)
+            post_inventory_exact = bool(
+                installed_versions == required_post_versions
+                and not installed_duplicates
+                and len(installed or []) == len(required_post_versions)
+            )
+            if not post_inventory_exact:
+                failure_codes.append("post_inventory_not_exact_locked_closure")
+    if required_post_lock is not None and post_inventory_exact is None:
+        post_inventory_exact = False
+
+    if child_before and child_after:
+        for key in ("executable", "prefix", "base_prefix", "version"):
+            left = child_before.get(key)
+            right = child_after.get(key)
+            equal = (
+                _lexical_paths_equal(left, right)
+                if key != "version" and left and right
+                else left == right
+            )
+            if not equal:
+                failure_codes.append(f"child_identity_changed:{key}")
+
+    failure_codes = sorted(set(failure_codes))
+    exit_code = completed.returncode if completed is not None else None
+    outer_identity_after = _outer_python_identity()
+    path_evidence_after = _path_order_evidence(environment, interpreter)
+    payload = {
+        "schema": "continuityos-review-python-command-receipt-v1",
+        "environment_receipt": str(receipt_path.resolve()),
+        "environment_receipt_sha256": receipt_sha256,
+        "environment_receipt_error": receipt_error,
+        "environment": str(environment) if environment is not None else None,
+        "exact_interpreter": str(interpreter) if interpreter is not None else None,
+        "expected_python_version": REVIEW_PYTHON_VERSION,
+        "outer_identity_before": outer_identity_before,
+        "outer_identity_after": outer_identity_after,
+        "child_identity_before": child_before,
+        "child_identity_after": child_after,
+        "identity_probe_before": pre_probe,
+        "identity_probe_after": post_probe,
+        "path_evidence_before": path_evidence_before,
+        "path_evidence_after": path_evidence_after,
+        "required_post_lock": (
+            str(required_post_lock) if required_post_lock is not None else None
+        ),
+        "required_post_lock_sha256": (
+            required_post_lock_evidence.get("canonical_sha256")
+            if required_post_lock_evidence is not None
+            else None
+        ),
+        "required_post_versions": required_post_versions,
+        "post_inventory_exact": post_inventory_exact,
+        "python_environment_policy": {
+            "PYTHONHOME": "removed",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONPATH": "removed",
+            "PYTHONUTF8": "1",
+        },
+        "command_arguments": command_arguments,
+        "exact_command": exact_command,
+        "cwd": str(cwd),
+        "execution_context": _safe_execution_context(cwd),
+        "execution_attempted": execution_attempted,
+        "duration_seconds": duration,
+        "exit_code": exit_code,
+        "platform": platform.platform(),
+        "stdout": completed.stdout if completed is not None else "",
+        "stderr": completed.stderr if completed is not None else "",
+        "failure_codes": failure_codes,
+        "status": "PASS" if not failure_codes else "FAIL",
+    }
+    _write_json(output, payload)
+    print(
+        json.dumps(
+            {
+                "environment_receipt_sha256": receipt_sha256,
+                "exact_interpreter": payload["exact_interpreter"],
+                "exit_code": exit_code,
+                "failure_codes": failure_codes,
+                "path_order_class": path_evidence_before["order_class"],
+                "status": payload["status"],
+            },
+            sort_keys=True,
+        )
+    )
+    if payload["status"] == "PASS":
+        return 0
+    if completed is not None and completed.returncode != 0:
+        return completed.returncode
+    return 1
 
 
 def verify_review_environment(args: argparse.Namespace) -> int:
@@ -1964,6 +2493,7 @@ def workflow_policy(args: argparse.Namespace) -> int:
         "final-gate",
         "validate-lock",
         "create-review-environment",
+        "run-review-python",
         "verify-review-environment",
         "python-version: \"3.11.9\"",
         "architecture: \"x64\"",
@@ -2151,6 +2681,7 @@ def workflow_policy(args: argparse.Namespace) -> int:
             "--require-hashes",
             "--only-binary=:all:",
             "--index-url https://pypi.org/simple",
+            "--require-post-lock requirements/review-ci-py311.lock",
             "requirements/review-ci-py311.lock",
         ),
         "wheel_tooling": (
@@ -2179,6 +2710,24 @@ def workflow_policy(args: argparse.Namespace) -> int:
         for token in tokens:
             if token not in command:
                 missing.append(f"step token: {step_id}: {token}")
+
+    for step_id, receipt_name in REVIEW_PYTHON_STEP_RECEIPTS.items():
+        command = str(step_by_id.get(step_id, {}).get("run", ""))
+        binding_tokens = (
+            "python -m tools.ci_review run-review-python",
+            f'--environment-receipt "{REVIEW_ENVIRONMENT_RECEIPT_WORKFLOW_PATH}"',
+            f"/continuityos-review-receipts/{receipt_name}",
+            "-- ",
+        )
+        for token in binding_tokens:
+            if token not in command:
+                missing.append(f"review interpreter binding: {step_id}: {token}")
+        if re.search(
+            r"--\s+(?:python(?:\.exe)?|py(?:\.exe)?)(?:\s|$)",
+            command,
+            flags=re.IGNORECASE,
+        ):
+            findings.append(f"nested generic interpreter: {step_id}")
 
     action_refs = {}
     for step in steps:
@@ -2290,6 +2839,162 @@ def _read_json_receipt(path: Path):
         return None, "invalid_json"
 
 
+def _inventory_versions(records) -> tuple[dict[str, str], list[str]]:
+    versions = {}
+    duplicates = []
+    if not isinstance(records, list):
+        return versions, ["<inventory-not-list>"]
+    for record in records:
+        if not isinstance(record, dict):
+            duplicates.append("<inventory-record-not-object>")
+            continue
+        name = record.get("name")
+        version = record.get("version")
+        if not isinstance(name, str) or not isinstance(version, str):
+            duplicates.append("<inventory-record-invalid>")
+            continue
+        normalized = _normalize_distribution_name(name)
+        if normalized in versions:
+            duplicates.append(normalized)
+        versions[normalized] = version
+    return versions, sorted(set(duplicates))
+
+
+def _inventory_locations_within(records, prefix) -> bool:
+    if not isinstance(records, list) or not prefix or not os.path.isabs(str(prefix)):
+        return False
+    for record in records:
+        if not isinstance(record, dict) or record.get("under_prefix") is not True:
+            return False
+        location = record.get("location")
+        if not location or not os.path.isabs(str(location)):
+            return False
+        try:
+            if not _lexical_path_is_within(location, prefix):
+                return False
+        except (OSError, TypeError, ValueError):
+            return False
+    return True
+
+
+def _review_python_binding_failures(
+    name: str,
+    payload: dict | None,
+    *,
+    creation_sha256: str | None,
+    environment: str | None,
+    interpreter: str | None,
+    creation_probe: dict,
+) -> list[str]:
+    prefix = f"review_python_binding:{name}"
+    if not isinstance(payload, dict):
+        return [f"{prefix}:missing"]
+    failures = []
+    if payload.get("schema") != "continuityos-review-python-command-receipt-v1":
+        failures.append(f"{prefix}:schema_not_exact")
+    if payload.get("environment_receipt_sha256") != creation_sha256:
+        failures.append(f"{prefix}:creation_receipt_sha_mismatch")
+    if payload.get("status") != "PASS":
+        failures.append(f"{prefix}:status_not_pass")
+    if payload.get("failure_codes") != []:
+        failures.append(f"{prefix}:failure_codes_present")
+    if payload.get("execution_attempted") is not True:
+        failures.append(f"{prefix}:execution_not_attempted")
+    if payload.get("exit_code") != 0:
+        failures.append(f"{prefix}:exit_code_not_zero")
+    if payload.get("expected_python_version") != REVIEW_PYTHON_VERSION:
+        failures.append(f"{prefix}:expected_version_not_exact")
+    if payload.get("python_environment_policy") != {
+        "PYTHONHOME": "removed",
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONPATH": "removed",
+        "PYTHONUTF8": "1",
+    }:
+        failures.append(f"{prefix}:python_environment_policy_not_exact")
+    if not environment or not payload.get("environment") or not _lexical_paths_equal(
+        payload["environment"], environment
+    ):
+        failures.append(f"{prefix}:environment_mismatch")
+    if not interpreter or not payload.get("exact_interpreter") or not _lexical_paths_equal(
+        payload["exact_interpreter"], interpreter
+    ):
+        failures.append(f"{prefix}:interpreter_mismatch")
+
+    exact_command = payload.get("exact_command")
+    arguments = payload.get("command_arguments")
+    if not isinstance(exact_command, list) or not exact_command:
+        failures.append(f"{prefix}:exact_command_missing")
+    else:
+        if not interpreter or not _lexical_paths_equal(exact_command[0], interpreter):
+            failures.append(f"{prefix}:command_interpreter_mismatch")
+        if not isinstance(arguments, list) or exact_command[1:] != arguments:
+            failures.append(f"{prefix}:command_arguments_mismatch")
+        elif _review_python_argument_failure(arguments):
+            failures.append(f"{prefix}:command_arguments_not_python_payload")
+
+    for phase in ("before", "after"):
+        outer = payload.get(f"outer_identity_{phase}")
+        if not isinstance(outer, dict):
+            failures.append(f"{prefix}:outer_identity_{phase}_missing")
+        else:
+            for key in ("executable", "prefix", "base_prefix"):
+                if not outer.get(key) or not os.path.isabs(str(outer[key])):
+                    failures.append(f"{prefix}:outer_{key}_{phase}_not_absolute")
+            if not isinstance(outer.get("version"), str) or not outer["version"]:
+                failures.append(f"{prefix}:outer_version_{phase}_missing")
+
+        path_evidence = payload.get(f"path_evidence_{phase}")
+        if not isinstance(path_evidence, dict):
+            failures.append(f"{prefix}:path_evidence_{phase}_missing")
+        else:
+            if not re.fullmatch(r"[0-9a-f]{64}", str(path_evidence.get("path_sha256", ""))):
+                failures.append(f"{prefix}:path_sha_{phase}_invalid")
+            if not path_evidence.get("order_class"):
+                failures.append(f"{prefix}:path_order_{phase}_missing")
+            if not path_evidence.get("generic_python_resolution_class"):
+                failures.append(f"{prefix}:generic_resolution_{phase}_missing")
+
+        child = payload.get(f"child_identity_{phase}")
+        if not isinstance(child, dict):
+            failures.append(f"{prefix}:child_identity_{phase}_missing")
+            continue
+        child_executable = child.get("executable")
+        child_prefix = child.get("prefix")
+        child_base_prefix = child.get("base_prefix")
+        if not interpreter or not child_executable or not _lexical_paths_equal(
+            child_executable, interpreter
+        ):
+            failures.append(f"{prefix}:child_executable_{phase}_mismatch")
+        if not environment or not child_prefix or not _lexical_paths_equal(
+            child_prefix, environment
+        ):
+            failures.append(f"{prefix}:child_prefix_{phase}_mismatch")
+        creation_base_prefix = creation_probe.get("base_prefix")
+        if not creation_base_prefix or not child_base_prefix or not _lexical_paths_equal(
+            child_base_prefix, creation_base_prefix
+        ):
+            failures.append(f"{prefix}:child_base_prefix_{phase}_mismatch")
+        if child.get("version") != REVIEW_PYTHON_VERSION:
+            failures.append(f"{prefix}:child_version_{phase}_mismatch")
+        if child.get("user_site_enabled") is not False:
+            failures.append(f"{prefix}:child_user_site_{phase}_enabled")
+        installed = child.get("installed_packages")
+        if not isinstance(installed, list):
+            failures.append(f"{prefix}:child_inventory_{phase}_missing")
+        else:
+            serialized = json.dumps(
+                installed,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+            if child.get("installed_package_count") != len(installed):
+                failures.append(f"{prefix}:child_inventory_count_{phase}_mismatch")
+            if child.get("installed_packages_sha256") != _sha256(serialized):
+                failures.append(f"{prefix}:child_inventory_sha_{phase}_mismatch")
+    return failures
+
+
 def final_gate(args: argparse.Namespace) -> int:
     directory = Path(args.directory).resolve()
     output = Path(args.output)
@@ -2335,6 +3040,10 @@ def final_gate(args: argparse.Namespace) -> int:
         "materialized-post-bind.json": "status",
         "post-source-bind.json": "status",
     }
+    for step_id, receipt_name in REVIEW_PYTHON_STEP_RECEIPTS.items():
+        if step_id == "linux_symlink" and runner_os == "windows":
+            continue
+        required_status_receipts[receipt_name] = "status"
     if runner_os == "linux":
         required_status_receipts["linux-symlink-realpath.json"] = "status"
 
@@ -2409,15 +3118,92 @@ def final_gate(args: argparse.Namespace) -> int:
     lock_sha = lock_policy_payload.get("canonical_sha256")
     created_environment = receipts.get("create-review-environment.json") or {}
     review_environment = receipts.get("review-tooling-environment.json") or {}
+    creation_receipt_path = directory / "create-review-environment.json"
+    creation_receipt_sha256 = (
+        _sha256_file(creation_receipt_path)
+        if creation_receipt_path.is_file()
+        else None
+    )
+    if created_environment.get("schema") != "continuityos-review-environment-create-v1":
+        failure_codes.append("review_environment_creation_schema_not_exact")
+    if created_environment.get("failure_codes") != []:
+        failure_codes.append("review_environment_creation_failure_codes_present")
+    if created_environment.get("expected_python_version") != REVIEW_PYTHON_VERSION:
+        failure_codes.append("review_environment_creation_version_not_exact")
+    if created_environment.get("path_has_authority") is not False:
+        failure_codes.append("review_environment_path_authority_not_false")
     if created_environment.get("environment_preexisted") is not False:
         failure_codes.append("review_environment_not_fresh")
     created_prefix = created_environment.get("environment")
+    created_scripts = created_environment.get("scripts_directory")
+    created_interpreter = created_environment.get("interpreter")
+    creation_probe = created_environment.get("interpreter_probe")
+    if not created_prefix or not os.path.isabs(str(created_prefix)):
+        failure_codes.append("review_environment_creation_prefix_not_absolute")
+    elif not Path(str(created_prefix)).is_dir():
+        failure_codes.append("review_environment_creation_prefix_missing")
+    expected_created_scripts = None
+    expected_created_interpreter = None
+    if created_prefix and os.path.isabs(str(created_prefix)):
+        expected_created_scripts, expected_created_interpreter = (
+            _review_environment_layout(
+                Path(str(created_prefix)),
+                runner_os=args.runner_os,
+            )
+        )
+    if not created_interpreter or not os.path.isabs(str(created_interpreter)):
+        failure_codes.append("review_environment_creation_interpreter_not_absolute")
+    else:
+        if expected_created_interpreter is None or not _lexical_paths_equal(
+            created_interpreter, expected_created_interpreter
+        ):
+            failure_codes.append(
+                "review_environment_creation_interpreter_not_canonical"
+            )
+        if not created_prefix or not _lexical_path_is_within(
+            created_interpreter, created_prefix
+        ):
+            failure_codes.append("review_environment_creation_interpreter_outside")
+        if not Path(str(created_interpreter)).is_file():
+            failure_codes.append("review_environment_creation_interpreter_missing")
+    if not created_scripts or not os.path.isabs(str(created_scripts)):
+        failure_codes.append("review_environment_creation_scripts_not_absolute")
+    else:
+        if expected_created_scripts is None or not _lexical_paths_equal(
+            created_scripts, expected_created_scripts
+        ):
+            failure_codes.append("review_environment_creation_scripts_not_canonical")
+        if not created_interpreter or not _lexical_paths_equal(
+            created_scripts, Path(str(created_interpreter)).parent
+        ):
+            failure_codes.append("review_environment_creation_scripts_mismatch")
+    if not isinstance(creation_probe, dict):
+        failure_codes.append("review_environment_creation_probe_missing")
+        creation_probe = {}
+    probe_executable = creation_probe.get("executable")
+    probe_prefix = creation_probe.get("prefix")
+    probe_base_prefix = creation_probe.get("base_prefix")
+    if not probe_executable or not os.path.isabs(str(probe_executable)):
+        failure_codes.append("review_environment_creation_probe_executable_invalid")
+    elif not created_interpreter or not _lexical_paths_equal(
+        probe_executable, created_interpreter
+    ):
+        failure_codes.append("review_environment_creation_probe_executable_mismatch")
+    if not probe_prefix or not os.path.isabs(str(probe_prefix)):
+        failure_codes.append("review_environment_creation_probe_prefix_invalid")
+    elif not created_prefix or not _lexical_paths_equal(probe_prefix, created_prefix):
+        failure_codes.append("review_environment_creation_probe_prefix_mismatch")
+    if not probe_base_prefix or not os.path.isabs(str(probe_base_prefix)):
+        failure_codes.append("review_environment_creation_probe_base_prefix_invalid")
+    elif probe_prefix and _lexical_paths_equal(probe_base_prefix, probe_prefix):
+        failure_codes.append("review_environment_creation_probe_not_isolated")
+    if creation_probe.get("version") != REVIEW_PYTHON_VERSION:
+        failure_codes.append("review_environment_creation_probe_version_not_exact")
     inventoried_prefix = review_environment.get("prefix")
     if not created_prefix or not inventoried_prefix or os.path.normcase(
         os.path.normpath(created_prefix)
     ) != os.path.normcase(os.path.normpath(inventoried_prefix)):
         failure_codes.append("review_environment_prefix_not_bound")
-    created_interpreter = created_environment.get("interpreter")
     inventoried_interpreter = review_environment.get("python_executable")
     if not created_interpreter or not inventoried_interpreter or os.path.normcase(
         os.path.normpath(created_interpreter)
@@ -2433,8 +3219,113 @@ def final_gate(args: argparse.Namespace) -> int:
         failure_codes.append("review_environment_user_site_enabled")
     if review_environment.get("python_version") != REVIEW_PYTHON_VERSION:
         failure_codes.append("review_environment_python_not_exact")
-    if set(review_environment.get("expected_packages", {})) != REVIEW_LOCK_PACKAGES:
+    expected_lock_versions = {
+        item.get("name"): item.get("version")
+        for item in lock_policy_payload.get("packages", [])
+        if isinstance(item, dict)
+        and isinstance(item.get("name"), str)
+        and isinstance(item.get("version"), str)
+    }
+    if set(expected_lock_versions) != REVIEW_LOCK_PACKAGES:
+        failure_codes.append("review_lock_version_map_not_exact")
+    if review_environment.get("expected_packages") != expected_lock_versions:
         failure_codes.append("review_environment_inventory_not_exact")
+    installed_records = review_environment.get("installed_packages")
+    installed_versions, installed_duplicates = _inventory_versions(installed_records)
+    review_environment_closure_exact = bool(
+        expected_lock_versions
+        and installed_versions == expected_lock_versions
+        and not installed_duplicates
+        and review_environment.get("installed_package_count")
+        == len(REVIEW_LOCK_PACKAGES)
+        == len(installed_records or [])
+        and review_environment.get("missing_packages") == []
+        and review_environment.get("unexpected_packages") == []
+        and review_environment.get("duplicate_packages") == []
+        and review_environment.get("version_mismatches") == []
+        and review_environment.get("outside_prefix_packages") == []
+        and _inventory_locations_within(installed_records, created_prefix)
+        and isinstance(review_environment.get("pip_check"), dict)
+        and review_environment["pip_check"].get("exit_code") == 0
+    )
+    if not review_environment_closure_exact:
+        failure_codes.append("review_environment_installed_closure_not_exact")
+
+    binding_failures = []
+    binding_summary = {}
+    for step_id, receipt_name in REVIEW_PYTHON_STEP_RECEIPTS.items():
+        if step_id == "linux_symlink" and runner_os == "windows":
+            continue
+        binding_receipt = receipts.get(receipt_name)
+        observed_failures = _review_python_binding_failures(
+            receipt_name,
+            binding_receipt,
+            creation_sha256=creation_receipt_sha256,
+            environment=created_prefix,
+            interpreter=created_interpreter,
+            creation_probe=creation_probe,
+        )
+        binding_failures.extend(observed_failures)
+        child_before = (
+            binding_receipt.get("child_identity_before", {})
+            if isinstance(binding_receipt, dict)
+            else {}
+        )
+        child_after = (
+            binding_receipt.get("child_identity_after", {})
+            if isinstance(binding_receipt, dict)
+            else {}
+        )
+        binding_summary[receipt_name] = {
+            "status": binding_receipt.get("status")
+            if isinstance(binding_receipt, dict)
+            else None,
+            "environment_receipt_sha256": binding_receipt.get(
+                "environment_receipt_sha256"
+            )
+            if isinstance(binding_receipt, dict)
+            else None,
+            "child_inventory_before_count": child_before.get(
+                "installed_package_count"
+            ),
+            "child_inventory_after_count": child_after.get(
+                "installed_package_count"
+            ),
+            "binding_failure_codes": observed_failures,
+        }
+    failure_codes.extend(binding_failures)
+    review_python_bindings_exact = not binding_failures
+
+    install_binding = receipts.get("install-review-tooling.json") or {}
+    install_post_versions, install_post_duplicates = _inventory_versions(
+        (install_binding.get("child_identity_after") or {}).get(
+            "installed_packages"
+        )
+    )
+    install_post_inventory_exact = bool(
+        expected_lock_versions
+        and install_post_versions == expected_lock_versions
+        and not install_post_duplicates
+        and install_binding.get("required_post_lock_sha256") == lock_sha
+        and install_binding.get("required_post_versions")
+        == expected_lock_versions
+        and install_binding.get("post_inventory_exact") is True
+    )
+    if not install_post_inventory_exact:
+        failure_codes.append("install_post_inventory_not_exact")
+
+    verify_binding = receipts.get("review-tooling-environment-command.json") or {}
+    verify_binding_inventory_exact = True
+    for phase in ("before", "after"):
+        observed, duplicates = _inventory_versions(
+            (verify_binding.get(f"child_identity_{phase}") or {}).get(
+                "installed_packages"
+            )
+        )
+        if observed != expected_lock_versions or duplicates:
+            verify_binding_inventory_exact = False
+    if not verify_binding_inventory_exact:
+        failure_codes.append("verify_command_inventory_not_exact")
     lock_entry_sha = None
     if pre:
         lock_entry = next(
@@ -2486,6 +3377,7 @@ def final_gate(args: argparse.Namespace) -> int:
         "action_exact_sha_map": action_map,
         "review_lock_sha256": lock_sha,
         "review_lock_exact_index_sha256": lock_entry_sha,
+        "review_environment_creation_receipt_sha256": creation_receipt_sha256,
         "review_environment_python_version": review_environment.get("python_version"),
         "review_environment_isolated": review_environment.get("is_isolated_venv"),
         "review_environment_fresh": (
@@ -2501,6 +3393,11 @@ def final_gate(args: argparse.Namespace) -> int:
         "review_environment_package_count": review_environment.get(
             "installed_package_count"
         ),
+        "review_environment_closure_exact": review_environment_closure_exact,
+        "install_post_inventory_exact": install_post_inventory_exact,
+        "verify_command_inventory_exact": verify_binding_inventory_exact,
+        "review_python_bindings_exact": review_python_bindings_exact,
+        "review_python_binding_receipts": binding_summary,
         "mandatory_step_conclusions": conclusions,
         "required_receipt_statuses": receipt_statuses,
         "governance_exact": governance_exact,
@@ -2556,6 +3453,14 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--cwd")
     run.add_argument("command", nargs=argparse.REMAINDER)
     run.set_defaults(func=command_receipt)
+
+    review_run = commands.add_parser("run-review-python")
+    review_run.add_argument("--environment-receipt", required=True)
+    review_run.add_argument("--output", required=True)
+    review_run.add_argument("--cwd")
+    review_run.add_argument("--require-post-lock")
+    review_run.add_argument("command", nargs=argparse.REMAINDER)
+    review_run.set_defaults(func=review_python_command_receipt)
 
     metadata = commands.add_parser("metadata")
     metadata.add_argument("--mode", choices=("absent", "editable"), required=True)

@@ -87,9 +87,11 @@ jobs:
       - name: Install hash-locked review tooling
         id: install_tooling
         run: >-
-          python -m tools.ci_review run
+          python -m tools.ci_review run-review-python
+          --environment-receipt "${{ runner.temp }}/continuityos-review-receipts/create-review-environment.json"
+          --require-post-lock requirements/review-ci-py311.lock
           --output "${{ runner.temp }}/continuityos-review-receipts/install-review-tooling.json"
-          -- python -m pip --isolated install --disable-pip-version-check
+          -- -m pip --isolated install --disable-pip-version-check
           --no-cache-dir --no-deps --force-reinstall
           --index-url https://pypi.org/simple
           --require-hashes --only-binary=:all:
@@ -98,14 +100,20 @@ jobs:
       - name: Verify exact locked review environment
         id: pip_check
         run: >-
-          python -m tools.ci_review verify-review-environment
+          python -m tools.ci_review run-review-python
+          --environment-receipt "${{ runner.temp }}/continuityos-review-receipts/create-review-environment.json"
+          --output "${{ runner.temp }}/continuityos-review-receipts/review-tooling-environment-command.json"
+          -- -m tools.ci_review verify-review-environment
           --lock requirements/review-ci-py311.lock
           --output "${{ runner.temp }}/continuityos-review-receipts/review-tooling-environment.json"
 
       - name: Validate review-only workflow policy and YAML
         id: workflow_policy
         run: >-
-          python -m tools.ci_review validate-workflow
+          python -m tools.ci_review run-review-python
+          --environment-receipt "${{ runner.temp }}/continuityos-review-receipts/create-review-environment.json"
+          --output "${{ runner.temp }}/continuityos-review-receipts/workflow-policy-command.json"
+          -- -m tools.ci_review validate-workflow
           --workflow .github/workflows/ci.yml
           --review-lock requirements/review-ci-py311.lock
           --output "${{ runner.temp }}/continuityos-review-receipts/workflow-policy.json"
@@ -121,37 +129,46 @@ jobs:
       - name: Prove package metadata is absent
         id: clean_metadata
         run: >-
-          python -m tools.ci_review metadata --mode absent --source-root .
+          python -m tools.ci_review run-review-python
+          --environment-receipt "${{ runner.temp }}/continuityos-review-receipts/create-review-environment.json"
+          --output "${{ runner.temp }}/continuityos-review-receipts/clean-source-metadata-command.json"
+          -- -m tools.ci_review metadata --mode absent --source-root .
           --output "${{ runner.temp }}/continuityos-review-receipts/clean-source-metadata.json"
 
       - name: Collect exact pytest node IDs
         id: nodeids
         run: >-
-          python -m tools.ci_review collect-nodeids
+          python -m tools.ci_review run-review-python
+          --environment-receipt "${{ runner.temp }}/continuityos-review-receipts/create-review-environment.json"
+          --output "${{ runner.temp }}/continuityos-review-receipts/pytest-nodeids-command.json"
+          -- -m tools.ci_review collect-nodeids
           --output "${{ runner.temp }}/continuityos-review-receipts/pytest-nodeids.json"
 
       - name: Test clean source without installed package metadata
         id: clean_tests
         run: >-
-          python -m tools.ci_review run
+          python -m tools.ci_review run-review-python
+          --environment-receipt "${{ runner.temp }}/continuityos-review-receipts/create-review-environment.json"
           --output "${{ runner.temp }}/continuityos-review-receipts/clean-source-pytest.json"
-          -- python -m pytest -q
+          -- -m pytest -q
 
       - name: Build wheel from PRE-bound source
         id: wheel_build
         run: >-
-          python -m tools.ci_review run
+          python -m tools.ci_review run-review-python
+          --environment-receipt "${{ runner.temp }}/continuityos-review-receipts/create-review-environment.json"
           --cwd "${{ runner.temp }}/continuityos-materialized-source"
           --output "${{ runner.temp }}/continuityos-review-receipts/wheel-build.json"
-          -- python -m build --no-isolation --wheel
+          -- -m build --no-isolation --wheel
           --outdir "${{ runner.temp }}/continuityos-wheelhouse"
 
       - name: Download hash-locked isolated wheel-test tooling
         id: wheel_tooling
         run: >-
-          python -m tools.ci_review run
+          python -m tools.ci_review run-review-python
+          --environment-receipt "${{ runner.temp }}/continuityos-review-receipts/create-review-environment.json"
           --output "${{ runner.temp }}/continuityos-review-receipts/wheel-test-tooling.json"
-          -- python -m pip --isolated download --disable-pip-version-check
+          -- -m pip --isolated download --disable-pip-version-check
           --no-cache-dir
           --index-url https://pypi.org/simple
           --require-hashes --only-binary=:all:
@@ -161,7 +178,10 @@ jobs:
       - name: Test wheel only from external site-packages
         id: wheel_tests
         run: >-
-          python -m tools.ci_review wheel-test
+          python -m tools.ci_review run-review-python
+          --environment-receipt "${{ runner.temp }}/continuityos-review-receipts/create-review-environment.json"
+          --output "${{ runner.temp }}/continuityos-review-receipts/wheel-only-pytest-command.json"
+          -- -m tools.ci_review wheel-test
           --wheel-dir "${{ runner.temp }}/continuityos-wheelhouse"
           --test-wheel-dir "${{ runner.temp }}/continuityos-pytest-wheelhouse"
           --review-lock requirements/review-ci-py311.lock
@@ -172,63 +192,72 @@ jobs:
       - name: Install editable PRE-bound package without isolation or dependencies
         id: editable_install
         run: >-
-          python -m tools.ci_review run
+          python -m tools.ci_review run-review-python
+          --environment-receipt "${{ runner.temp }}/continuityos-review-receipts/create-review-environment.json"
           --cwd "${{ runner.temp }}/continuityos-materialized-source"
           --output "${{ runner.temp }}/continuityos-review-receipts/editable-install.json"
-          -- python -m pip --isolated install --disable-pip-version-check
+          -- -m pip --isolated install --disable-pip-version-check
           --no-deps --no-build-isolation -e .
 
       - name: Prove editable metadata and import identity
         id: editable_metadata
         working-directory: ${{ runner.temp }}/continuityos-materialized-source
         run: >-
-          python -m tools.ci_review metadata --mode editable
+          python -m tools.ci_review run-review-python
+          --environment-receipt "${{ runner.temp }}/continuityos-review-receipts/create-review-environment.json"
+          --output "${{ runner.temp }}/continuityos-review-receipts/editable-metadata-command.json"
+          -- -m tools.ci_review metadata --mode editable
           --source-root "${{ runner.temp }}/continuityos-materialized-source"
           --output "${{ runner.temp }}/continuityos-review-receipts/editable-metadata.json"
 
       - name: Run full editable-install pytest
         id: editable_tests
         run: >-
-          python -m tools.ci_review run
+          python -m tools.ci_review run-review-python
+          --environment-receipt "${{ runner.temp }}/continuityos-review-receipts/create-review-environment.json"
           --cwd "${{ runner.temp }}/continuityos-materialized-source"
           --output "${{ runner.temp }}/continuityos-review-receipts/editable-pytest.json"
-          -- python -m pytest -q
+          -- -m pytest -q
 
       - name: Compile source and test trees outside checkout
         id: compileall
         run: >-
-          python -m tools.ci_review run
+          python -m tools.ci_review run-review-python
+          --environment-receipt "${{ runner.temp }}/continuityos-review-receipts/create-review-environment.json"
           --cwd "${{ runner.temp }}/continuityos-materialized-source"
           --output "${{ runner.temp }}/continuityos-review-receipts/compileall.json"
-          -- python -m compileall -q continuityos tests bench gate_hook.py tools
+          -- -m compileall -q continuityos tests bench gate_hook.py tools
 
       - name: Run governance regression corpus
         id: governance
         run: >-
-          python -m tools.ci_review run
+          python -m tools.ci_review run-review-python
+          --environment-receipt "${{ runner.temp }}/continuityos-review-receipts/create-review-environment.json"
           --cwd "${{ runner.temp }}/continuityos-materialized-source"
           --output "${{ runner.temp }}/continuityos-review-receipts/governance-corpus.json"
-          -- python -m bench.continuitybench
+          -- -m bench.continuitybench
           --json-out "${{ runner.temp }}/continuityos-review-receipts/governance-corpus-detail.json"
 
       - name: Run portable release-hardening probes
         id: portable_probes
         if: always()
         run: >-
-          python -m tools.ci_review run
+          python -m tools.ci_review run-review-python
+          --environment-receipt "${{ runner.temp }}/continuityos-review-receipts/create-review-environment.json"
           --cwd "${{ runner.temp }}/continuityos-materialized-source"
           --output "${{ runner.temp }}/continuityos-review-receipts/portable-probes-command.json"
-          -- python tests/release_hardening_probes.py
+          -- tests/release_hardening_probes.py
           --json-out "${{ runner.temp }}/continuityos-review-receipts/portable-probes.json"
 
       - name: Run mandatory Linux symlink and realpath regression
         id: linux_symlink
         if: always() && runner.os == 'Linux'
         run: >-
-          python -m tools.ci_review run
+          python -m tools.ci_review run-review-python
+          --environment-receipt "${{ runner.temp }}/continuityos-review-receipts/create-review-environment.json"
           --cwd "${{ runner.temp }}/continuityos-materialized-source"
           --output "${{ runner.temp }}/continuityos-review-receipts/linux-symlink-realpath.json"
-          -- python -m pytest -q
+          -- -m pytest -q
           tests/test_ci_linux_symlink_realpath.py::test_linux_symlink_realpath_cannot_bypass_protected_path
 
       - name: Rebind PRE-bound materialized source after tests

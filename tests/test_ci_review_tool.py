@@ -17,6 +17,63 @@ from tools import ci_review
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(scope="module")
+def bound_review_environment(tmp_path_factory):
+    base = tmp_path_factory.mktemp("bound-review-python")
+    environment = base / "review environment with spaces"
+    ci_review.venv.EnvBuilder(
+        with_pip=True,
+        system_site_packages=False,
+        clear=False,
+    ).create(environment)
+    scripts_directory = environment / ("Scripts" if os.name == "nt" else "bin")
+    interpreter = scripts_directory / ("python.exe" if os.name == "nt" else "python")
+    completed = subprocess.run(
+        [
+            str(interpreter),
+            "-I",
+            "-c",
+            (
+                "import json,sys;"
+                "print(json.dumps({'base_prefix':sys.base_prefix,"
+                "'executable':sys.executable,'prefix':sys.prefix,"
+                "'version':'.'.join(map(str,sys.version_info[:3]))},"
+                "sort_keys=True))"
+            ),
+        ],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    probe = json.loads(completed.stdout)
+    return SimpleNamespace(
+        environment=environment,
+        interpreter=interpreter,
+        probe=probe,
+        scripts_directory=scripts_directory,
+        version=probe["version"],
+    )
+
+
+def _valid_creation_receipt(bound_review_environment):
+    bound = bound_review_environment
+    return {
+        "schema": "continuityos-review-environment-create-v1",
+        "status": "PASS",
+        "failure_codes": [],
+        "expected_python_version": bound.version,
+        "environment_preexisted": False,
+        "environment": str(bound.environment),
+        "scripts_directory": str(bound.scripts_directory),
+        "interpreter": str(bound.interpreter),
+        "interpreter_probe": dict(bound.probe),
+        "path_has_authority": False,
+    }
+
+
 class _AsciiOnlyStream:
     encoding = "ascii"
 
@@ -241,6 +298,95 @@ def _write_json(path, payload):
     )
 
 
+def _locked_review_versions():
+    evidence = ci_review._review_lock_evidence(
+        ROOT / "requirements" / "review-ci-py311.lock"
+    )
+    assert evidence["status"] == "PASS"
+    return {item["name"]: item["version"] for item in evidence["packages"]}
+
+
+def _command_inventory(versions):
+    return [
+        {"name": name, "version": version}
+        for name, version in sorted(versions.items())
+    ]
+
+
+def _command_identity(environment, interpreter, base_prefix, versions):
+    installed = _command_inventory(versions)
+    serialized = json.dumps(
+        installed,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return {
+        "base_prefix": str(base_prefix),
+        "executable": str(interpreter),
+        "installed_packages": installed,
+        "installed_package_count": len(installed),
+        "installed_packages_sha256": ci_review._sha256(serialized),
+        "prefix": str(environment),
+        "user_site_enabled": False,
+        "version": ci_review.REVIEW_PYTHON_VERSION,
+    }
+
+
+def _binding_receipt(
+    *,
+    creation_sha256,
+    environment,
+    interpreter,
+    base_prefix,
+    versions,
+    arguments=None,
+):
+    arguments = list(arguments or ["-m", "fixture"])
+    identity = _command_identity(
+        environment,
+        interpreter,
+        base_prefix,
+        versions,
+    )
+    outer = {
+        "base_prefix": str(base_prefix),
+        "executable": str(base_prefix / "python.exe"),
+        "prefix": str(base_prefix),
+        "version": "fixture-outer",
+    }
+    path_evidence = {
+        "generic_python_resolution_class": "outer_interpreter",
+        "order_class": "outer_precedes_environment",
+        "path_sha256": "a" * 64,
+    }
+    return {
+        "schema": "continuityos-review-python-command-receipt-v1",
+        "environment_receipt_sha256": creation_sha256,
+        "environment": str(environment),
+        "exact_interpreter": str(interpreter),
+        "expected_python_version": ci_review.REVIEW_PYTHON_VERSION,
+        "python_environment_policy": {
+            "PYTHONHOME": "removed",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONPATH": "removed",
+            "PYTHONUTF8": "1",
+        },
+        "outer_identity_before": dict(outer),
+        "outer_identity_after": dict(outer),
+        "child_identity_before": dict(identity),
+        "child_identity_after": dict(identity),
+        "path_evidence_before": dict(path_evidence),
+        "path_evidence_after": dict(path_evidence),
+        "command_arguments": arguments,
+        "exact_command": [str(interpreter), *arguments],
+        "execution_attempted": True,
+        "exit_code": 0,
+        "failure_codes": [],
+        "status": "PASS",
+    }
+
+
 def _final_gate_args(directory, output, repo, runner_os, steps):
     return SimpleNamespace(
         directory=str(directory),
@@ -287,21 +433,60 @@ def _complete_final_gate_fixture(tmp_path, runner_os):
     )
     for name in status_receipts:
         _write_json(receipts / name, {"status": "PASS"})
+    locked_versions = _locked_review_versions()
     _write_json(
         receipts / "review-lock-policy.json",
-        {"status": "PASS", "canonical_sha256": lock_entry["sha256"]},
+        {
+            "status": "PASS",
+            "canonical_sha256": lock_entry["sha256"],
+            "packages": [
+                {"name": name, "version": version}
+                for name, version in sorted(locked_versions.items())
+            ],
+        },
     )
     review_environment = tmp_path / "review-venv"
-    review_interpreter = review_environment / "Scripts" / "python.exe"
+    scripts_directory = review_environment / (
+        "bin" if runner_os == "Linux" else "Scripts"
+    )
+    review_interpreter = scripts_directory / (
+        "python" if runner_os == "Linux" else "python.exe"
+    )
+    scripts_directory.mkdir(parents=True)
+    review_interpreter.write_bytes(b"fixture interpreter\n")
+    base_prefix = tmp_path / "base-python"
     _write_json(
         receipts / "create-review-environment.json",
         {
+            "schema": "continuityos-review-environment-create-v1",
             "status": "PASS",
+            "failure_codes": [],
+            "expected_python_version": ci_review.REVIEW_PYTHON_VERSION,
             "environment_preexisted": False,
             "environment": str(review_environment),
+            "scripts_directory": str(scripts_directory),
             "interpreter": str(review_interpreter),
+            "interpreter_probe": {
+                "base_prefix": str(base_prefix),
+                "executable": str(review_interpreter),
+                "prefix": str(review_environment),
+                "version": ci_review.REVIEW_PYTHON_VERSION,
+            },
+            "path_has_authority": False,
         },
     )
+    creation_sha256 = ci_review._sha256_file(
+        receipts / "create-review-environment.json"
+    )
+    installed_records = [
+        {
+            "location": str(review_environment / "site-packages"),
+            "name": name,
+            "under_prefix": True,
+            "version": version,
+        }
+        for name, version in sorted(locked_versions.items())
+    ]
     _write_json(
         receipts / "review-tooling-environment.json",
         {
@@ -313,12 +498,39 @@ def _complete_final_gate_fixture(tmp_path, runner_os):
             "interpreter_under_prefix": True,
             "user_site_enabled": False,
             "python_version": ci_review.REVIEW_PYTHON_VERSION,
-            "expected_packages": {
-                name: "fixture" for name in ci_review.REVIEW_LOCK_PACKAGES
-            },
+            "expected_packages": locked_versions,
+            "installed_packages": installed_records,
             "installed_package_count": len(ci_review.REVIEW_LOCK_PACKAGES),
+            "missing_packages": [],
+            "unexpected_packages": [],
+            "duplicate_packages": [],
+            "version_mismatches": [],
+            "outside_prefix_packages": [],
+            "pip_check": {"exit_code": 0},
         },
     )
+    for step_id, receipt_name in ci_review.REVIEW_PYTHON_STEP_RECEIPTS.items():
+        if step_id == "linux_symlink" and runner_os == "Windows":
+            continue
+        binding = _binding_receipt(
+            creation_sha256=creation_sha256,
+            environment=review_environment,
+            interpreter=review_interpreter,
+            base_prefix=base_prefix,
+            versions=locked_versions,
+        )
+        if step_id == "install_tooling":
+            binding.update(
+                {
+                    "required_post_lock_sha256": lock_entry["sha256"],
+                    "required_post_versions": locked_versions,
+                    "post_inventory_exact": True,
+                }
+            )
+        _write_json(
+            receipts / receipt_name,
+            binding,
+        )
     _write_json(
         receipts / "workflow-policy.json",
         {"status": "PASS", "action_refs": ci_review.REVIEWED_ACTION_REFS},
@@ -355,9 +567,6 @@ def _complete_final_gate_fixture(tmp_path, runner_os):
         receipts / "portable-probes.json",
         {"all_passed": True, "passed": 10, "total": 10},
     )
-    if runner_os == "Linux":
-        _write_json(receipts / "linux-symlink-realpath.json", {"status": "PASS"})
-
     steps = []
     for step_id in ci_review.MANDATORY_STEP_IDS:
         conclusion = (
@@ -1047,6 +1256,10 @@ def test_final_gate_accepts_exact_unchanged_source_and_counts(
     assert payload["pre_entry_count"] == payload["post_entry_count"] == 2
     assert payload["governance_exact"] is True
     assert payload["portable_probes_exact"] is True
+    assert payload["review_environment_closure_exact"] is True
+    assert payload["install_post_inventory_exact"] is True
+    assert payload["verify_command_inventory_exact"] is True
+    assert payload["review_python_bindings_exact"] is True
 
 
 def test_final_gate_rejects_missing_configure_pycache_outcome(
@@ -1092,6 +1305,195 @@ def test_final_gate_rejects_inventory_from_different_environment(
     assert exit_code == 1
     assert payload["final_gate"] == "FAIL"
     assert "review_environment_prefix_not_bound" in payload["failure_codes"]
+
+
+def test_final_gate_recomputes_inventory_location_containment(
+    tmp_path, monkeypatch
+):
+    repo, receipts, steps = _complete_final_gate_fixture(tmp_path, "Windows")
+    inventory_path = receipts / "review-tooling-environment.json"
+    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    inventory["installed_packages"][0]["location"] = str(
+        tmp_path / "outside-review-environment"
+    )
+    inventory["installed_packages"][0]["under_prefix"] = True
+    _write_json(inventory_path, inventory)
+    output = tmp_path / "final-gate-forged-location.json"
+    monkeypatch.chdir(repo)
+
+    exit_code = ci_review.final_gate(
+        _final_gate_args(receipts, output, repo, "Windows", steps)
+    )
+    payload = json.loads(output.read_text(encoding="utf-8"))
+
+    assert exit_code == 1
+    assert payload["review_environment_closure_exact"] is False
+    assert "review_environment_installed_closure_not_exact" in payload[
+        "failure_codes"
+    ]
+
+
+def test_final_gate_revalidates_creation_receipt_after_sha_rebinding(
+    tmp_path, monkeypatch
+):
+    repo, receipts, steps = _complete_final_gate_fixture(tmp_path, "Windows")
+    creation_path = receipts / "create-review-environment.json"
+    creation = json.loads(creation_path.read_text(encoding="utf-8"))
+    creation["expected_python_version"] = "0.0.0"
+    _write_json(creation_path, creation)
+    tampered_sha256 = ci_review._sha256_file(creation_path)
+    for step_id, receipt_name in ci_review.REVIEW_PYTHON_STEP_RECEIPTS.items():
+        if step_id == "linux_symlink":
+            continue
+        binding_path = receipts / receipt_name
+        binding = json.loads(binding_path.read_text(encoding="utf-8"))
+        binding["environment_receipt_sha256"] = tampered_sha256
+        _write_json(binding_path, binding)
+    output = tmp_path / "final-gate-tampered-creation-version.json"
+    monkeypatch.chdir(repo)
+
+    exit_code = ci_review.final_gate(
+        _final_gate_args(receipts, output, repo, "Windows", steps)
+    )
+    payload = json.loads(output.read_text(encoding="utf-8"))
+
+    assert exit_code == 1
+    assert payload["review_python_bindings_exact"] is True
+    assert "review_environment_creation_version_not_exact" in payload[
+        "failure_codes"
+    ]
+
+
+def test_final_gate_rejects_consistent_alternate_interpreter_rebinding(
+    tmp_path, monkeypatch
+):
+    repo, receipts, steps = _complete_final_gate_fixture(tmp_path, "Windows")
+    creation_path = receipts / "create-review-environment.json"
+    creation = json.loads(creation_path.read_text(encoding="utf-8"))
+    alternate = Path(creation["scripts_directory"]) / "alternate-python.exe"
+    alternate.write_bytes(b"alternate launcher negative control\n")
+    creation["interpreter"] = str(alternate)
+    creation["interpreter_probe"]["executable"] = str(alternate)
+    _write_json(creation_path, creation)
+    tampered_sha256 = ci_review._sha256_file(creation_path)
+    inventory_path = receipts / "review-tooling-environment.json"
+    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    inventory["python_executable"] = str(alternate)
+    _write_json(inventory_path, inventory)
+    for step_id, receipt_name in ci_review.REVIEW_PYTHON_STEP_RECEIPTS.items():
+        if step_id == "linux_symlink":
+            continue
+        binding_path = receipts / receipt_name
+        binding = json.loads(binding_path.read_text(encoding="utf-8"))
+        binding["environment_receipt_sha256"] = tampered_sha256
+        binding["exact_interpreter"] = str(alternate)
+        binding["exact_command"][0] = str(alternate)
+        binding["child_identity_before"]["executable"] = str(alternate)
+        binding["child_identity_after"]["executable"] = str(alternate)
+        _write_json(binding_path, binding)
+    output = tmp_path / "final-gate-alternate-interpreter.json"
+    monkeypatch.chdir(repo)
+
+    exit_code = ci_review.final_gate(
+        _final_gate_args(receipts, output, repo, "Windows", steps)
+    )
+    payload = json.loads(output.read_text(encoding="utf-8"))
+
+    assert exit_code == 1
+    assert payload["review_python_bindings_exact"] is True
+    assert (
+        "review_environment_creation_interpreter_not_canonical"
+        in payload["failure_codes"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "failure_fragment"),
+    [
+        ("missing", "receipt_status:clean-source-pytest.json:missing"),
+        (
+            "schema",
+            "review_python_binding:compileall.json:schema_not_exact",
+        ),
+        (
+            "creation_sha",
+            "review_python_binding:compileall.json:creation_receipt_sha_mismatch",
+        ),
+        (
+            "child_identity",
+            "review_python_binding:compileall.json:child_prefix_after_mismatch",
+        ),
+    ],
+)
+def test_final_gate_rejects_invalid_review_python_command_receipt(
+    tmp_path, monkeypatch, mutation, failure_fragment
+):
+    repo, receipts, steps = _complete_final_gate_fixture(tmp_path, "Windows")
+    target = receipts / "compileall.json"
+    if mutation == "missing":
+        target = receipts / "clean-source-pytest.json"
+        target.unlink()
+    else:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+        if mutation == "schema":
+            payload["schema"] = "wrong-schema"
+        elif mutation == "creation_sha":
+            payload["environment_receipt_sha256"] = "0" * 64
+        elif mutation == "child_identity":
+            payload["child_identity_after"]["prefix"] = str(
+                tmp_path / "different-environment"
+            )
+        _write_json(target, payload)
+    output = tmp_path / f"final-gate-{mutation}.json"
+    monkeypatch.chdir(repo)
+
+    exit_code = ci_review.final_gate(
+        _final_gate_args(receipts, output, repo, "Windows", steps)
+    )
+    payload = json.loads(output.read_text(encoding="utf-8"))
+
+    assert exit_code == 1
+    assert payload["status"] == payload["final_gate"] == "FAIL"
+    assert failure_fragment in payload["failure_codes"]
+    assert payload["review_python_bindings_exact"] is False
+
+
+def test_final_gate_rejects_seed_only_inventory_after_successful_install(
+    tmp_path, monkeypatch
+):
+    repo, receipts, steps = _complete_final_gate_fixture(tmp_path, "Windows")
+    install_path = receipts / "install-review-tooling.json"
+    install = json.loads(install_path.read_text(encoding="utf-8"))
+    seed_only = [
+        {"name": "pip", "version": "24.0"},
+        {"name": "setuptools", "version": "65.5.0"},
+    ]
+    serialized = json.dumps(
+        seed_only,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    install["child_identity_after"]["installed_packages"] = seed_only
+    install["child_identity_after"]["installed_package_count"] = len(seed_only)
+    install["child_identity_after"]["installed_packages_sha256"] = (
+        ci_review._sha256(serialized)
+    )
+    assert install["status"] == "PASS"
+    assert install["exit_code"] == 0
+    _write_json(install_path, install)
+    output = tmp_path / "final-gate-seed-only.json"
+    monkeypatch.chdir(repo)
+
+    exit_code = ci_review.final_gate(
+        _final_gate_args(receipts, output, repo, "Windows", steps)
+    )
+    payload = json.loads(output.read_text(encoding="utf-8"))
+
+    assert exit_code == 1
+    assert payload["status"] == payload["final_gate"] == "FAIL"
+    assert payload["install_post_inventory_exact"] is False
+    assert "install_post_inventory_not_exact" in payload["failure_codes"]
 
 
 def test_materialized_rebind_rejects_unexpected_injected_source(
@@ -1192,6 +1594,46 @@ def test_workflow_policy_requires_fresh_forced_hash_install(tmp_path):
     )
 
 
+def test_workflow_policy_requires_receipt_binding_for_every_locked_consumer(
+    tmp_path,
+):
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    exact = "          python -m tools.ci_review run-review-python\n"
+    assert text.count(exact) == len(ci_review.REVIEW_PYTHON_STEP_RECEIPTS)
+    text = text.replace(
+        exact,
+        "          python -m tools.ci_review run\n",
+        1,
+    )
+
+    exit_code, payload = _validate_workflow_text(tmp_path, text)
+
+    assert exit_code == 1
+    assert (
+        "review interpreter binding: install_tooling: "
+        "python -m tools.ci_review run-review-python"
+        in payload["missing_required_tokens"]
+    )
+
+
+def test_workflow_policy_rejects_nested_generic_interpreter(tmp_path):
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    exact = "          -- -m pytest -q\n"
+    assert exact in text
+    text = text.replace(exact, "          -- python -m pytest -q\n", 1)
+
+    exit_code, payload = _validate_workflow_text(tmp_path, text)
+
+    assert exit_code == 1
+    assert "nested generic interpreter: clean_tests" in payload[
+        "forbidden_findings"
+    ]
+
+
 def test_create_review_environment_exports_isolated_interpreter(
     tmp_path, monkeypatch
 ):
@@ -1249,6 +1691,357 @@ def test_create_review_environment_rejects_host_version_mismatch(
     assert payload["interpreter_probe"]["version"] == host_version
     assert payload["failure_codes"] == ["review_python_version_not_exact"]
     assert not github_path.exists()
+
+
+def test_create_review_environment_passes_without_path_export(
+    tmp_path, monkeypatch
+):
+    host_version = ".".join(map(str, sys.version_info[:3]))
+    monkeypatch.setattr(ci_review, "REVIEW_PYTHON_VERSION", host_version)
+    output = tmp_path / "create-review-environment.json"
+
+    exit_code = ci_review.create_review_environment(
+        SimpleNamespace(
+            directory=str(tmp_path / "review environment without path export"),
+            path_file=None,
+            output=str(output),
+        )
+    )
+    payload = json.loads(output.read_text(encoding="utf-8"))
+
+    assert exit_code == 0
+    assert payload["status"] == "PASS"
+    assert payload["failure_codes"] == []
+    assert payload["path_file_requested"] is False
+    assert payload["path_file_status"] == "NOT_REQUESTED"
+    assert payload["path_has_authority"] is False
+
+
+def test_create_review_environment_path_export_failure_is_non_authoritative(
+    tmp_path, monkeypatch
+):
+    host_version = ".".join(map(str, sys.version_info[:3]))
+    monkeypatch.setattr(ci_review, "REVIEW_PYTHON_VERSION", host_version)
+    path_file = tmp_path / "unwritable-github-path"
+    original_open = Path.open
+
+    def controlled_open(path, *args, **kwargs):
+        if path == path_file:
+            raise PermissionError("negative control")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", controlled_open)
+    output = tmp_path / "create-review-environment.json"
+
+    exit_code = ci_review.create_review_environment(
+        SimpleNamespace(
+            directory=str(tmp_path / "review-venv"),
+            path_file=str(path_file),
+            output=str(output),
+        )
+    )
+    payload = json.loads(output.read_text(encoding="utf-8"))
+
+    assert exit_code == 0
+    assert payload["status"] == "PASS"
+    assert payload["failure_codes"] == []
+    assert payload["path_file_requested"] is True
+    assert payload["path_file_configured"] is False
+    assert payload["path_file_status"] == "FAIL"
+    assert payload["path_file_error_class"] == "PermissionError"
+    assert payload["path_has_authority"] is False
+
+
+def test_review_python_uses_receipt_bound_child_with_poisoned_path_and_spaces(
+    tmp_path, monkeypatch, bound_review_environment
+):
+    bound = bound_review_environment
+    monkeypatch.setattr(ci_review, "REVIEW_PYTHON_VERSION", bound.version)
+    receipt = tmp_path / "create-review-environment.json"
+    _write_json(receipt, _valid_creation_receipt(bound))
+    outer_directory = Path(sys.executable).resolve().parent
+    poisoned_path = os.pathsep.join(
+        [str(outer_directory), str(bound.scripts_directory), os.environ.get("PATH", "")]
+    )
+    monkeypatch.setenv("PATH", poisoned_path)
+    monkeypatch.setenv("PYTHONHOME", str(tmp_path / "hostile-python-home"))
+    generic_python = shutil.which("python")
+    assert generic_python is not None
+    assert ci_review._lexical_paths_equal(generic_python, sys.executable)
+    output = tmp_path / "bound-command.json"
+    code = (
+        "import json,sys;"
+        "print(json.dumps({'executable':sys.executable,'prefix':sys.prefix},"
+        "sort_keys=True))"
+    )
+
+    exit_code = ci_review.review_python_command_receipt(
+        SimpleNamespace(
+            environment_receipt=str(receipt),
+            output=str(output),
+            cwd=str(tmp_path),
+            command=["--", "-c", code],
+        )
+    )
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    observed = json.loads(payload["stdout"])
+
+    assert exit_code == 0
+    assert payload["status"] == "PASS"
+    assert payload["failure_codes"] == []
+    assert payload["exact_command"][0] == str(bound.interpreter)
+    assert ci_review._lexical_paths_equal(observed["executable"], bound.interpreter)
+    assert ci_review._lexical_paths_equal(observed["prefix"], bound.environment)
+    assert payload["path_evidence_before"][
+        "generic_python_resolution_class"
+    ] == "outer_interpreter"
+    assert payload["path_evidence_before"][
+        "order_class"
+    ] == "outer_precedes_environment"
+    path_evidence_text = json.dumps(payload["path_evidence_before"])
+    assert str(outer_directory) not in path_evidence_text
+    assert str(bound.scripts_directory) not in path_evidence_text
+    assert " " in str(bound.interpreter)
+
+
+def test_review_python_preserves_failed_command_and_post_identity(
+    tmp_path, monkeypatch, bound_review_environment
+):
+    bound = bound_review_environment
+    monkeypatch.setattr(ci_review, "REVIEW_PYTHON_VERSION", bound.version)
+    receipt = tmp_path / "create-review-environment.json"
+    _write_json(receipt, _valid_creation_receipt(bound))
+    output = tmp_path / "failed-command.json"
+    code = (
+        "import sys;print('retained stdout');"
+        "print('retained stderr',file=sys.stderr);raise SystemExit(7)"
+    )
+
+    exit_code = ci_review.review_python_command_receipt(
+        SimpleNamespace(
+            environment_receipt=str(receipt),
+            output=str(output),
+            cwd=str(tmp_path),
+            command=["--", "-c", code],
+        )
+    )
+    payload = json.loads(output.read_text(encoding="utf-8"))
+
+    assert exit_code == 7
+    assert payload["status"] == "FAIL"
+    assert payload["execution_attempted"] is True
+    assert payload["exit_code"] == 7
+    assert "retained stdout" in payload["stdout"]
+    assert "retained stderr" in payload["stderr"]
+    assert payload["child_identity_before"]
+    assert payload["child_identity_after"]
+    assert payload["identity_probe_after"]["exit_code"] == 0
+    assert payload["failure_codes"] == ["child_command_failed"]
+
+
+def test_review_python_rejects_seed_only_post_install_inventory(
+    tmp_path, monkeypatch, bound_review_environment
+):
+    bound = bound_review_environment
+    monkeypatch.setattr(ci_review, "REVIEW_PYTHON_VERSION", bound.version)
+    receipt = tmp_path / "create-review-environment.json"
+    _write_json(receipt, _valid_creation_receipt(bound))
+    output = tmp_path / "seed-only-install-command.json"
+
+    exit_code = ci_review.review_python_command_receipt(
+        SimpleNamespace(
+            environment_receipt=str(receipt),
+            output=str(output),
+            cwd=str(ROOT),
+            require_post_lock=str(
+                ROOT / "requirements" / "review-ci-py311.lock"
+            ),
+            command=["--", "-c", "print('successful no-op install')"],
+        )
+    )
+    payload = json.loads(output.read_text(encoding="utf-8"))
+
+    assert exit_code == 1
+    assert payload["execution_attempted"] is True
+    assert payload["exit_code"] == 0
+    assert payload["post_inventory_exact"] is False
+    assert payload["required_post_lock_sha256"]
+    assert "post_inventory_not_exact_locked_closure" in payload[
+        "failure_codes"
+    ]
+    assert payload["status"] == "FAIL"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "failure_code"),
+    [
+        ("status", "environment_receipt_status_not_pass"),
+        ("failure_codes", "environment_receipt_failure_codes_present"),
+        ("schema", "environment_receipt_schema_not_exact"),
+        ("missing_interpreter", "interpreter_missing"),
+        ("alternate_interpreter", "interpreter_path_not_canonical"),
+        ("outside_interpreter", "interpreter_outside_environment"),
+        ("expected_version", "environment_receipt_python_version_not_exact"),
+        ("probe_version", "creation_probe_version_mismatch"),
+        ("tampered_environment", "creation_probe_prefix_mismatch"),
+        ("relative_environment", "environment_path_not_absolute"),
+        ("relative_interpreter", "interpreter_path_not_absolute"),
+        ("path_authority", "environment_receipt_path_authority_not_false"),
+        ("probe_executable", "creation_probe_executable_mismatch"),
+        ("probe_base_prefix", "child_base_prefix_before_not_creation_identity"),
+    ],
+)
+def test_review_python_rejects_tampered_creation_receipt(
+    tmp_path,
+    monkeypatch,
+    bound_review_environment,
+    mutation,
+    failure_code,
+):
+    bound = bound_review_environment
+    monkeypatch.setattr(ci_review, "REVIEW_PYTHON_VERSION", bound.version)
+    payload = _valid_creation_receipt(bound)
+    if mutation == "status":
+        payload["status"] = "FAIL"
+    elif mutation == "failure_codes":
+        payload["failure_codes"] = ["forged-pass-negative-control"]
+    elif mutation == "schema":
+        payload["schema"] = "wrong-schema"
+    elif mutation == "missing_interpreter":
+        missing = bound.scripts_directory / "missing-review-python.exe"
+        payload["interpreter"] = str(missing)
+        payload["interpreter_probe"]["executable"] = str(missing)
+    elif mutation == "alternate_interpreter":
+        alternate = bound.scripts_directory / (
+            "alternate-python.exe" if os.name == "nt" else "alternate-python"
+        )
+        alternate.write_bytes(b"alternate launcher negative control\n")
+        payload["interpreter"] = str(alternate)
+        payload["interpreter_probe"]["executable"] = str(alternate)
+    elif mutation == "outside_interpreter":
+        payload["interpreter"] = str(Path(sys.executable).resolve())
+        payload["scripts_directory"] = str(Path(sys.executable).resolve().parent)
+    elif mutation == "expected_version":
+        payload["expected_python_version"] = "0.0.0"
+    elif mutation == "probe_version":
+        payload["interpreter_probe"]["version"] = "0.0.0"
+    elif mutation == "tampered_environment":
+        payload["environment"] = str(bound.environment.parent)
+    elif mutation == "relative_environment":
+        payload["environment"] = "relative-review-environment"
+    elif mutation == "relative_interpreter":
+        payload["interpreter"] = "Scripts/python.exe"
+    elif mutation == "path_authority":
+        payload["path_has_authority"] = True
+    elif mutation == "probe_executable":
+        payload["interpreter_probe"]["executable"] = str(
+            Path(sys.executable).resolve()
+        )
+    elif mutation == "probe_base_prefix":
+        payload["interpreter_probe"]["base_prefix"] = str(
+            bound.environment.parent / "different-base-python"
+        )
+    receipt = tmp_path / f"creation-{mutation}.json"
+    _write_json(receipt, payload)
+    output = tmp_path / f"command-{mutation}.json"
+
+    exit_code = ci_review.review_python_command_receipt(
+        SimpleNamespace(
+            environment_receipt=str(receipt),
+            output=str(output),
+            cwd=str(tmp_path),
+            command=["--", "-c", "print('must not execute')"],
+        )
+    )
+    observed = json.loads(output.read_text(encoding="utf-8"))
+
+    assert exit_code == 1
+    assert observed["status"] == "FAIL"
+    assert failure_code in observed["failure_codes"]
+    assert observed["execution_attempted"] is False
+
+
+def test_review_python_rejects_invalid_creation_receipt_json(tmp_path):
+    receipt = tmp_path / "invalid-create-review-environment.json"
+    receipt.write_text("{invalid", encoding="utf-8")
+    output = tmp_path / "invalid-command.json"
+
+    exit_code = ci_review.review_python_command_receipt(
+        SimpleNamespace(
+            environment_receipt=str(receipt),
+            output=str(output),
+            cwd=str(tmp_path),
+            command=["--", "-c", "print('must not execute')"],
+        )
+    )
+    payload = json.loads(output.read_text(encoding="utf-8"))
+
+    assert exit_code == 1
+    assert payload["status"] == "FAIL"
+    assert "environment_receipt_invalid_json" in payload["failure_codes"]
+    assert payload["execution_attempted"] is False
+
+
+def test_review_python_rejects_caller_replacement_interpreter(
+    tmp_path, monkeypatch, bound_review_environment
+):
+    bound = bound_review_environment
+    monkeypatch.setattr(ci_review, "REVIEW_PYTHON_VERSION", bound.version)
+    receipt = tmp_path / "create-review-environment.json"
+    _write_json(receipt, _valid_creation_receipt(bound))
+    output = tmp_path / "replacement-command.json"
+
+    exit_code = ci_review.review_python_command_receipt(
+        SimpleNamespace(
+            environment_receipt=str(receipt),
+            output=str(output),
+            cwd=str(tmp_path),
+            command=["--", sys.executable, "-c", "print('must not execute')"],
+        )
+    )
+    payload = json.loads(output.read_text(encoding="utf-8"))
+
+    assert exit_code == 1
+    assert payload["status"] == "FAIL"
+    assert payload["execution_attempted"] is False
+    assert payload["failure_codes"] == [
+        "caller_replacement_interpreter_rejected"
+    ]
+
+
+def test_review_python_rejects_child_identity_drift(
+    tmp_path, monkeypatch, bound_review_environment
+):
+    bound = bound_review_environment
+    monkeypatch.setattr(ci_review, "REVIEW_PYTHON_VERSION", bound.version)
+    receipt = tmp_path / "create-review-environment.json"
+    _write_json(receipt, _valid_creation_receipt(bound))
+    output = tmp_path / "identity-drift-command.json"
+    original_probe = ci_review._probe_review_python
+
+    def mismatched_probe(interpreter, environment):
+        identity, evidence = original_probe(interpreter, environment)
+        identity["prefix"] = str(bound.environment.parent)
+        return identity, evidence
+
+    monkeypatch.setattr(ci_review, "_probe_review_python", mismatched_probe)
+
+    exit_code = ci_review.review_python_command_receipt(
+        SimpleNamespace(
+            environment_receipt=str(receipt),
+            output=str(output),
+            cwd=str(tmp_path),
+            command=["--", "-c", "print('must not execute')"],
+        )
+    )
+    payload = json.loads(output.read_text(encoding="utf-8"))
+
+    assert exit_code == 1
+    assert payload["status"] == "FAIL"
+    assert payload["execution_attempted"] is False
+    assert "child_prefix_before_not_creation_environment" in payload[
+        "failure_codes"
+    ]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="native venv interpreter symlink control")
@@ -1345,6 +2138,12 @@ def test_review_environment_inventory_fails_closed(
         assert exit_code == 0
         assert payload["status"] == "PASS"
         assert payload["failure_codes"] == []
+        assert payload["installed_package_count"] == len(
+            ci_review.REVIEW_LOCK_PACKAGES
+        ) == 12
+        assert {
+            item["name"] for item in payload["installed_packages"]
+        } == ci_review.REVIEW_LOCK_PACKAGES
     else:
         assert exit_code == 1
         assert payload["status"] == "FAIL"
