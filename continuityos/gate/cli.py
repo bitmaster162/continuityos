@@ -1,5 +1,7 @@
 """continuity — AI Agent Governance Gateway CLI.
 
+  continuity boot --role <ROLE> [--case <CASE_ID>]  # R63-bound shadow receipt
+  continuity close --return <PATH> --dry-run         # validate return, no apply
   continuity init                         # create ledger + default policy
   continuity preflight shell "<cmd>"      # decide without running
   continuity run exec  -- <cmd...>        # argv-only (safe); rejects shell operators
@@ -8,12 +10,59 @@
 """
 from __future__ import annotations
 import argparse, glob, json, os, sys, subprocess, shlex, re, time
-from ..db import context_fingerprint, resolve_memory_db
-from .spec import ActionSpec
-from .engine import preflight
-from .classifier import extract_candidate_paths
-from .ledger import Ledger
-from .policy import PolicyError, default_policy, discover_policy, load_policy
+from .anti_amnesia import (
+    EXIT_INTERNAL as ANTI_AMNESIA_EXIT_INTERNAL,
+    build_boot_receipt,
+    build_close_receipt,
+    build_internal_error_receipt,
+    canonical_json_text,
+    emit_receipt,
+    exit_code_for_receipt,
+)
+
+LEGACY_GATE_AVAILABLE = None
+LEGACY_GATE_IMPORT_ERROR = ""
+
+
+class PolicyError(ValueError):
+    """Temporary placeholder until the legacy gate is explicitly requested."""
+
+
+def _ensure_legacy_gate():
+    """Load the mutating/ledger plane only for an explicit legacy command."""
+    global LEGACY_GATE_AVAILABLE, LEGACY_GATE_IMPORT_ERROR
+    global context_fingerprint, resolve_memory_db
+    global ActionSpec, preflight, extract_candidate_paths, Ledger
+    global PolicyError, default_policy, discover_policy, load_policy
+    if LEGACY_GATE_AVAILABLE is not None:
+        return LEGACY_GATE_AVAILABLE
+    try:
+        from ..db import context_fingerprint as loaded_context_fingerprint
+        from ..db import resolve_memory_db as loaded_resolve_memory_db
+        from .spec import ActionSpec as LoadedActionSpec
+        from .engine import preflight as loaded_preflight
+        from .classifier import extract_candidate_paths as loaded_extract_paths
+        from .ledger import Ledger as LoadedLedger
+        from .policy import PolicyError as LoadedPolicyError
+        from .policy import default_policy as loaded_default_policy
+        from .policy import discover_policy as loaded_discover_policy
+        from .policy import load_policy as loaded_load_policy
+    except Exception as exc:
+        LEGACY_GATE_AVAILABLE = False
+        LEGACY_GATE_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
+        return False
+    context_fingerprint = loaded_context_fingerprint
+    resolve_memory_db = loaded_resolve_memory_db
+    ActionSpec = LoadedActionSpec
+    preflight = loaded_preflight
+    extract_candidate_paths = loaded_extract_paths
+    Ledger = LoadedLedger
+    PolicyError = LoadedPolicyError
+    default_policy = loaded_default_policy
+    discover_policy = loaded_discover_policy
+    load_policy = loaded_load_policy
+    LEGACY_GATE_AVAILABLE = True
+    return True
 
 HOME = os.path.expanduser("~/.continuityos")
 LEDGER = os.path.join(HOME, "ledger.db")
@@ -415,7 +464,43 @@ def main(argv=None):
     rn = sub.add_parser("run"); rn.add_argument("tool"); rn.add_argument("rest", nargs=argparse.REMAINDER)
     au = sub.add_parser("audit"); au.add_argument("-n", type=int, default=20)
     rb = sub.add_parser("rollback"); rb.add_argument("snapshot_id")
+    boot = sub.add_parser(
+        "boot",
+        help="emit a read-only R63-bound ANTI_AMNESIA shadow receipt",
+    )
+    boot.add_argument("--role", required=True)
+    boot.add_argument("--case", dest="case_id", default=None)
+    close = sub.add_parser(
+        "close",
+        help="validate a return candidate without applying it",
+    )
+    close.add_argument("--return", dest="return_path", required=True)
+    close.add_argument("--dry-run", action="store_true", required=True)
     a = ap.parse_args(argv)
+
+    if a.cmd in {"boot", "close"}:
+        try:
+            receipt = (
+                build_boot_receipt(a.role, a.case_id)
+                if a.cmd == "boot"
+                else build_close_receipt(a.return_path, a.dry_run)
+            )
+            emit_receipt(receipt)
+            return exit_code_for_receipt(receipt)
+        except Exception as exc:
+            # A deterministic, non-effecting fail-closed diagnostic.  Expected
+            # input failures are represented by normal schema-valid receipts;
+            # this branch is reserved for implementation/environment faults.
+            print(canonical_json_text(build_internal_error_receipt(a.cmd, exc)))
+            return ANTI_AMNESIA_EXIT_INTERNAL
+
+    if not _ensure_legacy_gate():
+        print(
+            "legacy gate unavailable; command was not executed: "
+            + LEGACY_GATE_IMPORT_ERROR,
+            file=sys.stderr,
+        )
+        return EXIT_RECEIPT_FAILURE
 
     if a.cmd == "init":
         os.makedirs(HOME, exist_ok=True)

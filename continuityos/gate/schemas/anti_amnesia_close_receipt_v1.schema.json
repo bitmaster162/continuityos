@@ -1,0 +1,106 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ANTI_AMNESIA_CLOSE_RECEIPT_V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "gate",
+    "mode",
+    "command",
+    "authority",
+    "workspace",
+    "candidate",
+    "checks",
+    "errors",
+    "warnings",
+    "outcome",
+    "status",
+    "closed",
+    "enforced",
+    "live_state_reads_via_runtime_api",
+    "live_state_modified",
+    "r63_authority_replaced",
+    "writes_performed",
+    "can_trade",
+    "capital_permission"
+  ],
+  "properties": {
+    "schema": {"type": "string", "enum": ["ANTI_AMNESIA_CLOSE_RECEIPT_V1"]},
+    "gate": {"type": "string", "enum": ["ANTI_AMNESIA_GATE_V1"]},
+    "mode": {"type": "string", "enum": ["SHADOW"]},
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "dry_run"],
+      "properties": {
+        "name": {"type": "string", "enum": ["close"]},
+        "dry_run": {"type": "boolean"}
+      }
+    },
+    "authority": {"$ref": "anti_amnesia_boot_receipt_v1.schema.json#/definitions/authority"},
+    "workspace": {"$ref": "anti_amnesia_boot_receipt_v1.schema.json#/definitions/workspace"},
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "content_sha256",
+        "size_bytes",
+        "entry_count",
+        "envelope_sha256"
+      ],
+      "properties": {
+        "kind": {"type": ["string", "null"], "enum": ["ZIP", "DIRECTORY", null]},
+        "content_sha256": {
+          "anyOf": [
+            {"type": "null"},
+            {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          ]
+        },
+        "size_bytes": {"type": ["integer", "null"], "minimum": 0},
+        "entry_count": {"type": ["integer", "null"], "minimum": 0},
+        "envelope_sha256": {
+          "anyOf": [
+            {"type": "null"},
+            {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          ]
+        }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "items": {"$ref": "anti_amnesia_boot_receipt_v1.schema.json#/definitions/check"}
+    },
+    "errors": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string"}
+    },
+    "warnings": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string"}
+    },
+    "outcome": {
+      "type": "string",
+      "enum": ["WOULD_ACCEPT", "WOULD_ACCEPT_WITH_WARNINGS", "WOULD_HOLD"]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "SHADOW_ACCEPTABLE",
+        "SHADOW_ACCEPTABLE_WITH_WARNINGS",
+        "SHADOW_HOLD"
+      ]
+    },
+    "closed": {"type": "boolean", "enum": [false]},
+    "enforced": {"type": "boolean", "enum": [false]},
+    "live_state_reads_via_runtime_api": {"type": "boolean", "enum": [false]},
+    "live_state_modified": {"type": "boolean", "enum": [false]},
+    "r63_authority_replaced": {"type": "boolean", "enum": [false]},
+    "writes_performed": {"type": "array", "maxItems": 0},
+    "can_trade": {"type": "boolean", "enum": [false]},
+    "capital_permission": {"type": "string", "enum": ["DENY"]}
+  }
+}

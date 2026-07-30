@@ -49,6 +49,9 @@ Source = "https://github.com/bitmaster162/continuityos"
 include = ["continuityos*"]
 exclude = ["demo*", "bench*", "tests*", "docs*", "examples*", "dist*"]
 
+[tool.setuptools.package-data]
+"continuityos.gate.schemas" = ["*.json"]
+
 [tool.setuptools.dynamic]
 version = {attr = "continuityos._version.__version__"}
 
