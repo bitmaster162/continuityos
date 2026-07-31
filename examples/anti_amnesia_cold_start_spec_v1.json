@@ -1,0 +1,42 @@
+{
+  "schema": "ANTI_AMNESIA_COLD_START_SPEC_V1",
+  "authority_generation": "R63",
+  "work_order_id": "CODEX01-ANTI-AMNESIA-COLD-START",
+  "role": "CODEX-01",
+  "case_id": "CODEX01-ANTI-AMNESIA-COLD-START",
+  "goal": "Prove that a fresh session can recover the exact bounded task state from one capsule.",
+  "accepted_decisions": [
+    "R63 remains the authority generation.",
+    "Anti-Amnesia remains shadow-only."
+  ],
+  "rejected_alternatives": [
+    "Do not load the full archive.",
+    "Do not infer state from chat history."
+  ],
+  "allowed_changes": [
+    "Create BOOT_ACK.json in the assigned temporary output directory only."
+  ],
+  "forbidden_actions": [
+    "Do not modify repositories or runtime state.",
+    "Do not dispatch Codex or another agent.",
+    "Do not deploy, trade, or request capital permission."
+  ],
+  "immutable_decisions": [
+    "can_trade=false",
+    "capital_permission=DENY",
+    "self_application=false"
+  ],
+  "git_baseline": {
+    "repository": "bitmaster162/continuityos",
+    "branch": "gpt/anti-amnesia-cold-start-v1",
+    "head": "0000000000000000000000000000000000000000",
+    "tree": "0000000000000000000000000000000000000000",
+    "porcelain": ""
+  },
+  "next_action": "Read SESSION_CAPSULE.json and emit exactly one schema-valid BOOT_ACK.json.",
+  "terminal_condition": "BOOT_ACK.json emitted; no other action performed.",
+  "effect_ceiling": "READ_ONLY",
+  "may_dispatch_codex": false,
+  "can_trade": false,
+  "capital_permission": "DENY"
+}

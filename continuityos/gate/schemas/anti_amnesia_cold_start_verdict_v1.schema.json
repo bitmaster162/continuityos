@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ANTI_AMNESIA_COLD_START_VERDICT_V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "challenge_id", "challenge_sha256", "ack_sha256", "checks",
+    "mismatches", "outcome", "status", "release_blocked", "live_state_modified",
+    "writes_performed", "can_trade", "capital_permission"
+  ],
+  "properties": {
+    "schema": {"const": "ANTI_AMNESIA_COLD_START_VERDICT_V1"},
+    "challenge_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "challenge_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "ack_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "checks": {"type": "array"},
+    "mismatches": {"type": "array"},
+    "outcome": {"enum": ["PASS", "FAIL"]},
+    "status": {"enum": ["COLD_START_PASS", "COLD_START_FAIL"]},
+    "release_blocked": {"type": "boolean"},
+    "live_state_modified": {"const": false},
+    "writes_performed": {"type": "array", "maxItems": 0},
+    "can_trade": {"const": false},
+    "capital_permission": {"const": "DENY"}
+  }
+}

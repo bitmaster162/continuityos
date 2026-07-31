@@ -66,6 +66,9 @@ migrate history in, export rules out, meter usage, and let cognitive layers buil
 
 ## [Unreleased]
 
+### Added
+- **`continuity cold-start prepare|verify`** — deterministic fresh-session continuity challenge. The controller creates a candidate-only session capsule plus a hidden expected `BOOT_ACK`, pins the challenge SHA-256, and exact-compares the fresh agent response. Any material mismatch blocks release; no live state is applied.
+
 ### v0.7.1 — DevOps integration fixes
 
 Focus: making v0.7.0 survive daily, unsupervised operation inside a real agent

@@ -4,6 +4,8 @@
   continuity close --return <PATH> --dry-run         # validate v1 return, no apply
   continuity close --return <PATH> --dry-run --work-order <PATH> --permission-policy <PATH>
                                                      # semantic close v1.1
+  continuity cold-start prepare --boot-receipt <PATH> --spec <PATH> --output <DIR>
+  continuity cold-start verify --challenge <PATH> --challenge-sha256 <SHA256> --ack <PATH>
   continuity init                         # create ledger + default policy
   continuity preflight shell "<cmd>"      # decide without running
   continuity run exec  -- <cmd...>        # argv-only (safe); rejects shell operators
@@ -23,6 +25,7 @@ from .anti_amnesia import (
     exit_code_for_receipt,
 )
 from .semantic_close import build_semantic_close_receipt
+from .cold_start import prepare_cold_start_challenge, verify_cold_start_ack
 
 LEGACY_GATE_AVAILABLE = None
 LEGACY_GATE_IMPORT_ERROR = ""
@@ -530,7 +533,62 @@ def main(argv=None):
             "CONTINUITYOS_WORKSPACE_ROOT or the current directory"
         ),
     )
+    cold = sub.add_parser(
+        "cold-start",
+        help="prepare or verify a deterministic fresh-session continuity challenge",
+    )
+    cold_sub = cold.add_subparsers(dest="cold_cmd", required=True)
+    cold_prepare = cold_sub.add_parser(
+        "prepare",
+        help="create a candidate capsule and controller-only expected BOOT_ACK",
+    )
+    cold_prepare.add_argument("--boot-receipt", required=True)
+    cold_prepare.add_argument("--spec", required=True)
+    cold_prepare.add_argument("--output", required=True)
+    cold_verify = cold_sub.add_parser(
+        "verify",
+        help="compare a fresh-session BOOT_ACK with the hidden expected ack",
+    )
+    cold_verify.add_argument("--challenge", required=True)
+    cold_verify.add_argument("--challenge-sha256", required=True)
+    cold_verify.add_argument("--ack", required=True)
     a = ap.parse_args(argv)
+
+    if a.cmd == "cold-start":
+        try:
+            if a.cold_cmd == "prepare":
+                receipt = prepare_cold_start_challenge(
+                    Path(a.boot_receipt).expanduser(),
+                    Path(a.spec).expanduser(),
+                    Path(a.output).expanduser(),
+                )
+            else:
+                receipt = verify_cold_start_ack(
+                    Path(a.challenge).expanduser(),
+                    Path(a.ack).expanduser(),
+                    expected_challenge_sha256=a.challenge_sha256,
+                )
+            print(canonical_json_text(receipt))
+            if a.cold_cmd == "verify":
+                return 0 if receipt.get("outcome") == "PASS" else 2
+            return 0
+        except Exception as exc:
+            print(canonical_json_text({
+                "schema": "ANTI_AMNESIA_COLD_START_INTERNAL_ERROR_V1",
+                "gate": "ANTI_AMNESIA_GATE_V1",
+                "mode": "SHADOW",
+                "command": f"cold-start {getattr(a, 'cold_cmd', 'unknown')}",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "outcome": "FAIL",
+                "status": "COLD_START_FAIL",
+                "release_blocked": True,
+                "live_state_modified": False,
+                "writes_performed": [],
+                "can_trade": False,
+                "capital_permission": "DENY",
+            }))
+            return ANTI_AMNESIA_EXIT_INTERNAL
 
     if a.cmd in {"boot", "close"}:
         try:

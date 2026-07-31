@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ANTI_AMNESIA_COLD_START_PREPARE_RECEIPT_V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "challenge_id", "output_dir", "challenge_sha256", "capsule_sha256",
+    "expected_ack_sha256", "status", "live_state_modified", "writes_performed",
+    "can_trade", "capital_permission"
+  ],
+  "properties": {
+    "schema": {"const": "ANTI_AMNESIA_COLD_START_PREPARE_RECEIPT_V1"},
+    "challenge_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "output_dir": {"type": "string", "minLength": 1},
+    "challenge_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "capsule_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "expected_ack_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "status": {"const": "COLD_START_CHALLENGE_READY"},
+    "live_state_modified": {"const": false},
+    "writes_performed": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string"}
+    },
+    "can_trade": {"const": false},
+    "capital_permission": {"const": "DENY"}
+  }
+}
