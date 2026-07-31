@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import sqlite3
+from importlib.resources import files as resource_files
 from pathlib import Path
 
 import pytest
@@ -468,9 +469,13 @@ def test_immutable_open_rejects_nonempty_wal(tmp_path):
 
 def test_packaged_schemas_are_strict_and_cover_examples():
     jsonschema = pytest.importorskip("jsonschema")
-    schema_root = Path(__file__).parents[1] / "continuityos" / "operational_context_schemas"
-    spec_schema = json.loads((schema_root / "operational_context_spec_v1.schema.json").read_text("utf-8"))
-    pack_schema = json.loads((schema_root / "operational_context_pack_v1.schema.json").read_text("utf-8"))
+    schema_root = resource_files("continuityos.operational_context_schemas")
+    spec_schema = json.loads(
+        (schema_root / "operational_context_spec_v1.schema.json").read_text(encoding="utf-8")
+    )
+    pack_schema = json.loads(
+        (schema_root / "operational_context_pack_v1.schema.json").read_text(encoding="utf-8")
+    )
     jsonschema.Draft7Validator(spec_schema).validate(spec())
     assert spec_schema["additionalProperties"] is False
     assert pack_schema["additionalProperties"] is False

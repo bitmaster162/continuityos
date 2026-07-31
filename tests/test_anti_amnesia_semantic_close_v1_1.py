@@ -476,7 +476,14 @@ def test_semantic_close_no_case_allowed_by_policy(tmp_path):
 
 
 def test_workflow_triggers_gpt_review_branches():
-    workflow = Path(".github/workflows/ci.yml").read_text("utf-8")
+    # This is a source-repository policy test, not a wheel-runtime contract.
+    # The isolated wheel suite intentionally contains the tests and installed
+    # package only, so .github is absent there. Source and editable runs still
+    # exercise the assertion against the checked-out workflow.
+    workflow_path = Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml"
+    if not workflow_path.is_file():
+        pytest.skip("source-only workflow policy: .github is absent from wheel suite")
+    workflow = workflow_path.read_text("utf-8")
     assert '"gpt/**"' in workflow
 
 

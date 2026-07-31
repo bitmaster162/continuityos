@@ -71,6 +71,15 @@ def _ensure_legacy_gate():
     LEGACY_GATE_AVAILABLE = True
     return True
 
+
+def _require_legacy_gate():
+    """Load the legacy execution plane only when a legacy helper is invoked."""
+    if _ensure_legacy_gate():
+        return
+    detail = LEGACY_GATE_IMPORT_ERROR or "unknown legacy gate import error"
+    raise RuntimeError(f"legacy gate unavailable: {detail}")
+
+
 HOME = os.path.expanduser("~/.continuityos")
 LEDGER = os.path.join(HOME, "ledger.db")
 POLICY = os.path.join(HOME, "policy.yaml")
@@ -79,9 +88,11 @@ EXIT_DRY_RUN_ONLY = 3
 EXIT_RECEIPT_FAILURE = 4
 
 def _paths_from(cmd: str):
+    _require_legacy_gate()
     return extract_candidate_paths(cmd)
 
 def _context(db=None):
+    _require_legacy_gate()
     # canon-aware decisions: use the local continuity memory if present
     try:
         resolved = resolve_memory_db(db, default=os.path.join(HOME, "memory.db"))
@@ -116,6 +127,7 @@ def _context(db=None):
 
 def _decide(cmd: str, tool="shell", agent="cli", args=None, paths=None,
             cwd=None, db=None):
+    _require_legacy_gate()
     spec = ActionSpec(
         tool=tool,
         command=cmd,
@@ -139,6 +151,7 @@ def _decide(cmd: str, tool="shell", agent="cli", args=None, paths=None,
 
 def _materialize_rollback(result) -> bool:
     """Create the declared local snapshot immediately before approved execution."""
+    _require_legacy_gate()
     plan = result.get("rollback_plan") or {}
     if not plan.get("snapshot_required"):
         return True
@@ -208,6 +221,7 @@ def _rollback_receipt(result):
 
 
 def _append_execution(kind, result, rollback_receipt, **fields):
+    _require_legacy_gate()
     payload = {
         "preflight_hash": result.get("ledger_hash"),
         "action": result.get("action"),
@@ -292,6 +306,10 @@ def _handle_terminal_receipt_failure(
 
 
 def _execution_binding_error(cmd: str, mode: str, result, argv) -> str:
+    try:
+        _require_legacy_gate()
+    except Exception as exc:
+        return f"legacy gate unavailable: {type(exc).__name__}: {exc}"
     preflight_hash = result.get("ledger_hash")
     if not isinstance(preflight_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", preflight_hash):
         return "approved execution has no full preflight ledger hash"
