@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 import argparse, glob, json, os, sys, subprocess, shlex, re, time
+from pathlib import Path
 from .anti_amnesia import (
     EXIT_INTERNAL as ANTI_AMNESIA_EXIT_INTERNAL,
     build_boot_receipt,
@@ -470,20 +471,78 @@ def main(argv=None):
     )
     boot.add_argument("--role", required=True)
     boot.add_argument("--case", dest="case_id", default=None)
+    boot.add_argument(
+        "--control-root",
+        default=os.environ.get("CONTINUITYOS_CONTROL_ROOT") or None,
+        help=(
+            "R63 control root; defaults to CONTINUITYOS_CONTROL_ROOT or "
+            "~/My Drive/Control canter/00_CONTROL_CURRENT"
+        ),
+    )
+    boot.add_argument(
+        "--workspace-root",
+        default=os.environ.get("CONTINUITYOS_WORKSPACE_ROOT") or None,
+        help=(
+            "ContinuityOS runtime/canon root; defaults to "
+            "CONTINUITYOS_WORKSPACE_ROOT or the current directory"
+        ),
+    )
     close = sub.add_parser(
         "close",
         help="validate a return candidate without applying it",
     )
     close.add_argument("--return", dest="return_path", required=True)
     close.add_argument("--dry-run", action="store_true", required=True)
+    close.add_argument(
+        "--control-root",
+        default=os.environ.get("CONTINUITYOS_CONTROL_ROOT") or None,
+        help=(
+            "R63 control root; defaults to CONTINUITYOS_CONTROL_ROOT or "
+            "~/My Drive/Control canter/00_CONTROL_CURRENT"
+        ),
+    )
+    close.add_argument(
+        "--workspace-root",
+        default=os.environ.get("CONTINUITYOS_WORKSPACE_ROOT") or None,
+        help=(
+            "ContinuityOS runtime/canon root; defaults to "
+            "CONTINUITYOS_WORKSPACE_ROOT or the current directory"
+        ),
+    )
     a = ap.parse_args(argv)
 
     if a.cmd in {"boot", "close"}:
         try:
             receipt = (
-                build_boot_receipt(a.role, a.case_id)
+                build_boot_receipt(
+                    a.role,
+                    a.case_id,
+                    control_root=(
+                        Path(a.control_root).expanduser()
+                        if a.control_root is not None
+                        else None
+                    ),
+                    workspace_root=(
+                        Path(a.workspace_root).expanduser()
+                        if a.workspace_root is not None
+                        else None
+                    ),
+                )
                 if a.cmd == "boot"
-                else build_close_receipt(a.return_path, a.dry_run)
+                else build_close_receipt(
+                    a.return_path,
+                    a.dry_run,
+                    control_root=(
+                        Path(a.control_root).expanduser()
+                        if a.control_root is not None
+                        else None
+                    ),
+                    workspace_root=(
+                        Path(a.workspace_root).expanduser()
+                        if a.workspace_root is not None
+                        else None
+                    ),
+                )
             )
             emit_receipt(receipt)
             return exit_code_for_receipt(receipt)

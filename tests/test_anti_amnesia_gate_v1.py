@@ -1018,6 +1018,65 @@ def test_cli_boot_emits_canonical_json_without_legacy_imports(
     assert stdout == gate.canonical_json_text(parsed) + "\n"
 
 
+def test_cli_boot_accepts_explicit_roots_outside_workspace(
+    tmp_path, monkeypatch, capsys
+):
+    control = make_control_root(tmp_path)
+    workspace = make_workspace(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    exit_code = cli.main(
+        [
+            "boot",
+            "--role",
+            ROLE,
+            "--control-root",
+            str(control),
+            "--workspace-root",
+            str(workspace),
+        ]
+    )
+    parsed = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert parsed["status"] == "SHADOW_READY"
+    assert parsed["workspace"]["files"]
+
+
+def test_cli_close_accepts_explicit_roots_outside_workspace(
+    tmp_path, monkeypatch, capsys
+):
+    control = make_control_root(tmp_path)
+    workspace = make_workspace(tmp_path)
+    boot = gate.build_boot_receipt(
+        ROLE, control_root=control, workspace_root=workspace
+    )
+    candidate = make_return_directory(tmp_path, boot)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    exit_code = cli.main(
+        [
+            "close",
+            "--return",
+            str(candidate),
+            "--dry-run",
+            "--control-root",
+            str(control),
+            "--workspace-root",
+            str(workspace),
+        ]
+    )
+    parsed = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert parsed["status"] == "SHADOW_ACCEPTABLE"
+    assert parsed["candidate"]["kind"] == "DIRECTORY"
+
+
 def test_cli_close_requires_dry_run(tmp_path):
     with pytest.raises(SystemExit) as exc:
         cli.main(["close", "--return", str(tmp_path)])
