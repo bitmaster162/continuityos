@@ -1141,6 +1141,9 @@ def test_packaged_json_schemas_are_parseable_and_strict():
         "anti_amnesia_return_v1.schema.json",
         "anti_amnesia_close_receipt_v1.schema.json",
         "anti_amnesia_cli_internal_error_v1.schema.json",
+        "anti_amnesia_return_v1_1.schema.json",
+        "anti_amnesia_close_receipt_v1_1.schema.json",
+        "anti_amnesia_role_permission_policy_v1.schema.json",
     }
     assert {item.name for item in schema_root.glob("*.schema.json")} == names
     for name in names:

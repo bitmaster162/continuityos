@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - "review/**"
+      - "gpt/**"
       - "codex/review/**"
       - "codex/sibling-ci-*"
 

@@ -1,7 +1,9 @@
 """continuity — AI Agent Governance Gateway CLI.
 
   continuity boot --role <ROLE> [--case <CASE_ID>]  # R63-bound shadow receipt
-  continuity close --return <PATH> --dry-run         # validate return, no apply
+  continuity close --return <PATH> --dry-run         # validate v1 return, no apply
+  continuity close --return <PATH> --dry-run --work-order <PATH> --permission-policy <PATH>
+                                                     # semantic close v1.1
   continuity init                         # create ledger + default policy
   continuity preflight shell "<cmd>"      # decide without running
   continuity run exec  -- <cmd...>        # argv-only (safe); rejects shell operators
@@ -20,6 +22,7 @@ from .anti_amnesia import (
     emit_receipt,
     exit_code_for_receipt,
 )
+from .semantic_close import build_semantic_close_receipt
 
 LEGACY_GATE_AVAILABLE = None
 LEGACY_GATE_IMPORT_ERROR = ""
@@ -494,6 +497,24 @@ def main(argv=None):
     close.add_argument("--return", dest="return_path", required=True)
     close.add_argument("--dry-run", action="store_true", required=True)
     close.add_argument(
+        "--work-order",
+        dest="work_order_path",
+        default=None,
+        help=(
+            "trusted work-order body for semantic close v1.1; requires "
+            "--permission-policy"
+        ),
+    )
+    close.add_argument(
+        "--permission-policy",
+        dest="permission_policy_path",
+        default=None,
+        help=(
+            "controller-selected ANTI_AMNESIA_ROLE_PERMISSION_POLICY_V1 JSON; "
+            "requires --work-order"
+        ),
+    )
+    close.add_argument(
         "--control-root",
         default=os.environ.get("CONTINUITYOS_CONTROL_ROOT") or None,
         help=(
@@ -513,37 +534,48 @@ def main(argv=None):
 
     if a.cmd in {"boot", "close"}:
         try:
-            receipt = (
-                build_boot_receipt(
+            control_root = (
+                Path(a.control_root).expanduser()
+                if getattr(a, "control_root", None) is not None
+                else None
+            )
+            workspace_root = (
+                Path(a.workspace_root).expanduser()
+                if getattr(a, "workspace_root", None) is not None
+                else None
+            )
+            if a.cmd == "boot":
+                receipt = build_boot_receipt(
                     a.role,
                     a.case_id,
-                    control_root=(
-                        Path(a.control_root).expanduser()
-                        if a.control_root is not None
-                        else None
-                    ),
-                    workspace_root=(
-                        Path(a.workspace_root).expanduser()
-                        if a.workspace_root is not None
-                        else None
-                    ),
+                    control_root=control_root,
+                    workspace_root=workspace_root,
                 )
-                if a.cmd == "boot"
-                else build_close_receipt(
-                    a.return_path,
-                    a.dry_run,
-                    control_root=(
-                        Path(a.control_root).expanduser()
-                        if a.control_root is not None
-                        else None
-                    ),
-                    workspace_root=(
-                        Path(a.workspace_root).expanduser()
-                        if a.workspace_root is not None
-                        else None
-                    ),
+            else:
+                semantic_args = (
+                    a.work_order_path is not None,
+                    a.permission_policy_path is not None,
                 )
-            )
+                if semantic_args == (True, True):
+                    receipt = build_semantic_close_receipt(
+                        a.return_path,
+                        a.dry_run,
+                        work_order_path=Path(a.work_order_path).expanduser(),
+                        permission_policy_path=Path(a.permission_policy_path).expanduser(),
+                        control_root=control_root,
+                        workspace_root=workspace_root,
+                    )
+                elif semantic_args == (False, False):
+                    receipt = build_close_receipt(
+                        a.return_path,
+                        a.dry_run,
+                        control_root=control_root,
+                        workspace_root=workspace_root,
+                    )
+                else:
+                    raise ValueError(
+                        "semantic close requires both --work-order and --permission-policy"
+                    )
             emit_receipt(receipt)
             return exit_code_for_receipt(receipt)
         except Exception as exc:
