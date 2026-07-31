@@ -40,6 +40,7 @@ dev = ["pytest>=7", "pytest-cov>=4", "ruff>=0.5"]
 [project.scripts]
 cos = "continuityos.cli:main"
 continuity = "continuityos.gate.cli:main"
+continuity-memory = "continuityos.operational_memory:main"
 
 [project.urls]
 Homepage = "https://sovereign-arena-site.vercel.app/continuityos"

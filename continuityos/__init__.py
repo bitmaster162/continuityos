@@ -20,6 +20,11 @@ __all__ = [
     "Actor",
     "Twin",
     "ControlPlane",
+    "OperationalMemory",
+    "OperationalMemoryError",
+    "IdentityConflict",
+    "PolicyViolation",
+    "IntegrityFailure",
     "fork",
 ]
 
@@ -31,6 +36,11 @@ _LAZY: Dict[str, Tuple[str, str | None]] = {
     "Actor": (".agents", "Actor"),
     "Twin": (".twin", "Twin"),
     "ControlPlane": (".control", "ControlPlane"),
+    "OperationalMemory": (".operational_memory", "OperationalMemory"),
+    "OperationalMemoryError": (".operational_memory", "OperationalMemoryError"),
+    "IdentityConflict": (".operational_memory", "IdentityConflict"),
+    "PolicyViolation": (".operational_memory", "PolicyViolation"),
+    "IntegrityFailure": (".operational_memory", "IntegrityFailure"),
     "fork": (".fork", None),
 }
 

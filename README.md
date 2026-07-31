@@ -83,6 +83,24 @@ cos recall  "which license should I pick?"
 cos namespaces
 ```
 
+### Common Operational Memory v1 (shadow-only)
+
+ContinuityOS now includes a separate evidence-bound operational ledger. It does not replace
+Control Center current truth and cannot apply state changes:
+
+```bash
+continuity-memory init
+continuity-memory import-broker MASTER_RETURN_REGISTRY_R64.jsonl
+continuity-memory snapshot --out operational_snapshot.json
+continuity-memory checkpoint --label after-import
+continuity-memory verify
+```
+
+It stores schema-enforced append-only events, bi-temporal claims, authority-bound decisions,
+physical broker custody and replay checkpoints in a **local SQLite WAL database outside DriveFS**. Imported
+returns are forced to `content_status=UNREVIEWED` and `apply_status=NOT_APPLIED`. See
+[`docs/COMMON_OPERATIONAL_MEMORY_V1.md`](docs/COMMON_OPERATIONAL_MEMORY_V1.md).
+
 ### Import your AI history (6 vendors)
 
 Bring your existing history into ContinuityOS from **ChatGPT, Claude, Gemini, Grok, Mistral,

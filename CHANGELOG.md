@@ -67,6 +67,7 @@ migrate history in, export rules out, meter usage, and let cognitive layers buil
 ## [Unreleased]
 
 ### Added
+- **`continuity-memory` / Common Operational Memory v1** — shadow-only local SQLite WAL ledger for append-only operational events, bi-temporal evidence-bound claims, authority-bound decisions, broker custody imports, checkpoints and deterministic replay projections. UPDATE/DELETE are blocked by schema triggers and unknown broker status text never upgrades custody to verified. DriveFS/network paths are rejected; broker content remains `UNREVIEWED` and `NOT_APPLIED`; no state-apply API exists.
 - **`continuity cold-start prepare|verify`** — deterministic fresh-session continuity challenge. The controller creates a candidate-only session capsule plus a hidden expected `BOOT_ACK`, pins the challenge SHA-256, and exact-compares the fresh agent response. Any material mismatch blocks release; no live state is applied.
 
 ### v0.7.1 — DevOps integration fixes
