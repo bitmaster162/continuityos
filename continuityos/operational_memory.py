@@ -273,9 +273,22 @@ class AppendResult:
 class OperationalMemory:
     """Append-only shadow operational memory backed by local SQLite WAL."""
 
-    def __init__(self, path: Optional[str] = None, *, read_only: bool = False):
+    def __init__(
+        self,
+        path: Optional[str] = None,
+        *,
+        read_only: bool = False,
+        immutable: bool = False,
+    ):
         self.path = resolve_operational_db(path)
         self.read_only = bool(read_only)
+        self.immutable = bool(immutable)
+        if self.immutable and not self.read_only:
+            raise ValueError("immutable operational memory requires read_only=True")
+        if self.immutable and self.path != ":memory:":
+            wal = Path(self.path + "-wal")
+            if wal.exists() and wal.stat().st_size > 0:
+                raise PolicyViolation("immutable read requires a quiescent database with no pending WAL frames")
         self._lock = threading.RLock()
         if self.path == ":memory:":
             if read_only:
@@ -284,7 +297,8 @@ class OperationalMemory:
         elif read_only:
             if not os.path.isfile(self.path):
                 raise FileNotFoundError(self.path)
-            uri = Path(self.path).as_uri() + "?mode=ro"
+            query = "?mode=ro&immutable=1" if self.immutable else "?mode=ro"
+            uri = Path(self.path).as_uri() + query
             self.con = sqlite3.connect(uri, uri=True, check_same_thread=False, isolation_level=None)
         else:
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
@@ -292,6 +306,8 @@ class OperationalMemory:
         self.con.row_factory = sqlite3.Row
         self.con.execute("PRAGMA foreign_keys=ON")
         self.con.execute("PRAGMA busy_timeout=5000")
+        if self.read_only:
+            self.con.execute("PRAGMA query_only=ON")
         if not read_only:
             mode = self.con.execute("PRAGMA journal_mode=WAL").fetchone()[0]
             if str(mode).lower() != "wal" and self.path != ":memory:":

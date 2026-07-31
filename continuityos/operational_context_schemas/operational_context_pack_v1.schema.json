@@ -1,0 +1,71 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CONTINUITYOS_OPERATIONAL_CONTEXT_PACK_V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "authority_generation",
+    "role",
+    "active_case",
+    "work_order_id",
+    "session_binding",
+    "memory_binding",
+    "selection",
+    "claims",
+    "decisions",
+    "broker_custody_summary",
+    "ceilings",
+    "context_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "CONTINUITYOS_OPERATIONAL_CONTEXT_PACK_V1"},
+    "authority_generation": {"const": "R63"},
+    "role": {"type": "string", "minLength": 1},
+    "active_case": {"type": ["string", "null"]},
+    "work_order_id": {"type": "string", "minLength": 1},
+    "session_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session_capsule_sha256", "challenge_id", "current_pointer_sha256", "workspace_context_digest"],
+      "properties": {
+        "session_capsule_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "challenge_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "current_pointer_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "workspace_context_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "memory_binding": {"type": "object"},
+    "selection": {"type": "object"},
+    "claims": {"type": "array"},
+    "decisions": {"type": "array"},
+    "broker_custody_summary": {"type": ["object", "null"]},
+    "ceilings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accepted_truth_owner",
+        "context_is_projection_only",
+        "content_acceptance",
+        "state_apply",
+        "may_dispatch_codex",
+        "can_trade",
+        "capital_permission",
+        "deploy_permission",
+        "self_application"
+      ],
+      "properties": {
+        "accepted_truth_owner": {"const": "CONTROL_CENTER"},
+        "context_is_projection_only": {"const": true},
+        "content_acceptance": {"const": "NOT_PERFORMED"},
+        "state_apply": {"const": "DISABLED"},
+        "may_dispatch_codex": {"const": false},
+        "can_trade": {"const": false},
+        "capital_permission": {"const": "DENY"},
+        "deploy_permission": {"const": "DENY"},
+        "self_application": {"const": false}
+      }
+    },
+    "context_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

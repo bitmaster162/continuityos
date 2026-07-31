@@ -505,3 +505,44 @@ def test_claim_decision_and_custody_tables_reject_mutation(tmp_path):
             with pytest.raises(sqlite3.IntegrityError, match="append-only"):
                 db.con.execute(statement)
         assert db.verify()["ok"] is True
+
+
+def test_immutable_read_only_creates_no_sidecars_and_denies_write(tmp_path):
+    path = tmp_path / "immutable.db"
+    with OperationalMemory(str(path)) as db:
+        db.append_event(
+            stream="ops", event_type="A", subject_id="x", actor_type="AGENT",
+            actor_id="a", payload={}, occurred_at=T1, recorded_at=T1,
+        )
+    before = sorted(p.name for p in tmp_path.glob("immutable.db-*"))
+    with OperationalMemory(str(path), read_only=True, immutable=True) as ro:
+        assert ro.con.execute("PRAGMA query_only").fetchone()[0] == 1
+        assert ro.projection()["event_cursor"] == 1
+        with pytest.raises(PolicyViolation):
+            ro.append_event(
+                stream="ops", event_type="B", subject_id="x", actor_type="AGENT",
+                actor_id="a", payload={}, occurred_at=T2,
+            )
+    after = sorted(p.name for p in tmp_path.glob("immutable.db-*"))
+    assert before == after
+
+
+def test_immutable_requires_read_only(tmp_path):
+    with pytest.raises(ValueError, match="requires read_only"):
+        OperationalMemory(str(tmp_path / "x.db"), immutable=True)
+
+
+def test_immutable_rejects_nonempty_wal(tmp_path):
+    path = tmp_path / "active.db"
+    writer = OperationalMemory(str(path))
+    try:
+        writer.append_event(
+            stream="ops", event_type="ACTIVE", subject_id="x", actor_type="AGENT",
+            actor_id="a", payload={}, occurred_at=T1,
+        )
+        wal = Path(str(path) + "-wal")
+        assert wal.exists() and wal.stat().st_size > 0
+        with pytest.raises(PolicyViolation, match="quiescent"):
+            OperationalMemory(str(path), read_only=True, immutable=True)
+    finally:
+        writer.close()

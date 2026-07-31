@@ -384,3 +384,20 @@ Best fit today: **operators and teams that need auditable, governed continuity**
 
 Package version: **v0.9.0**. Current test and governance-corpus results are recorded in
 [BUILD_GATE_STATUS.md](BUILD_GATE_STATUS.md); the CI workflow is the authoritative moving signal.
+
+
+## Common Operational Context v1
+
+Create a bounded, evidence-bound context pack from a quiescent local Common
+Operational Memory database:
+
+```bash
+continuity-context prepare --db memory.db --capsule SESSION_CAPSULE.json \
+  --spec OPERATIONAL_CONTEXT_SPEC.json --out OPERATIONAL_CONTEXT.json
+continuity-context verify --db memory.db --capsule SESSION_CAPSULE.json \
+  --spec OPERATIONAL_CONTEXT_SPEC.json --context OPERATIONAL_CONTEXT.json
+```
+
+The bridge is shadow-only, reads SQLite immutably, rejects a non-empty WAL, fails
+closed on budget overflow, and never applies state. See
+`docs/COMMON_OPERATIONAL_CONTEXT_V1.md`.

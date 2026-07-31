@@ -25,6 +25,10 @@ __all__ = [
     "IdentityConflict",
     "PolicyViolation",
     "IntegrityFailure",
+    "verify_context_pack",
+    "prepare_context_pack",
+    "build_context_pack",
+    "OperationalContextError",
     "fork",
 ]
 
@@ -41,6 +45,10 @@ _LAZY: Dict[str, Tuple[str, str | None]] = {
     "IdentityConflict": (".operational_memory", "IdentityConflict"),
     "PolicyViolation": (".operational_memory", "PolicyViolation"),
     "IntegrityFailure": (".operational_memory", "IntegrityFailure"),
+    "verify_context_pack": (".operational_context", "verify_context_pack"),
+    "prepare_context_pack": (".operational_context", "prepare_context_pack"),
+    "build_context_pack": (".operational_context", "build_context_pack"),
+    "OperationalContextError": (".operational_context", "OperationalContextError"),
     "fork": (".fork", None),
 }
 

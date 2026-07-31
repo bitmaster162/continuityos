@@ -41,6 +41,7 @@ dev = ["pytest>=7", "pytest-cov>=4", "ruff>=0.5"]
 cos = "continuityos.cli:main"
 continuity = "continuityos.gate.cli:main"
 continuity-memory = "continuityos.operational_memory:main"
+continuity-context = "continuityos.operational_context:main"
 
 [project.urls]
 Homepage = "https://sovereign-arena-site.vercel.app/continuityos"
@@ -52,6 +53,7 @@ exclude = ["demo*", "bench*", "tests*", "docs*", "examples*", "dist*"]
 
 [tool.setuptools.package-data]
 "continuityos.gate.schemas" = ["*.json"]
+"continuityos.operational_context_schemas" = ["*.json"]
 
 [tool.setuptools.dynamic]
 version = {attr = "continuityos._version.__version__"}
