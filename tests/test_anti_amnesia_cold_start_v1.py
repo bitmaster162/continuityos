@@ -363,26 +363,36 @@ def test_prepare_does_not_modify_inputs(tmp_path):
 
 
 def test_write_new_requests_binary_mode_and_preserves_multiline_bytes(tmp_path, monkeypatch):
-    """Raw challenge artifacts must not receive Windows newline translation."""
+    """Raw challenge artifacts must not receive Windows newline translation.
+
+    The spy must preserve the host's real ``O_BINARY`` bit on Windows.  The
+    previous test always stripped ``0x8000`` before delegating to ``os.open``;
+    that value is the native Windows ``O_BINARY`` flag, so the test itself
+    forced text mode and produced CRLF bytes even though production code had
+    requested binary mode correctly.
+    """
     destination = tmp_path / "multiline.json"
     payload = b'{\n  "schema": "TEST"\n}\n'
     observed_flags = []
     real_open = cold_start.os.open
-    synthetic_o_binary = 0x8000
+    native_o_binary = getattr(cold_start.os, "O_BINARY", 0)
+    requested_o_binary = native_o_binary or 0x40000000
 
     monkeypatch.setattr(
-        cold_start.os, "O_BINARY", synthetic_o_binary, raising=False
+        cold_start.os, "O_BINARY", requested_o_binary, raising=False
     )
 
     def capturing_open(path, flags, mode=0o777):
         observed_flags.append(flags)
-        # Linux does not recognize the synthetic Windows-only bit.  Strip it
-        # only for the real host call while retaining the assertion signal.
-        return real_open(path, flags & ~synthetic_o_binary, mode)
+        # On POSIX the synthetic bit is assertion-only and must be removed
+        # before the real syscall.  On Windows preserve the native O_BINARY
+        # flag so the delegated open remains binary.
+        host_flags = flags if native_o_binary else flags & ~requested_o_binary
+        return real_open(path, host_flags, mode)
 
     monkeypatch.setattr(cold_start.os, "open", capturing_open)
     cold_start._write_new(destination, payload)
 
     assert observed_flags
-    assert observed_flags[0] & synthetic_o_binary
+    assert observed_flags[0] & requested_o_binary
     assert destination.read_bytes() == payload
