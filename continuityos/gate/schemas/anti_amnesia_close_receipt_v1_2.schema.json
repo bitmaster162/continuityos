@@ -1,0 +1,405 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "can_trade": {
+      "const": false
+    },
+    "candidate": {
+      "additionalProperties": false,
+      "properties": {
+        "content_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "entry_count": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "envelope_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "enum": [
+            "ZIP",
+            "DIRECTORY",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "content_sha256",
+        "size_bytes",
+        "entry_count",
+        "envelope_sha256"
+      ],
+      "type": "object"
+    },
+    "capital_permission": {
+      "const": "DENY"
+    },
+    "checks": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "check_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "code": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "PASS",
+              "WARN",
+              "FAIL"
+            ]
+          }
+        },
+        "required": [
+          "check_id",
+          "status",
+          "code"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "closed": {
+      "const": false
+    },
+    "command": {
+      "additionalProperties": false,
+      "properties": {
+        "dry_run": {
+          "type": "boolean"
+        },
+        "name": {
+          "const": "close"
+        }
+      },
+      "required": [
+        "name",
+        "dry_run"
+      ],
+      "type": "object"
+    },
+    "deploy_permission": {
+      "const": "DENY"
+    },
+    "enforced": {
+      "const": false
+    },
+    "errors": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "gate": {
+      "const": "ANTI_AMNESIA_GATE_V1"
+    },
+    "live_state_modified": {
+      "const": false
+    },
+    "mode": {
+      "const": "SHADOW"
+    },
+    "outcome": {
+      "enum": [
+        "WOULD_HOLD",
+        "PENDING_HUMAN_APPROVAL",
+        "WOULD_ACCEPT_WITH_WARNINGS",
+        "WOULD_ACCEPT"
+      ]
+    },
+    "r63_authority_replaced": {
+      "const": false
+    },
+    "schema": {
+      "const": "ANTI_AMNESIA_CLOSE_RECEIPT_V1_2"
+    },
+    "self_application": {
+      "const": false
+    },
+    "semantic_v1_1_receipt": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "session_context_verification": {
+      "additionalProperties": false,
+      "properties": {
+        "active_case": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "baseline_head": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{40,64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "baseline_tree": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{40,64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "challenge_id": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "checkpoint_hash": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "checkpoint_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "effect_ceiling": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "event_cursor": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "projection_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "role": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_context_ack_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_context_binding_id": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_context_challenge_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_context_verdict_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_context_verdict_status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_input_manifest_file_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_input_manifest_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "verified": {
+          "type": "boolean"
+        },
+        "work_order_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "verified",
+        "session_input_manifest_file_sha256",
+        "session_input_manifest_sha256",
+        "session_context_binding_id",
+        "session_context_challenge_sha256",
+        "session_context_ack_sha256",
+        "session_context_verdict_sha256",
+        "session_context_verdict_status",
+        "challenge_id",
+        "role",
+        "active_case",
+        "work_order_id",
+        "baseline_head",
+        "baseline_tree",
+        "checkpoint_id",
+        "checkpoint_hash",
+        "event_cursor",
+        "projection_sha256",
+        "effect_ceiling"
+      ],
+      "type": "object"
+    },
+    "status": {
+      "enum": [
+        "SHADOW_HOLD",
+        "SHADOW_PENDING_HUMAN_APPROVAL",
+        "SHADOW_ACCEPTABLE_WITH_WARNINGS",
+        "SHADOW_ACCEPTABLE"
+      ]
+    },
+    "warnings": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "writes_performed": {
+      "maxItems": 0,
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema",
+    "gate",
+    "mode",
+    "command",
+    "candidate",
+    "semantic_v1_1_receipt",
+    "session_context_verification",
+    "checks",
+    "errors",
+    "warnings",
+    "outcome",
+    "status",
+    "closed",
+    "enforced",
+    "live_state_modified",
+    "r63_authority_replaced",
+    "writes_performed",
+    "can_trade",
+    "capital_permission",
+    "deploy_permission",
+    "self_application"
+  ],
+  "title": "Anti-Amnesia Close Receipt v1.2",
+  "type": "object"
+}

@@ -4,6 +4,11 @@
   continuity close --return <PATH> --dry-run         # validate v1 return, no apply
   continuity close --return <PATH> --dry-run --work-order <PATH> --permission-policy <PATH>
                                                      # semantic close v1.1
+  continuity close --return <PATH> --dry-run --work-order <PATH> --permission-policy <PATH>
+      --session-input-manifest <PATH> --session-input-manifest-sha256 <SHA>
+      --session-context-challenge <PATH> --session-context-challenge-sha256 <SHA>
+      --session-context-ack <PATH> --session-context-verdict <PATH>
+      --session-context-verdict-sha256 <SHA>          # read-only semantic close v1.2
   continuity cold-start prepare --boot-receipt <PATH> --spec <PATH> --output <DIR>
   continuity cold-start verify --challenge <PATH> --challenge-sha256 <SHA256> --ack <PATH>
   continuity init                         # create ledger + default policy
@@ -25,6 +30,7 @@ from .anti_amnesia import (
     exit_code_for_receipt,
 )
 from .semantic_close import build_semantic_close_receipt
+from .semantic_close_v12 import build_semantic_close_v12_receipt
 from .cold_start import prepare_cold_start_challenge, verify_cold_start_ack
 from .session_context import (
     prepare_session_context_binding,
@@ -540,6 +546,48 @@ def main(argv=None):
         ),
     )
     close.add_argument(
+        "--session-input-manifest",
+        dest="session_input_manifest_path",
+        default=None,
+        help="canonical session-input manifest for read-only semantic close v1.2",
+    )
+    close.add_argument(
+        "--session-input-manifest-sha256",
+        dest="session_input_manifest_sha256",
+        default=None,
+        help="controller-pinned SHA-256 of the session-input manifest",
+    )
+    close.add_argument(
+        "--session-context-challenge",
+        dest="session_context_challenge_path",
+        default=None,
+        help="controller session-context challenge for exact replay",
+    )
+    close.add_argument(
+        "--session-context-challenge-sha256",
+        dest="session_context_challenge_sha256",
+        default=None,
+        help="controller-pinned SHA-256 of the session-context challenge",
+    )
+    close.add_argument(
+        "--session-context-ack",
+        dest="session_context_ack_path",
+        default=None,
+        help="exact SESSION_CONTEXT_ACK emitted before work",
+    )
+    close.add_argument(
+        "--session-context-verdict",
+        dest="session_context_verdict_path",
+        default=None,
+        help="exact controller SESSION_CONTEXT_PASS verdict",
+    )
+    close.add_argument(
+        "--session-context-verdict-sha256",
+        dest="session_context_verdict_sha256",
+        default=None,
+        help="controller-pinned SHA-256 of the session-context verdict",
+    )
+    close.add_argument(
         "--control-root",
         default=os.environ.get("CONTINUITYOS_CONTROL_ROOT") or None,
         help=(
@@ -675,7 +723,47 @@ def main(argv=None):
                     a.work_order_path is not None,
                     a.permission_policy_path is not None,
                 )
-                if semantic_args == (True, True):
+                session_args = (
+                    a.session_input_manifest_path,
+                    a.session_input_manifest_sha256,
+                    a.session_context_challenge_path,
+                    a.session_context_challenge_sha256,
+                    a.session_context_ack_path,
+                    a.session_context_verdict_path,
+                    a.session_context_verdict_sha256,
+                )
+                session_present = tuple(item is not None for item in session_args)
+                if semantic_args == (True, True) and all(session_present):
+                    receipt = build_semantic_close_v12_receipt(
+                        a.return_path,
+                        a.dry_run,
+                        work_order_path=Path(a.work_order_path).expanduser(),
+                        permission_policy_path=Path(
+                            a.permission_policy_path
+                        ).expanduser(),
+                        session_input_manifest_path=Path(
+                            a.session_input_manifest_path
+                        ).expanduser(),
+                        expected_session_input_manifest_sha256=a.session_input_manifest_sha256,
+                        session_context_challenge_path=Path(
+                            a.session_context_challenge_path
+                        ).expanduser(),
+                        expected_session_context_challenge_sha256=(
+                            a.session_context_challenge_sha256
+                        ),
+                        session_context_ack_path=Path(
+                            a.session_context_ack_path
+                        ).expanduser(),
+                        session_context_verdict_path=Path(
+                            a.session_context_verdict_path
+                        ).expanduser(),
+                        expected_session_context_verdict_sha256=(
+                            a.session_context_verdict_sha256
+                        ),
+                        control_root=control_root,
+                        workspace_root=workspace_root,
+                    )
+                elif semantic_args == (True, True) and not any(session_present):
                     receipt = build_semantic_close_receipt(
                         a.return_path,
                         a.dry_run,
@@ -684,12 +772,17 @@ def main(argv=None):
                         control_root=control_root,
                         workspace_root=workspace_root,
                     )
-                elif semantic_args == (False, False):
+                elif semantic_args == (False, False) and not any(session_present):
                     receipt = build_close_receipt(
                         a.return_path,
                         a.dry_run,
                         control_root=control_root,
                         workspace_root=workspace_root,
+                    )
+                elif any(session_present):
+                    raise ValueError(
+                        "semantic close v1.2 requires all session-context arguments plus "
+                        "--work-order and --permission-policy"
                     )
                 else:
                     raise ValueError(
