@@ -1151,6 +1151,11 @@ def test_packaged_json_schemas_are_parseable_and_strict():
         "anti_amnesia_cold_start_challenge_v1.schema.json",
         "anti_amnesia_cold_start_prepare_receipt_v1.schema.json",
         "anti_amnesia_cold_start_internal_error_v1.schema.json",
+        "anti_amnesia_session_context_ack_v1.schema.json",
+        "anti_amnesia_session_context_binding_v1.schema.json",
+        "anti_amnesia_session_context_challenge_v1.schema.json",
+        "anti_amnesia_session_context_prepare_receipt_v1.schema.json",
+        "anti_amnesia_session_context_verdict_v1.schema.json",
     }
     assert {item.name for item in schema_root.glob("*.schema.json")} == names
     for name in names:

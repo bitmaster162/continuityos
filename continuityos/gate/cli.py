@@ -26,6 +26,10 @@ from .anti_amnesia import (
 )
 from .semantic_close import build_semantic_close_receipt
 from .cold_start import prepare_cold_start_challenge, verify_cold_start_ack
+from .session_context import (
+    prepare_session_context_binding,
+    verify_session_context_ack,
+)
 
 LEGACY_GATE_AVAILABLE = None
 LEGACY_GATE_IMPORT_ERROR = ""
@@ -570,6 +574,24 @@ def main(argv=None):
     cold_verify.add_argument("--challenge", required=True)
     cold_verify.add_argument("--challenge-sha256", required=True)
     cold_verify.add_argument("--ack", required=True)
+    cold_bind = cold_sub.add_parser(
+        "bind-context",
+        help=(
+            "bind a verified operational context pack to an existing cold-start "
+            "capsule without modifying the base challenge"
+        ),
+    )
+    cold_bind.add_argument("--challenge", required=True)
+    cold_bind.add_argument("--challenge-sha256", required=True)
+    cold_bind.add_argument("--context", required=True)
+    cold_bind.add_argument("--output", required=True)
+    cold_verify_context = cold_sub.add_parser(
+        "verify-context",
+        help="compare one SESSION_CONTEXT_ACK with the hidden expected acknowledgement",
+    )
+    cold_verify_context.add_argument("--challenge", required=True)
+    cold_verify_context.add_argument("--challenge-sha256", required=True)
+    cold_verify_context.add_argument("--ack", required=True)
     a = ap.parse_args(argv)
 
     if a.cmd == "cold-start":
@@ -580,14 +602,27 @@ def main(argv=None):
                     Path(a.spec).expanduser(),
                     Path(a.output).expanduser(),
                 )
-            else:
+            elif a.cold_cmd == "verify":
                 receipt = verify_cold_start_ack(
                     Path(a.challenge).expanduser(),
                     Path(a.ack).expanduser(),
                     expected_challenge_sha256=a.challenge_sha256,
                 )
+            elif a.cold_cmd == "bind-context":
+                receipt = prepare_session_context_binding(
+                    Path(a.challenge).expanduser(),
+                    Path(a.context).expanduser(),
+                    Path(a.output).expanduser(),
+                    expected_base_challenge_sha256=a.challenge_sha256,
+                )
+            else:
+                receipt = verify_session_context_ack(
+                    Path(a.challenge).expanduser(),
+                    Path(a.ack).expanduser(),
+                    expected_challenge_sha256=a.challenge_sha256,
+                )
             print(canonical_json_text(receipt))
-            if a.cold_cmd == "verify":
+            if a.cold_cmd in {"verify", "verify-context"}:
                 return 0 if receipt.get("outcome") == "PASS" else 2
             return 0
         except Exception as exc:

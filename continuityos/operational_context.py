@@ -359,6 +359,252 @@ def validate_context_spec(value: Any) -> Dict[str, Any]:
     }
 
 
+
+def validate_session_capsule(value: Any) -> Dict[str, Any]:
+    """Validate one strict ANTI_AMNESIA_SESSION_CAPSULE_V1 object.
+
+    This public wrapper is intentionally read-only.  It exists so adjacent
+    lifecycle components can bind a context pack to the exact capsule without
+    duplicating or weakening the capsule contract.
+    """
+
+    return _validate_capsule(value)
+
+
+def validate_context_pack_structure(value: Any) -> Dict[str, Any]:
+    """Validate a context pack without reopening its source database.
+
+    The full ``verify_context_pack`` function remains the authoritative
+    database-backed replay check.  This structural validator is used when a
+    previously verified pack is handed to the Anti-Amnesia session lifecycle.
+    It proves strict shape, self-hash integrity, R63/session identity and the
+    non-effecting ceilings; it never upgrades content acceptance.
+    """
+
+    row = _exact_keys(value, _PACK_KEYS, "context_pack")
+    if row["schema"] != SCHEMA_PACK:
+        raise OperationalContextError("context_pack.schema:UNSUPPORTED")
+    if row["authority_generation"] != AUTHORITY_GENERATION:
+        raise OperationalContextError("context_pack.authority_generation:NOT_R63")
+    role = _nonempty(row["role"], "context_pack.role", max_length=128)
+    active_case = row["active_case"]
+    if active_case is not None:
+        active_case = _nonempty(active_case, "context_pack.active_case", max_length=192)
+    work_order_id = row["work_order_id"]
+    if not isinstance(work_order_id, str) or not _WORK_ORDER_RE.fullmatch(work_order_id):
+        raise OperationalContextError("context_pack.work_order_id:INVALID")
+
+    session = _exact_keys(
+        row["session_binding"],
+        {
+            "session_capsule_sha256",
+            "challenge_id",
+            "current_pointer_sha256",
+            "workspace_context_digest",
+        },
+        "context_pack.session_binding",
+    )
+    for field in (
+        "session_capsule_sha256",
+        "challenge_id",
+        "current_pointer_sha256",
+        "workspace_context_digest",
+    ):
+        _validate_sha(session[field], f"context_pack.session_binding.{field}")
+
+    memory = _exact_keys(
+        row["memory_binding"],
+        {
+            "schema_name",
+            "schema_version",
+            "mode",
+            "database_identity_sha256",
+            "checkpoint",
+            "context_event_cursor",
+            "context_event_chain_head",
+            "context_valid_at",
+            "context_projection_sha256",
+        },
+        "context_pack.memory_binding",
+    )
+    if memory["schema_name"] != "continuityos.common_operational_memory.v1":
+        raise OperationalContextError("context_pack.memory_binding.schema_name:INVALID")
+    if memory["schema_version"] != 1 or memory["mode"] != "SHADOW_ONLY":
+        raise OperationalContextError("context_pack.memory_binding:UNSUPPORTED_VERSION_OR_MODE")
+    _validate_sha(
+        memory["database_identity_sha256"],
+        "context_pack.memory_binding.database_identity_sha256",
+    )
+    if isinstance(memory["context_event_cursor"], bool) or not isinstance(
+        memory["context_event_cursor"], int
+    ) or memory["context_event_cursor"] < 0:
+        raise OperationalContextError("context_pack.memory_binding.context_event_cursor:INVALID")
+    chain_head = memory["context_event_chain_head"]
+    if chain_head is not None:
+        _validate_sha(chain_head, "context_pack.memory_binding.context_event_chain_head")
+    if memory["context_valid_at"] is not None:
+        try:
+            _normalize_time(
+                memory["context_valid_at"],
+                field="context_pack.memory_binding.context_valid_at",
+            )
+        except ValueError as exc:
+            raise OperationalContextError(str(exc)) from exc
+    _validate_sha(
+        memory["context_projection_sha256"],
+        "context_pack.memory_binding.context_projection_sha256",
+    )
+
+    checkpoint = _exact_keys(
+        memory["checkpoint"],
+        {
+            "checkpoint_id",
+            "label",
+            "event_sequence",
+            "projection_sha256",
+            "recorded_at",
+            "evidence_refs",
+            "metadata_keys",
+            "checkpoint_hash",
+        },
+        "context_pack.memory_binding.checkpoint",
+    )
+    checkpoint_id = _nonempty(
+        checkpoint["checkpoint_id"],
+        "context_pack.memory_binding.checkpoint.checkpoint_id",
+        max_length=192,
+    )
+    _nonempty(
+        checkpoint["label"],
+        "context_pack.memory_binding.checkpoint.label",
+        max_length=1024,
+    )
+    if isinstance(checkpoint["event_sequence"], bool) or not isinstance(
+        checkpoint["event_sequence"], int
+    ) or checkpoint["event_sequence"] < 0:
+        raise OperationalContextError("context_pack.memory_binding.checkpoint.event_sequence:INVALID")
+    if checkpoint["event_sequence"] != memory["context_event_cursor"]:
+        raise OperationalContextError("context_pack.memory_binding:CHECKPOINT_CURSOR_MISMATCH")
+    _validate_sha(
+        checkpoint["projection_sha256"],
+        "context_pack.memory_binding.checkpoint.projection_sha256",
+    )
+    try:
+        _normalize_time(
+            checkpoint["recorded_at"],
+            field="context_pack.memory_binding.checkpoint.recorded_at",
+        )
+    except ValueError as exc:
+        raise OperationalContextError(str(exc)) from exc
+    if not isinstance(checkpoint["evidence_refs"], list):
+        raise OperationalContextError("context_pack.memory_binding.checkpoint.evidence_refs:INVALID")
+    _string_list(
+        checkpoint["metadata_keys"],
+        "context_pack.memory_binding.checkpoint.metadata_keys",
+        max_items=1024,
+    )
+    _validate_sha(
+        checkpoint["checkpoint_hash"],
+        "context_pack.memory_binding.checkpoint.checkpoint_hash",
+    )
+
+    selection = dict(row["selection"]) if isinstance(row["selection"], dict) else None
+    if selection is None or "spec_sha256" not in selection:
+        raise OperationalContextError("context_pack.selection:INVALID")
+    spec_sha256 = selection.pop("spec_sha256")
+    _validate_sha(spec_sha256, "context_pack.selection.spec_sha256")
+    normalized_spec = validate_context_spec(selection)
+    if normalized_spec["checkpoint_id"] != checkpoint_id:
+        raise OperationalContextError("context_pack.selection:CHECKPOINT_MISMATCH")
+
+    if not isinstance(row["claims"], list) or not isinstance(row["decisions"], list):
+        raise OperationalContextError("context_pack:CLAIMS_OR_DECISIONS_INVALID")
+    if len(row["claims"]) > normalized_spec["max_claims"]:
+        raise OperationalContextError("context_pack.claims:BUDGET_EXCEEDED")
+    if len(row["decisions"]) > normalized_spec["max_decisions"]:
+        raise OperationalContextError("context_pack.decisions:BUDGET_EXCEEDED")
+
+    broker = row["broker_custody_summary"]
+    if normalized_spec["include_broker_summary"] is False and broker is not None:
+        raise OperationalContextError("context_pack.broker_custody_summary:UNEXPECTED")
+    if broker is not None:
+        broker_row = _exact_keys(
+            broker,
+            {
+                "total",
+                "by_physical_status",
+                "by_generation_slot",
+                "source_registry_sha256",
+                "all_content_unreviewed",
+                "all_state_not_applied",
+            },
+            "context_pack.broker_custody_summary",
+        )
+        if isinstance(broker_row["total"], bool) or not isinstance(broker_row["total"], int) or broker_row["total"] < 0:
+            raise OperationalContextError("context_pack.broker_custody_summary.total:INVALID")
+        if not isinstance(broker_row["by_physical_status"], dict) or not isinstance(
+            broker_row["by_generation_slot"], dict
+        ):
+            raise OperationalContextError("context_pack.broker_custody_summary:INVALID_COUNTS")
+        registries = _string_list(
+            broker_row["source_registry_sha256"],
+            "context_pack.broker_custody_summary.source_registry_sha256",
+            max_items=1024,
+        )
+        for index, digest in enumerate(registries):
+            _validate_sha(
+                digest,
+                f"context_pack.broker_custody_summary.source_registry_sha256[{index}]",
+            )
+        if broker_row["all_content_unreviewed"] is not True:
+            raise OperationalContextError("context_pack.broker_custody_summary:CONTENT_CEILING_VIOLATION")
+        if broker_row["all_state_not_applied"] is not True:
+            raise OperationalContextError("context_pack.broker_custody_summary:APPLY_CEILING_VIOLATION")
+
+    ceilings = _exact_keys(
+        row["ceilings"],
+        {
+            "accepted_truth_owner",
+            "context_is_projection_only",
+            "content_acceptance",
+            "state_apply",
+            "may_dispatch_codex",
+            "can_trade",
+            "capital_permission",
+            "deploy_permission",
+            "self_application",
+        },
+        "context_pack.ceilings",
+    )
+    expected_ceilings = {
+        "accepted_truth_owner": "CONTROL_CENTER",
+        "context_is_projection_only": True,
+        "content_acceptance": "NOT_PERFORMED",
+        "state_apply": "DISABLED",
+        "may_dispatch_codex": False,
+        "can_trade": False,
+        "capital_permission": "DENY",
+        "deploy_permission": "DENY",
+        "self_application": False,
+    }
+    if dict(ceilings) != expected_ceilings:
+        raise OperationalContextError("context_pack.ceilings:VIOLATION")
+
+    context_sha256 = _validate_sha(row["context_sha256"], "context_pack.context_sha256")
+    body = dict(row)
+    body.pop("context_sha256")
+    expected_context_sha = _sha256_text(_canonical_json(body))
+    if context_sha256 != expected_context_sha:
+        raise OperationalContextError("context_pack.context_sha256:MISMATCH")
+
+    return {
+        **dict(row),
+        "role": role,
+        "active_case": active_case,
+        "work_order_id": work_order_id,
+        "selection": {**normalized_spec, "spec_sha256": spec_sha256},
+    }
+
 def _checkpoint(memory: OperationalMemory, checkpoint_id: str) -> Dict[str, Any]:
     row = memory.con.execute(
         "SELECT * FROM checkpoints WHERE checkpoint_id=?", (checkpoint_id,)
@@ -565,12 +811,14 @@ def prepare_context_pack(
     spec = strict_json_loads(spec_payload.decode("utf-8-sig"))
     resolved_db, db_identity = _database_identity(db_path)
     with OperationalMemory(resolved_db, read_only=True, immutable=True) as memory:
-        pack = build_context_pack(
-            memory,
-            capsule=capsule,
-            capsule_sha256=capsule_sha,
-            spec=spec,
-            spec_sha256=spec_sha,
+        pack = validate_context_pack_structure(
+            build_context_pack(
+                memory,
+                capsule=capsule,
+                capsule_sha256=capsule_sha,
+                spec=spec,
+                spec_sha256=spec_sha,
+            )
         )
     _assert_database_unchanged(resolved_db, db_identity)
     payload = _canonical_bytes(pack)

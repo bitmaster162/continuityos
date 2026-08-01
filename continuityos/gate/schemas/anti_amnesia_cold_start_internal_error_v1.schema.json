@@ -12,7 +12,7 @@
     "schema": {"const": "ANTI_AMNESIA_COLD_START_INTERNAL_ERROR_V1"},
     "gate": {"const": "ANTI_AMNESIA_GATE_V1"},
     "mode": {"const": "SHADOW"},
-    "command": {"type": "string", "pattern": "^cold-start (prepare|verify|unknown)$"},
+    "command": {"type": "string", "pattern": "^cold-start (prepare|verify|bind-context|verify-context|unknown)$"},
     "error_type": {"type": "string", "minLength": 1},
     "error": {"type": "string"},
     "outcome": {"const": "FAIL"},

@@ -1,0 +1,116 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ANTI_AMNESIA_SESSION_CONTEXT_CHALLENGE_V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "binding_id",
+    "gate",
+    "mode",
+    "authority_generation",
+    "base_challenge",
+    "binding_manifest",
+    "candidate_session_capsule",
+    "candidate_operational_context",
+    "candidate_ack_schema",
+    "candidate_instructions",
+    "controller_expected_ack",
+    "live_state_modified",
+    "writes_performed",
+    "can_trade",
+    "capital_permission"
+  ],
+  "properties": {
+    "schema": {
+      "const": "ANTI_AMNESIA_SESSION_CONTEXT_CHALLENGE_V1"
+    },
+    "binding_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "gate": {
+      "const": "ANTI_AMNESIA_GATE_V1"
+    },
+    "mode": {
+      "const": "SHADOW"
+    },
+    "authority_generation": {
+      "const": "R63"
+    },
+    "base_challenge": {
+      "$ref": "#/definitions/artifact"
+    },
+    "binding_manifest": {
+      "$ref": "#/definitions/artifact"
+    },
+    "candidate_session_capsule": {
+      "$ref": "#/definitions/artifact"
+    },
+    "candidate_operational_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "context_sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "context_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "candidate_ack_schema": {
+      "$ref": "#/definitions/artifact"
+    },
+    "candidate_instructions": {
+      "$ref": "#/definitions/artifact"
+    },
+    "controller_expected_ack": {
+      "$ref": "#/definitions/artifact"
+    },
+    "live_state_modified": {
+      "const": false
+    },
+    "writes_performed": {
+      "type": "array",
+      "maxItems": 0
+    },
+    "can_trade": {
+      "const": false
+    },
+    "capital_permission": {
+      "const": "DENY"
+    }
+  },
+  "definitions": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    }
+  }
+}

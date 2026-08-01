@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ANTI_AMNESIA_SESSION_CONTEXT_PREPARE_RECEIPT_V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "binding_id",
+    "output_dir",
+    "base_challenge_sha256",
+    "binding_sha256",
+    "operational_context_file_sha256",
+    "operational_context_sha256",
+    "challenge_sha256",
+    "expected_ack_sha256",
+    "checkpoint_id",
+    "status",
+    "live_state_modified",
+    "writes_performed",
+    "can_trade",
+    "capital_permission"
+  ],
+  "properties": {
+    "schema": {"const": "ANTI_AMNESIA_SESSION_CONTEXT_PREPARE_RECEIPT_V1"},
+    "binding_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "output_dir": {"type": "string", "minLength": 1},
+    "base_challenge_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "binding_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "operational_context_file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "operational_context_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "challenge_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "expected_ack_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "checkpoint_id": {"type": "string", "minLength": 1},
+    "status": {"const": "SESSION_CONTEXT_CHALLENGE_READY"},
+    "live_state_modified": {"const": false},
+    "writes_performed": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "can_trade": {"const": false},
+    "capital_permission": {"const": "DENY"}
+  }
+}
