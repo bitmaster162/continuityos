@@ -31,7 +31,7 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 from .operational_context import (
     AUTHORITY_GENERATION,
     SCHEMA_PACK as CONTEXT_PACK_SCHEMA,
-    SCHEMA_SPEC as CONTEXT_SPEC_SCHEMA,
+    SCHEMA_VERIFY_RECEIPT as CONTEXT_VERIFY_RECEIPT_SCHEMA,
     _PACK_KEYS,
     _canonical_bytes,
     _validate_capsule,
@@ -312,6 +312,7 @@ def _manifest_body(
     context: Mapping[str, Any],
     context_file_sha256: str,
     spec_sha256: str,
+    context_verification_sha256: str,
 ) -> Dict[str, Any]:
     baseline = capsule["git_baseline"]
     memory = context["memory_binding"]
@@ -345,6 +346,10 @@ def _manifest_body(
             "context_spec": {
                 "logical_name": "OPERATIONAL_CONTEXT_SPEC.json",
                 "sha256": spec_sha256,
+            },
+            "context_verification": {
+                "logical_name": "OPERATIONAL_CONTEXT_VERIFY_RECEIPT.json",
+                "sha256": context_verification_sha256,
             },
         },
         "memory_binding": {
@@ -410,7 +415,7 @@ def validate_session_input_manifest(value: Any) -> Dict[str, Any]:
 
     artifacts = _exact_keys(
         row["artifact_binding"],
-        {"session_capsule", "operational_context", "context_spec"},
+        {"session_capsule", "operational_context", "context_spec", "context_verification"},
         "session_input_manifest.artifact_binding",
     )
     capsule_artifact = _exact_keys(
@@ -438,6 +443,15 @@ def validate_session_input_manifest(value: Any) -> Dict[str, Any]:
     if spec_artifact["logical_name"] != "OPERATIONAL_CONTEXT_SPEC.json":
         raise SessionInputError("session_input_manifest.artifact_binding.context_spec:LOGICAL_NAME")
     _sha256(spec_artifact["sha256"], "session_input_manifest.artifact_binding.context_spec.sha256")
+
+    verify_artifact = _exact_keys(
+        artifacts["context_verification"],
+        {"logical_name", "sha256"},
+        "session_input_manifest.artifact_binding.context_verification",
+    )
+    if verify_artifact["logical_name"] != "OPERATIONAL_CONTEXT_VERIFY_RECEIPT.json":
+        raise SessionInputError("session_input_manifest.artifact_binding.context_verification:LOGICAL_NAME")
+    _sha256(verify_artifact["sha256"], "session_input_manifest.artifact_binding.context_verification.sha256")
 
     memory = _exact_keys(
         row["memory_binding"],
@@ -509,10 +523,13 @@ def build_session_input_manifest(
     context_file_sha256: str,
     spec: Mapping[str, Any],
     spec_sha256: str,
+    context_verification: Mapping[str, Any],
+    context_verification_sha256: str,
 ) -> Dict[str, Any]:
     _sha256(capsule_sha256, "session_capsule_sha256")
     _sha256(context_file_sha256, "operational_context_file_sha256")
     _sha256(spec_sha256, "context_spec_sha256")
+    _sha256(context_verification_sha256, "context_verification_sha256")
     normalized_capsule = _validate_capsule(capsule)
     normalized_spec = validate_context_spec(spec)
     normalized_context = _validate_context_pack(
@@ -522,12 +539,49 @@ def build_session_input_manifest(
         spec=normalized_spec,
         spec_sha256=spec_sha256,
     )
+    verify_row = _exact_keys(
+        context_verification,
+        {
+            "schema",
+            "status",
+            "ok",
+            "context_file_sha256",
+            "expected_file_sha256",
+            "context_sha256",
+            "expected_context_sha256",
+            "exact_bytes",
+            "live_state_modified",
+            "can_trade",
+            "capital_permission",
+            "deploy_permission",
+            "self_application",
+        },
+        "context_verification",
+    )
+    expected_verify = {
+        "schema": CONTEXT_VERIFY_RECEIPT_SCHEMA,
+        "status": "OPERATIONAL_CONTEXT_VERIFY_PASS",
+        "ok": True,
+        "context_file_sha256": context_file_sha256,
+        "expected_file_sha256": context_file_sha256,
+        "context_sha256": normalized_context["context_sha256"],
+        "expected_context_sha256": normalized_context["context_sha256"],
+        "exact_bytes": True,
+        "live_state_modified": False,
+        "can_trade": False,
+        "capital_permission": "DENY",
+        "deploy_permission": "DENY",
+        "self_application": False,
+    }
+    if dict(verify_row) != expected_verify:
+        raise SessionInputError("context_verification:NOT_EXACT_PASS")
     body = _manifest_body(
         capsule=normalized_capsule,
         capsule_sha256=capsule_sha256,
         context=normalized_context,
         context_file_sha256=context_file_sha256,
         spec_sha256=spec_sha256,
+        context_verification_sha256=context_verification_sha256,
     )
     manifest = {**body, "manifest_sha256": _sha256_text(_canonical_json(body))}
     validate_session_input_manifest(manifest)
@@ -574,13 +628,16 @@ def _load_bound_inputs(
     capsule_path: Path,
     context_path: Path,
     spec_path: Path,
+    context_verification_path: Path,
 ) -> Tuple[Dict[str, Any], bytes, str]:
     capsule_payload, capsule_sha = _stable_read(Path(capsule_path), "session_capsule")
     context_payload, context_file_sha = _stable_read(Path(context_path), "operational_context")
     spec_payload, spec_sha = _stable_read(Path(spec_path), "context_spec")
+    verify_payload, verify_sha = _stable_read(Path(context_verification_path), "context_verification")
     capsule = _parse_canonical_json(capsule_payload, "session_capsule")
     context = _parse_canonical_json(context_payload, "operational_context")
     spec = _parse_canonical_json(spec_payload, "context_spec")
+    context_verification = _parse_canonical_json(verify_payload, "context_verification")
     manifest = build_session_input_manifest(
         capsule=capsule,
         capsule_sha256=capsule_sha,
@@ -588,6 +645,8 @@ def _load_bound_inputs(
         context_file_sha256=context_file_sha,
         spec=spec,
         spec_sha256=spec_sha,
+        context_verification=context_verification,
+        context_verification_sha256=verify_sha,
     )
     payload = _canonical_bytes(manifest)
     return manifest, payload, _sha256_bytes(payload)
@@ -598,12 +657,14 @@ def prepare_session_input_manifest(
     capsule_path: Path,
     context_path: Path,
     spec_path: Path,
+    context_verification_path: Path,
     output_path: Path,
 ) -> Dict[str, Any]:
     manifest, payload, file_sha = _load_bound_inputs(
         capsule_path=capsule_path,
         context_path=context_path,
         spec_path=spec_path,
+        context_verification_path=context_verification_path,
     )
     _atomic_write_new(Path(output_path), payload)
     readback, readback_sha = _stable_read(Path(output_path), "session_input_manifest")
@@ -633,6 +694,7 @@ def verify_session_input_manifest(
     capsule_path: Path,
     context_path: Path,
     spec_path: Path,
+    context_verification_path: Path,
     manifest_path: Path,
     expected_manifest_file_sha256: str,
 ) -> Dict[str, Any]:
@@ -646,6 +708,7 @@ def verify_session_input_manifest(
         capsule_path=capsule_path,
         context_path=context_path,
         spec_path=spec_path,
+        context_verification_path=context_verification_path,
     )
     exact = manifest_payload == expected_payload
     self_hash_match = parsed_manifest["manifest_sha256"] == expected["manifest_sha256"]
@@ -678,6 +741,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         command.add_argument("--capsule", required=True, help="canonical ANTI_AMNESIA_SESSION_CAPSULE_V1 JSON")
         command.add_argument("--context", required=True, help="canonical CONTINUITYOS_OPERATIONAL_CONTEXT_PACK_V1 JSON")
         command.add_argument("--spec", required=True, help="canonical controller-authored context spec JSON")
+        command.add_argument("--context-verification", required=True, help="canonical OPERATIONAL_CONTEXT_VERIFY_PASS receipt")
     prepare.add_argument("--out", required=True, help="new SESSION_INPUT_MANIFEST.json path")
     verify.add_argument("--manifest", required=True, help="existing session input manifest")
     verify.add_argument("--manifest-sha256", required=True, help="controller-pinned manifest file SHA-256")
@@ -688,6 +752,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 capsule_path=Path(args.capsule),
                 context_path=Path(args.context),
                 spec_path=Path(args.spec),
+                context_verification_path=Path(args.context_verification),
                 output_path=Path(args.out),
             )
         else:
@@ -695,6 +760,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 capsule_path=Path(args.capsule),
                 context_path=Path(args.context),
                 spec_path=Path(args.spec),
+                context_verification_path=Path(args.context_verification),
                 manifest_path=Path(args.manifest),
                 expected_manifest_file_sha256=args.manifest_sha256,
             )
