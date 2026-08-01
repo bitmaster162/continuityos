@@ -1,18 +1,19 @@
-"""Bind one verified operational context pack to an Anti-Amnesia session.
+"""Deliver and verify one exact operational-memory context for one cold-start session.
 
-The existing cold-start challenge proves that a fresh model recovered the exact
-controller-authored session capsule.  Common Operational Context proves that a
-bounded memory projection was deterministically derived from a named checkpoint.
-This module closes the handoff between those two artifacts without creating a
-hash cycle:
+The canonical input binding is ``ANTI_AMNESIA_SESSION_INPUT_MANIFEST_V1``.  This
+module adds only a delivery/acknowledgement envelope around that verified
+manifest:
 
-* the base cold-start challenge and capsule remain byte-identical;
-* the operational context already binds to the exact capsule SHA-256;
-* a new session-context binding manifest binds capsule, context and ceilings;
-* the fresh model returns one exact SESSION_CONTEXT_ACK;
-* verification is byte/hash based and never accepts or applies state.
+* the base Anti-Amnesia cold-start challenge remains byte-identical;
+* the session-input manifest must replay-verify against capsule, context, spec
+  and the exact ``OPERATIONAL_CONTEXT_VERIFY_PASS`` receipt;
+* the candidate receives capsule, context, manifest, a compact binding envelope,
+  a strict ACK schema and minimal instructions;
+* the controller retains the source challenge, context spec, context-verification
+  receipt and hidden expected ACK;
+* verification is exact and never accepts content or applies state.
 
-No function here mutates R63, runtime state, the operational database, Git,
+No function mutates R63, runtime state, the operational-memory database, Git,
 services, deployment or trading permissions.
 """
 from __future__ import annotations
@@ -40,6 +41,12 @@ from ..operational_context import (
     validate_context_pack_structure,
     validate_session_capsule,
 )
+from ..session_input import (
+    SCHEMA_MANIFEST as SESSION_INPUT_MANIFEST_SCHEMA,
+    SessionInputError,
+    validate_session_input_manifest,
+    verify_session_input_manifest,
+)
 
 SCHEMA_BINDING = "ANTI_AMNESIA_SESSION_CONTEXT_BINDING_V1"
 SCHEMA_ACK = "ANTI_AMNESIA_SESSION_CONTEXT_ACK_V1"
@@ -57,9 +64,7 @@ _BINDING_KEYS = {
     "mode",
     "authority_generation",
     "base_challenge",
-    "session",
-    "session_capsule",
-    "operational_context",
+    "session_input_manifest",
     "ceilings",
 }
 
@@ -71,14 +76,20 @@ _ACK_KEYS = {
     "role",
     "active_case",
     "work_order_id",
+    "baseline_head",
+    "baseline_tree",
+    "effect_ceiling",
+    "session_input_manifest_file_sha256",
+    "session_input_manifest_sha256",
     "session_capsule_sha256",
     "operational_context_file_sha256",
     "operational_context_sha256",
+    "context_spec_sha256",
+    "context_verification_receipt_sha256",
     "checkpoint_id",
     "checkpoint_hash",
     "context_event_cursor",
     "context_projection_sha256",
-    "selection_spec_sha256",
     "accepted_truth_owner",
     "context_is_projection_only",
     "content_acceptance",
@@ -98,8 +109,11 @@ _CHALLENGE_KEYS = {
     "authority_generation",
     "base_challenge",
     "binding_manifest",
+    "candidate_session_input_manifest",
     "candidate_session_capsule",
     "candidate_operational_context",
+    "controller_context_spec",
+    "controller_context_verification",
     "candidate_ack_schema",
     "candidate_instructions",
     "controller_expected_ack",
@@ -121,7 +135,7 @@ _CEILINGS = {
     "self_application": False,
 }
 
-_INSTRUCTIONS = """Read SESSION_CAPSULE.json, OPERATIONAL_CONTEXT.json and SESSION_CONTEXT_BINDING.json.
+_INSTRUCTIONS = """Read SESSION_CAPSULE.json, OPERATIONAL_CONTEXT.json, SESSION_INPUT_MANIFEST.json and SESSION_CONTEXT_BINDING.json.
 
 Return exactly one file named SESSION_CONTEXT_ACK.json.
 
@@ -135,7 +149,7 @@ Stop after SESSION_CONTEXT_ACK.json.
 
 
 class SessionContextError(AntiAmnesiaError):
-    """The session-context binding, package or acknowledgement is invalid."""
+    """The session-context package or acknowledgement is invalid."""
 
 
 def _exact_keys(value: Any, expected: Iterable[str], label: str) -> Mapping[str, Any]:
@@ -170,16 +184,25 @@ def _descriptor(value: Any, label: str, *, extra: Iterable[str] = ()) -> Mapping
     return row
 
 
-def _load_json_file(path: Path, label: str, *, max_bytes: int = MAX_CONTEXT_BYTES) -> Tuple[bytes, str, Any]:
+def _load_json_file(
+    path: Path,
+    label: str,
+    *,
+    max_bytes: int = MAX_CONTEXT_BYTES,
+    canonical: bool = True,
+) -> Tuple[bytes, str, Any]:
     payload = cold_start.stable_read_bytes(path, label=label, max_bytes=max_bytes)
-    return payload, sha256_bytes(payload), strict_json_loads(payload, label)
+    parsed = strict_json_loads(payload, label)
+    if canonical and payload != canonical_json_bytes(parsed):
+        raise SessionContextError(f"{label}:NON_CANONICAL_JSON")
+    return payload, sha256_bytes(payload), parsed
 
 
 def _load_base_challenge(
     challenge_path: Path,
     *,
     expected_sha256: str,
-) -> Tuple[Dict[str, Any], bytes, str, Dict[str, Any], bytes, str]:
+) -> Tuple[Dict[str, Any], bytes, str, Path, Dict[str, Any], bytes, str]:
     _sha(expected_sha256, "base_challenge.expected_sha256")
     challenge_payload, challenge_sha, parsed = _load_json_file(
         Path(challenge_path), "session_context.base_challenge"
@@ -239,7 +262,15 @@ def _load_base_challenge(
         raise SessionContextError(str(exc)) from exc
     if capsule["challenge_id"] != row["challenge_id"]:
         raise SessionContextError("base_challenge:CAPSULE_CHALLENGE_MISMATCH")
-    return dict(row), challenge_payload, challenge_sha, capsule, capsule_payload, capsule_sha
+    return (
+        dict(row),
+        challenge_payload,
+        challenge_sha,
+        capsule_path,
+        capsule,
+        capsule_payload,
+        capsule_sha,
+    )
 
 
 def _load_operational_context(path: Path) -> Tuple[Dict[str, Any], bytes, str]:
@@ -253,54 +284,121 @@ def _load_operational_context(path: Path) -> Tuple[Dict[str, Any], bytes, str]:
     return context, payload, file_sha
 
 
-def _verify_context_matches_capsule(
-    context: Mapping[str, Any],
+def _load_session_input_manifest(
+    path: Path,
+    *,
+    expected_sha256: str,
+) -> Tuple[Dict[str, Any], bytes, str]:
+    _sha(expected_sha256, "session_input_manifest.expected_sha256")
+    payload, file_sha, parsed = _load_json_file(
+        Path(path), "session_context.session_input_manifest"
+    )
+    if file_sha != expected_sha256:
+        raise SessionContextError("session_input_manifest:PINNED_SHA256_MISMATCH")
+    try:
+        manifest = validate_session_input_manifest(parsed)
+    except SessionInputError as exc:
+        raise SessionContextError(str(exc)) from exc
+    return manifest, payload, file_sha
+
+
+def _require_manifest_replay_pass(
+    *,
+    capsule_path: Path,
+    context_path: Path,
+    spec_path: Path,
+    context_verification_path: Path,
+    manifest_path: Path,
+    manifest_file_sha256: str,
+) -> Dict[str, Any]:
+    try:
+        receipt = verify_session_input_manifest(
+            capsule_path=Path(capsule_path),
+            context_path=Path(context_path),
+            spec_path=Path(spec_path),
+            context_verification_path=Path(context_verification_path),
+            manifest_path=Path(manifest_path),
+            expected_manifest_file_sha256=manifest_file_sha256,
+        )
+    except SessionInputError as exc:
+        raise SessionContextError(str(exc)) from exc
+    if (
+        receipt.get("schema") != "ANTI_AMNESIA_SESSION_INPUT_VERIFY_RECEIPT_V1"
+        or receipt.get("status") != "SESSION_INPUT_VERIFY_PASS"
+        or receipt.get("ok") is not True
+        or receipt.get("exact_bytes") is not True
+        or receipt.get("live_state_modified") is not False
+        or receipt.get("can_trade") is not False
+        or receipt.get("capital_permission") != "DENY"
+        or receipt.get("deploy_permission") != "DENY"
+        or receipt.get("self_application") is not False
+    ):
+        raise SessionContextError("session_input_manifest:REPLAY_VERIFY_NOT_PASS")
+    return dict(receipt)
+
+
+def _verify_manifest_matches_base(
+    manifest: Mapping[str, Any],
+    *,
+    base_challenge: Mapping[str, Any],
     capsule: Mapping[str, Any],
     capsule_sha256: str,
+    context: Mapping[str, Any],
+    context_file_sha256: str,
 ) -> None:
-    session = context["session_binding"]
-    mismatches = []
-    checks = {
-        "session_capsule_sha256": (session["session_capsule_sha256"], capsule_sha256),
-        "challenge_id": (session["challenge_id"], capsule["challenge_id"]),
-        "current_pointer_sha256": (
-            session["current_pointer_sha256"],
-            capsule["current_pointer_sha256"],
-        ),
-        "workspace_context_digest": (
-            session["workspace_context_digest"],
-            capsule["workspace_context_digest"],
-        ),
-        "authority_generation": (
-            context["authority_generation"],
-            capsule["authority_generation"],
-        ),
-        "role": (context["role"], capsule["role"]),
-        "active_case": (context["active_case"], capsule["active_case"]),
-        "work_order_id": (context["work_order_id"], capsule["work_order_id"]),
+    session = manifest["session_binding"]
+    artifacts = manifest["artifact_binding"]
+    memory = manifest["memory_binding"]
+    baseline = capsule["git_baseline"]
+    expected = {
+        "challenge_id": base_challenge["challenge_id"],
+        "role": capsule["role"],
+        "active_case": capsule["active_case"],
+        "work_order_id": capsule["work_order_id"],
+        "git_head": baseline["head"],
+        "git_tree": baseline["tree"],
+        "capsule_sha256": capsule_sha256,
+        "context_file_sha256": context_file_sha256,
+        "context_sha256": context["context_sha256"],
+        "checkpoint_id": context["memory_binding"]["checkpoint"]["checkpoint_id"],
+        "checkpoint_hash": context["memory_binding"]["checkpoint"]["checkpoint_hash"],
+        "event_cursor": context["memory_binding"]["context_event_cursor"],
+        "projection_sha256": context["memory_binding"]["context_projection_sha256"],
     }
-    for field, (observed, expected) in checks.items():
-        if observed != expected:
-            mismatches.append(field)
+    observed = {
+        "challenge_id": session["challenge_id"],
+        "role": session["role"],
+        "active_case": session["active_case"],
+        "work_order_id": session["work_order_id"],
+        "git_head": session["git_head"],
+        "git_tree": session["git_tree"],
+        "capsule_sha256": artifacts["session_capsule"]["sha256"],
+        "context_file_sha256": artifacts["operational_context"]["file_sha256"],
+        "context_sha256": artifacts["operational_context"]["context_sha256"],
+        "checkpoint_id": memory["checkpoint_id"],
+        "checkpoint_hash": memory["checkpoint_hash"],
+        "event_cursor": memory["event_cursor"],
+        "projection_sha256": memory["projection_sha256"],
+    }
+    mismatches = sorted(key for key in expected if observed[key] != expected[key])
     if mismatches:
         raise SessionContextError(
-            f"operational_context:SESSION_BINDING_MISMATCH:{','.join(sorted(mismatches))}"
+            "session_input_manifest:BASE_RELATION_MISMATCH:" + ",".join(mismatches)
         )
-    if context["ceilings"] != _CEILINGS:
-        raise SessionContextError("operational_context:CEILING_VIOLATION")
+    if manifest["ceilings"] != {
+        "effect_ceiling": capsule["effect_ceiling"],
+        **_CEILINGS,
+    }:
+        raise SessionContextError("session_input_manifest:CEILING_VIOLATION")
 
 
 def _binding_body(
     *,
     base_challenge: Mapping[str, Any],
     base_challenge_sha256: str,
-    capsule: Mapping[str, Any],
-    capsule_sha256: str,
-    context: Mapping[str, Any],
-    context_file_sha256: str,
+    manifest: Mapping[str, Any],
+    manifest_file_sha256: str,
 ) -> Dict[str, Any]:
-    memory = context["memory_binding"]
-    checkpoint = memory["checkpoint"]
     return {
         "schema": SCHEMA_BINDING,
         "gate": GATE,
@@ -310,24 +408,10 @@ def _binding_body(
             "challenge_id": base_challenge["challenge_id"],
             "sha256": base_challenge_sha256,
         },
-        "session": {
-            "role": capsule["role"],
-            "active_case": capsule["active_case"],
-            "work_order_id": capsule["work_order_id"],
-        },
-        "session_capsule": {
-            "sha256": capsule_sha256,
-        },
-        "operational_context": {
-            "schema": OPERATIONAL_CONTEXT_SCHEMA,
-            "file_sha256": context_file_sha256,
-            "context_sha256": context["context_sha256"],
-            "checkpoint_id": checkpoint["checkpoint_id"],
-            "checkpoint_hash": checkpoint["checkpoint_hash"],
-            "event_cursor": memory["context_event_cursor"],
-            "event_chain_head": memory["context_event_chain_head"],
-            "projection_sha256": memory["context_projection_sha256"],
-            "selection_spec_sha256": context["selection"]["spec_sha256"],
+        "session_input_manifest": {
+            "schema": SESSION_INPUT_MANIFEST_SCHEMA,
+            "file_sha256": manifest_file_sha256,
+            "manifest_sha256": manifest["manifest_sha256"],
         },
         "ceilings": dict(_CEILINGS),
     }
@@ -340,7 +424,6 @@ def validate_session_context_binding(value: Any) -> Dict[str, Any]:
     if row["authority_generation"] != AUTHORITY_GENERATION:
         raise SessionContextError("session_context_binding:NOT_R63")
     binding_id = _sha(row["binding_id"], "session_context_binding.binding_id")
-
     base = _exact_keys(
         row["base_challenge"],
         {"challenge_id", "sha256"},
@@ -348,98 +431,54 @@ def validate_session_context_binding(value: Any) -> Dict[str, Any]:
     )
     _sha(base["challenge_id"], "session_context_binding.base_challenge.challenge_id")
     _sha(base["sha256"], "session_context_binding.base_challenge.sha256")
-
-    session = _exact_keys(
-        row["session"],
-        {"role", "active_case", "work_order_id"},
-        "session_context_binding.session",
+    manifest = _exact_keys(
+        row["session_input_manifest"],
+        {"schema", "file_sha256", "manifest_sha256"},
+        "session_context_binding.session_input_manifest",
     )
-    _nonempty(session["role"], "session_context_binding.session.role", max_length=128)
-    if session["active_case"] is not None:
-        _nonempty(
-            session["active_case"],
-            "session_context_binding.session.active_case",
-            max_length=192,
-        )
-    _nonempty(
-        session["work_order_id"],
-        "session_context_binding.session.work_order_id",
-        max_length=192,
-    )
-
-    capsule = _exact_keys(
-        row["session_capsule"],
-        {"sha256"},
-        "session_context_binding.session_capsule",
-    )
-    _sha(capsule["sha256"], "session_context_binding.session_capsule.sha256")
-
-    context = _exact_keys(
-        row["operational_context"],
-        {
-            "schema",
-            "file_sha256",
-            "context_sha256",
-            "checkpoint_id",
-            "checkpoint_hash",
-            "event_cursor",
-            "event_chain_head",
-            "projection_sha256",
-            "selection_spec_sha256",
-        },
-        "session_context_binding.operational_context",
-    )
-    if context["schema"] != OPERATIONAL_CONTEXT_SCHEMA:
-        raise SessionContextError("session_context_binding.operational_context.schema:UNSUPPORTED")
-    for field in (
-        "file_sha256",
-        "context_sha256",
-        "checkpoint_hash",
-        "projection_sha256",
-        "selection_spec_sha256",
-    ):
-        _sha(context[field], f"session_context_binding.operational_context.{field}")
-    _nonempty(
-        context["checkpoint_id"],
-        "session_context_binding.operational_context.checkpoint_id",
-        max_length=192,
-    )
-    if isinstance(context["event_cursor"], bool) or not isinstance(context["event_cursor"], int) or context["event_cursor"] < 0:
-        raise SessionContextError("session_context_binding.operational_context.event_cursor:INVALID")
-    if context["event_chain_head"] is not None:
-        _sha(
-            context["event_chain_head"],
-            "session_context_binding.operational_context.event_chain_head",
-        )
+    if manifest["schema"] != SESSION_INPUT_MANIFEST_SCHEMA:
+        raise SessionContextError("session_context_binding.session_input_manifest:UNSUPPORTED")
+    _sha(manifest["file_sha256"], "session_context_binding.session_input_manifest.file_sha256")
+    _sha(manifest["manifest_sha256"], "session_context_binding.session_input_manifest.manifest_sha256")
     if row["ceilings"] != _CEILINGS:
         raise SessionContextError("session_context_binding.ceilings:VIOLATION")
-
     body = dict(row)
     body.pop("binding_id")
-    expected = sha256_bytes(canonical_json_bytes(body))
-    if binding_id != expected:
+    if binding_id != sha256_bytes(canonical_json_bytes(body)):
         raise SessionContextError("session_context_binding.binding_id:MISMATCH")
     return dict(row)
 
 
-def _expected_ack(binding: Mapping[str, Any]) -> Dict[str, Any]:
-    context = binding["operational_context"]
+def _expected_ack(
+    binding: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+) -> Dict[str, Any]:
+    session = manifest["session_binding"]
+    artifacts = manifest["artifact_binding"]
+    memory = manifest["memory_binding"]
+    ceilings = manifest["ceilings"]
     return {
         "schema": SCHEMA_ACK,
         "binding_id": binding["binding_id"],
-        "challenge_id": binding["base_challenge"]["challenge_id"],
+        "challenge_id": session["challenge_id"],
         "authority_generation": AUTHORITY_GENERATION,
-        "role": binding["session"]["role"],
-        "active_case": binding["session"]["active_case"],
-        "work_order_id": binding["session"]["work_order_id"],
-        "session_capsule_sha256": binding["session_capsule"]["sha256"],
-        "operational_context_file_sha256": context["file_sha256"],
-        "operational_context_sha256": context["context_sha256"],
-        "checkpoint_id": context["checkpoint_id"],
-        "checkpoint_hash": context["checkpoint_hash"],
-        "context_event_cursor": context["event_cursor"],
-        "context_projection_sha256": context["projection_sha256"],
-        "selection_spec_sha256": context["selection_spec_sha256"],
+        "role": session["role"],
+        "active_case": session["active_case"],
+        "work_order_id": session["work_order_id"],
+        "baseline_head": session["git_head"],
+        "baseline_tree": session["git_tree"],
+        "effect_ceiling": ceilings["effect_ceiling"],
+        "session_input_manifest_file_sha256": binding["session_input_manifest"]["file_sha256"],
+        "session_input_manifest_sha256": binding["session_input_manifest"]["manifest_sha256"],
+        "session_capsule_sha256": artifacts["session_capsule"]["sha256"],
+        "operational_context_file_sha256": artifacts["operational_context"]["file_sha256"],
+        "operational_context_sha256": artifacts["operational_context"]["context_sha256"],
+        "context_spec_sha256": artifacts["context_spec"]["sha256"],
+        "context_verification_receipt_sha256": artifacts["context_verification"]["sha256"],
+        "checkpoint_id": memory["checkpoint_id"],
+        "checkpoint_hash": memory["checkpoint_hash"],
+        "context_event_cursor": memory["event_cursor"],
+        "context_projection_sha256": memory["projection_sha256"],
         **dict(_CEILINGS),
     }
 
@@ -451,27 +490,32 @@ def validate_session_context_ack(value: Any) -> Dict[str, Any]:
     for field in (
         "binding_id",
         "challenge_id",
+        "session_input_manifest_file_sha256",
+        "session_input_manifest_sha256",
         "session_capsule_sha256",
         "operational_context_file_sha256",
         "operational_context_sha256",
+        "context_spec_sha256",
+        "context_verification_receipt_sha256",
         "checkpoint_hash",
         "context_projection_sha256",
-        "selection_spec_sha256",
     ):
         _sha(row[field], f"session_context_ack.{field}")
+    for field in ("baseline_head", "baseline_tree"):
+        value = row[field]
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40,64}", value):
+            raise SessionContextError(f"session_context_ack.{field}:INVALID_GIT_OBJECT")
     if row["authority_generation"] != AUTHORITY_GENERATION:
         raise SessionContextError("session_context_ack.authority_generation:NOT_R63")
-    _nonempty(row["role"], "session_context_ack.role", max_length=128)
+    for field in ("role", "work_order_id", "checkpoint_id", "effect_ceiling"):
+        _nonempty(row[field], f"session_context_ack.{field}", max_length=192)
     if row["active_case"] is not None:
         _nonempty(row["active_case"], "session_context_ack.active_case", max_length=192)
-    _nonempty(row["work_order_id"], "session_context_ack.work_order_id", max_length=192)
-    _nonempty(row["checkpoint_id"], "session_context_ack.checkpoint_id", max_length=192)
     if isinstance(row["context_event_cursor"], bool) or not isinstance(
         row["context_event_cursor"], int
     ) or row["context_event_cursor"] < 0:
         raise SessionContextError("session_context_ack.context_event_cursor:INVALID")
-    observed_ceilings = {key: row[key] for key in _CEILINGS}
-    if observed_ceilings != _CEILINGS:
+    if {key: row[key] for key in _CEILINGS} != _CEILINGS:
         raise SessionContextError("session_context_ack.ceilings:VIOLATION")
     return dict(row)
 
@@ -482,39 +526,96 @@ def _schema_bytes() -> bytes:
     ).read_bytes()
 
 
+def _write_atomic_directory(target: Path, files: Mapping[str, bytes]) -> None:
+    target = Path(target).expanduser().absolute()
+    if target.exists():
+        raise SessionContextError("output:TARGET_ALREADY_EXISTS")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_root = target.parent / f".{target.name}.tmp-{os.getpid()}-{os.urandom(8).hex()}"
+    if temp_root.exists():
+        raise SessionContextError("output:TEMP_ALREADY_EXISTS")
+    temp_root.mkdir(mode=0o700)
+    try:
+        for relative, payload in files.items():
+            destination = temp_root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            cold_start._write_new(destination, payload)
+        cold_start._fsync_directory(temp_root / "candidate")
+        cold_start._fsync_directory(temp_root / "controller")
+        cold_start._fsync_directory(temp_root)
+        os.replace(temp_root, target)
+        cold_start._fsync_directory(target.parent)
+    except Exception:
+        shutil.rmtree(temp_root, ignore_errors=True)
+        raise
+
+
 def prepare_session_context_binding(
     base_challenge_path: Path,
     context_path: Path,
+    session_input_manifest_path: Path,
+    context_spec_path: Path,
+    context_verification_path: Path,
     output_dir: Path,
     *,
     expected_base_challenge_sha256: str,
+    expected_session_input_manifest_sha256: str,
 ) -> Dict[str, Any]:
     (
         base_challenge,
-        _base_payload,
+        base_payload,
         base_sha,
+        capsule_path,
         capsule,
         capsule_payload,
         capsule_sha,
     ) = _load_base_challenge(
-        Path(base_challenge_path),
-        expected_sha256=expected_base_challenge_sha256,
+        Path(base_challenge_path), expected_sha256=expected_base_challenge_sha256
     )
     context, context_payload, context_file_sha = _load_operational_context(Path(context_path))
-    _verify_context_matches_capsule(context, capsule, capsule_sha)
-
-    body = _binding_body(
+    manifest, manifest_payload, manifest_file_sha = _load_session_input_manifest(
+        Path(session_input_manifest_path),
+        expected_sha256=expected_session_input_manifest_sha256,
+    )
+    replay = _require_manifest_replay_pass(
+        capsule_path=capsule_path,
+        context_path=Path(context_path),
+        spec_path=Path(context_spec_path),
+        context_verification_path=Path(context_verification_path),
+        manifest_path=Path(session_input_manifest_path),
+        manifest_file_sha256=manifest_file_sha,
+    )
+    _verify_manifest_matches_base(
+        manifest,
         base_challenge=base_challenge,
-        base_challenge_sha256=base_sha,
         capsule=capsule,
         capsule_sha256=capsule_sha,
         context=context,
         context_file_sha256=context_file_sha,
     )
+    spec_payload = cold_start.stable_read_bytes(
+        Path(context_spec_path), label="session_context.context_spec", max_bytes=MAX_CONTEXT_BYTES
+    )
+    verify_payload = cold_start.stable_read_bytes(
+        Path(context_verification_path),
+        label="session_context.context_verification",
+        max_bytes=MAX_CONTEXT_BYTES,
+    )
+    if sha256_bytes(spec_payload) != manifest["artifact_binding"]["context_spec"]["sha256"]:
+        raise SessionContextError("session_input_manifest:CONTEXT_SPEC_SHA_MISMATCH")
+    if sha256_bytes(verify_payload) != manifest["artifact_binding"]["context_verification"]["sha256"]:
+        raise SessionContextError("session_input_manifest:CONTEXT_VERIFICATION_SHA_MISMATCH")
+
+    body = _binding_body(
+        base_challenge=base_challenge,
+        base_challenge_sha256=base_sha,
+        manifest=manifest,
+        manifest_file_sha256=manifest_file_sha,
+    )
     binding_id = sha256_bytes(canonical_json_bytes(body))
     binding = validate_session_context_binding({**body, "binding_id": binding_id})
     binding_payload = canonical_json_bytes(binding)
-    expected = validate_session_context_ack(_expected_ack(binding))
+    expected = validate_session_context_ack(_expected_ack(binding, manifest))
     expected_payload = canonical_json_bytes(expected)
     schema_payload = _schema_bytes()
     instructions_payload = _INSTRUCTIONS.encode("utf-8")
@@ -533,6 +634,11 @@ def prepare_session_context_binding(
             "path": "candidate/SESSION_CONTEXT_BINDING.json",
             "sha256": sha256_bytes(binding_payload),
         },
+        "candidate_session_input_manifest": {
+            "path": "candidate/SESSION_INPUT_MANIFEST.json",
+            "sha256": manifest_file_sha,
+            "manifest_sha256": manifest["manifest_sha256"],
+        },
         "candidate_session_capsule": {
             "path": "candidate/SESSION_CAPSULE.json",
             "sha256": capsule_sha,
@@ -541,6 +647,14 @@ def prepare_session_context_binding(
             "path": "candidate/OPERATIONAL_CONTEXT.json",
             "sha256": context_file_sha,
             "context_sha256": context["context_sha256"],
+        },
+        "controller_context_spec": {
+            "path": "controller/OPERATIONAL_CONTEXT_SPEC.json",
+            "sha256": sha256_bytes(spec_payload),
+        },
+        "controller_context_verification": {
+            "path": "controller/OPERATIONAL_CONTEXT_VERIFY_RECEIPT.json",
+            "sha256": sha256_bytes(verify_payload),
         },
         "candidate_ack_schema": {
             "path": "candidate/SESSION_CONTEXT_ACK.schema.json",
@@ -560,96 +674,56 @@ def prepare_session_context_binding(
         "capital_permission": "DENY",
     }
     challenge_payload = canonical_json_bytes(challenge)
-
-    try:
-        target, temp_root = cold_start._prepare_atomic_output(Path(output_dir))
-    except cold_start.ColdStartError as exc:
-        raise SessionContextError(str(exc)) from exc
-    try:
-        (temp_root / "candidate").mkdir()
-        (temp_root / "controller").mkdir()
-        cold_start._write_new(
-            temp_root / "controller" / "BASE_COLD_START_CHALLENGE.json",
-            _base_payload,
-        )
-        cold_start._write_new(
-            temp_root / "candidate" / "SESSION_CAPSULE.json", capsule_payload
-        )
-        cold_start._write_new(
-            temp_root / "candidate" / "OPERATIONAL_CONTEXT.json", context_payload
-        )
-        cold_start._write_new(
-            temp_root / "candidate" / "SESSION_CONTEXT_BINDING.json", binding_payload
-        )
-        cold_start._write_new(
-            temp_root / "candidate" / "SESSION_CONTEXT_ACK.schema.json", schema_payload
-        )
-        cold_start._write_new(
-            temp_root / "candidate" / "INSTRUCTIONS.md", instructions_payload
-        )
-        cold_start._write_new(
-            temp_root / "controller" / "EXPECTED_SESSION_CONTEXT_ACK.json",
-            expected_payload,
-        )
-        cold_start._write_new(
-            temp_root / "SESSION_CONTEXT_CHALLENGE.json", challenge_payload
-        )
-        paths = [
-            "SESSION_CONTEXT_CHALLENGE.json",
-            "controller/BASE_COLD_START_CHALLENGE.json",
-            "candidate/SESSION_CAPSULE.json",
-            "candidate/OPERATIONAL_CONTEXT.json",
-            "candidate/SESSION_CONTEXT_BINDING.json",
-            "candidate/SESSION_CONTEXT_ACK.schema.json",
-            "candidate/INSTRUCTIONS.md",
-            "controller/EXPECTED_SESSION_CONTEXT_ACK.json",
-        ]
-        hashes = {
-            "SESSION_CONTEXT_CHALLENGE.json": sha256_bytes(challenge_payload),
-            "controller/BASE_COLD_START_CHALLENGE.json": base_sha,
-            "candidate/SESSION_CAPSULE.json": capsule_sha,
-            "candidate/OPERATIONAL_CONTEXT.json": context_file_sha,
-            "candidate/SESSION_CONTEXT_BINDING.json": sha256_bytes(binding_payload),
-            "candidate/SESSION_CONTEXT_ACK.schema.json": sha256_bytes(schema_payload),
-            "candidate/INSTRUCTIONS.md": sha256_bytes(instructions_payload),
-            "controller/EXPECTED_SESSION_CONTEXT_ACK.json": sha256_bytes(expected_payload),
-        }
-        sums = "".join(f"{hashes[path]}  {path}\n" for path in paths).encode("utf-8")
-        cold_start._write_new(temp_root / "SHA256SUMS.txt", sums)
-        cold_start._fsync_directory(temp_root / "candidate")
-        cold_start._fsync_directory(temp_root / "controller")
-        cold_start._fsync_directory(temp_root)
-        os.replace(temp_root, target)
-        cold_start._fsync_directory(target.parent)
-    except Exception:
-        shutil.rmtree(temp_root, ignore_errors=True)
-        raise
-
-    writes = [
+    paths = [
         "SESSION_CONTEXT_CHALLENGE.json",
         "controller/BASE_COLD_START_CHALLENGE.json",
+        "controller/OPERATIONAL_CONTEXT_SPEC.json",
+        "controller/OPERATIONAL_CONTEXT_VERIFY_RECEIPT.json",
         "candidate/SESSION_CAPSULE.json",
         "candidate/OPERATIONAL_CONTEXT.json",
+        "candidate/SESSION_INPUT_MANIFEST.json",
         "candidate/SESSION_CONTEXT_BINDING.json",
         "candidate/SESSION_CONTEXT_ACK.schema.json",
         "candidate/INSTRUCTIONS.md",
         "controller/EXPECTED_SESSION_CONTEXT_ACK.json",
-        "SHA256SUMS.txt",
     ]
+    payloads = {
+        "SESSION_CONTEXT_CHALLENGE.json": challenge_payload,
+        "controller/BASE_COLD_START_CHALLENGE.json": base_payload,
+        "controller/OPERATIONAL_CONTEXT_SPEC.json": spec_payload,
+        "controller/OPERATIONAL_CONTEXT_VERIFY_RECEIPT.json": verify_payload,
+        "candidate/SESSION_CAPSULE.json": capsule_payload,
+        "candidate/OPERATIONAL_CONTEXT.json": context_payload,
+        "candidate/SESSION_INPUT_MANIFEST.json": manifest_payload,
+        "candidate/SESSION_CONTEXT_BINDING.json": binding_payload,
+        "candidate/SESSION_CONTEXT_ACK.schema.json": schema_payload,
+        "candidate/INSTRUCTIONS.md": instructions_payload,
+        "controller/EXPECTED_SESSION_CONTEXT_ACK.json": expected_payload,
+    }
+    hashes = {path: sha256_bytes(payloads[path]) for path in paths}
+    payloads["SHA256SUMS.txt"] = "".join(
+        f"{hashes[path]}  {path}\n" for path in paths
+    ).encode("utf-8")
+    _write_atomic_directory(Path(output_dir), payloads)
     return {
         "schema": SCHEMA_PREPARE_RECEIPT,
         "binding_id": binding_id,
-        "output_dir": str(target.resolve()),
+        "output_dir": str(Path(output_dir).expanduser().absolute()),
         "base_challenge_sha256": base_sha,
+        "session_input_manifest_file_sha256": manifest_file_sha,
+        "session_input_manifest_sha256": manifest["manifest_sha256"],
         "binding_sha256": sha256_bytes(binding_payload),
         "operational_context_file_sha256": context_file_sha,
         "operational_context_sha256": context["context_sha256"],
+        "context_spec_sha256": sha256_bytes(spec_payload),
+        "context_verification_receipt_sha256": sha256_bytes(verify_payload),
+        "session_input_replay_receipt_sha256": sha256_bytes(canonical_json_bytes(replay)),
         "challenge_sha256": sha256_bytes(challenge_payload),
         "expected_ack_sha256": sha256_bytes(expected_payload),
-        "checkpoint_id": binding["operational_context"]["checkpoint_id"],
+        "checkpoint_id": manifest["memory_binding"]["checkpoint_id"],
         "status": "SESSION_CONTEXT_CHALLENGE_READY",
         "live_state_modified": False,
-        "writes_performed": writes,
+        "writes_performed": [*paths, "SHA256SUMS.txt"],
         "can_trade": False,
         "capital_permission": "DENY",
     }
@@ -661,7 +735,7 @@ def _load_bound_challenge(
     expected_sha256: str,
 ) -> Tuple[Dict[str, Any], str, Path]:
     _sha(expected_sha256, "session_context_challenge.expected_sha256")
-    payload, actual_sha, parsed = _load_json_file(
+    _payload, actual_sha, parsed = _load_json_file(
         Path(challenge_path), "session_context.challenge"
     )
     if actual_sha != expected_sha256:
@@ -686,13 +760,14 @@ def _read_descriptor_file(
     root: Path,
     descriptor: Mapping[str, Any],
     label: str,
+    *,
+    canonical: bool = True,
 ) -> Tuple[Path, bytes, str, Any]:
     path = cold_start._safe_challenge_relative(root, descriptor["path"], f"{label}.path")
-    payload, actual_sha, parsed = _load_json_file(path, label)
+    payload, actual_sha, parsed = _load_json_file(path, label, canonical=canonical)
     if actual_sha != descriptor["sha256"]:
         raise SessionContextError(f"{label}:SHA256_MISMATCH")
     return path, payload, actual_sha, parsed
-
 
 
 def _read_raw_descriptor_file(
@@ -701,11 +776,7 @@ def _read_raw_descriptor_file(
     label: str,
 ) -> Tuple[Path, bytes, str]:
     path = cold_start._safe_challenge_relative(root, descriptor["path"], f"{label}.path")
-    payload = cold_start.stable_read_bytes(
-        path,
-        label=label,
-        max_bytes=MAX_CONTEXT_BYTES,
-    )
+    payload = cold_start.stable_read_bytes(path, label=label, max_bytes=MAX_CONTEXT_BYTES)
     actual_sha = sha256_bytes(payload)
     if actual_sha != descriptor["sha256"]:
         raise SessionContextError(f"{label}:SHA256_MISMATCH")
@@ -721,59 +792,41 @@ def verify_session_context_ack(
     challenge, challenge_sha, root = _load_bound_challenge(
         Path(challenge_path), expected_sha256=expected_challenge_sha256
     )
-    binding_desc = _descriptor(
-        challenge["binding_manifest"], "session_context_challenge.binding_manifest"
+    base_desc = _descriptor(challenge["base_challenge"], "challenge.base_challenge")
+    binding_desc = _descriptor(challenge["binding_manifest"], "challenge.binding_manifest")
+    manifest_desc = _descriptor(
+        challenge["candidate_session_input_manifest"],
+        "challenge.candidate_session_input_manifest",
+        extra={"manifest_sha256"},
     )
-    capsule_desc = _descriptor(
-        challenge["candidate_session_capsule"],
-        "session_context_challenge.candidate_session_capsule",
-    )
+    capsule_desc = _descriptor(challenge["candidate_session_capsule"], "challenge.candidate_session_capsule")
     context_desc = _descriptor(
         challenge["candidate_operational_context"],
-        "session_context_challenge.candidate_operational_context",
+        "challenge.candidate_operational_context",
         extra={"context_sha256"},
     )
-    expected_desc = _descriptor(
-        challenge["controller_expected_ack"],
-        "session_context_challenge.controller_expected_ack",
+    spec_desc = _descriptor(challenge["controller_context_spec"], "challenge.controller_context_spec")
+    verify_desc = _descriptor(
+        challenge["controller_context_verification"],
+        "challenge.controller_context_verification",
     )
-    base_desc = _descriptor(
-        challenge["base_challenge"],
-        "session_context_challenge.base_challenge",
-    )
-    schema_desc = _descriptor(
-        challenge["candidate_ack_schema"],
-        "session_context_challenge.candidate_ack_schema",
-    )
-    instructions_desc = _descriptor(
-        challenge["candidate_instructions"],
-        "session_context_challenge.candidate_instructions",
-    )
-    _sha(
-        context_desc["context_sha256"],
-        "session_context_challenge.candidate_operational_context.context_sha256",
-    )
+    schema_desc = _descriptor(challenge["candidate_ack_schema"], "challenge.candidate_ack_schema")
+    instructions_desc = _descriptor(challenge["candidate_instructions"], "challenge.candidate_instructions")
+    expected_desc = _descriptor(challenge["controller_expected_ack"], "challenge.controller_expected_ack")
+    _sha(manifest_desc["manifest_sha256"], "challenge.candidate_session_input_manifest.manifest_sha256")
+    _sha(context_desc["context_sha256"], "challenge.candidate_operational_context.context_sha256")
 
-    _base_path, _base_payload, base_file_sha = _read_raw_descriptor_file(
-        root, base_desc, "session_context.base_challenge"
-    )
-    base_parsed = strict_json_loads(_base_payload, "session_context.base_challenge")
+    base_path, base_payload, base_sha = _read_raw_descriptor_file(root, base_desc, "session_context.base_challenge")
+    base_parsed = strict_json_loads(base_payload, "session_context.base_challenge")
+    if base_payload != canonical_json_bytes(base_parsed):
+        raise SessionContextError("session_context.base_challenge:NON_CANONICAL_JSON")
     base_row = _exact_keys(
         base_parsed,
         {
-            "schema",
-            "challenge_id",
-            "gate",
-            "mode",
-            "authority_generation",
-            "boot_receipt",
-            "session_spec",
-            "candidate_capsule",
-            "controller_expected_ack",
-            "candidate_instructions",
-            "live_state_modified",
-            "can_trade",
-            "capital_permission",
+            "schema", "challenge_id", "gate", "mode", "authority_generation",
+            "boot_receipt", "session_spec", "candidate_capsule",
+            "controller_expected_ack", "candidate_instructions",
+            "live_state_modified", "can_trade", "capital_permission",
         },
         "session_context.base_challenge",
     )
@@ -784,6 +837,78 @@ def verify_session_context_ack(
         or base_row["authority_generation"] != AUTHORITY_GENERATION
     ):
         raise SessionContextError("session_context.base_challenge:UNSUPPORTED_IDENTITY")
+
+    binding_path, _binding_payload, _binding_sha, binding_parsed = _read_descriptor_file(
+        root, binding_desc, "session_context.binding_manifest"
+    )
+    binding = validate_session_context_binding(binding_parsed)
+    if binding["binding_id"] != challenge["binding_id"]:
+        raise SessionContextError("session_context_challenge:BINDING_ID_MISMATCH")
+    if binding["base_challenge"] != {
+        "challenge_id": base_row["challenge_id"],
+        "sha256": base_sha,
+    }:
+        raise SessionContextError("session_context_challenge:BASE_CHALLENGE_BINDING_MISMATCH")
+
+    capsule_path, _capsule_payload, capsule_sha, capsule_parsed = _read_descriptor_file(
+        root, capsule_desc, "session_context.session_capsule"
+    )
+    try:
+        capsule = validate_session_capsule(capsule_parsed)
+    except OperationalContextError as exc:
+        raise SessionContextError(str(exc)) from exc
+    context_path, _context_payload, context_file_sha, context_parsed = _read_descriptor_file(
+        root, context_desc, "session_context.operational_context"
+    )
+    try:
+        context = validate_context_pack_structure(context_parsed)
+    except OperationalContextError as exc:
+        raise SessionContextError(str(exc)) from exc
+    if context["context_sha256"] != context_desc["context_sha256"]:
+        raise SessionContextError("session_context_challenge:CONTEXT_SHA256_MISMATCH")
+    manifest_path, _manifest_payload, manifest_file_sha, manifest_parsed = _read_descriptor_file(
+        root, manifest_desc, "session_context.session_input_manifest"
+    )
+    try:
+        manifest = validate_session_input_manifest(manifest_parsed)
+    except SessionInputError as exc:
+        raise SessionContextError(str(exc)) from exc
+    if manifest["manifest_sha256"] != manifest_desc["manifest_sha256"]:
+        raise SessionContextError("session_context_challenge:MANIFEST_SHA256_MISMATCH")
+    spec_path, _spec_payload, _spec_sha = _read_raw_descriptor_file(
+        root, spec_desc, "session_context.context_spec"
+    )
+    verify_path, _verify_payload, _verify_sha = _read_raw_descriptor_file(
+        root, verify_desc, "session_context.context_verification"
+    )
+    _require_manifest_replay_pass(
+        capsule_path=capsule_path,
+        context_path=context_path,
+        spec_path=spec_path,
+        context_verification_path=verify_path,
+        manifest_path=manifest_path,
+        manifest_file_sha256=manifest_file_sha,
+    )
+    _verify_manifest_matches_base(
+        manifest,
+        base_challenge=base_row,
+        capsule=capsule,
+        capsule_sha256=capsule_sha,
+        context=context,
+        context_file_sha256=context_file_sha,
+    )
+    reconstructed_body = _binding_body(
+        base_challenge=base_row,
+        base_challenge_sha256=base_sha,
+        manifest=manifest,
+        manifest_file_sha256=manifest_file_sha,
+    )
+    reconstructed = validate_session_context_binding(
+        {**reconstructed_body, "binding_id": sha256_bytes(canonical_json_bytes(reconstructed_body))}
+    )
+    if reconstructed != binding:
+        raise SessionContextError("session_context_binding:ARTIFACT_RELATION_MISMATCH")
+
     _schema_path, schema_payload, _schema_sha = _read_raw_descriptor_file(
         root, schema_desc, "session_context.ack_schema"
     )
@@ -794,60 +919,14 @@ def verify_session_context_ack(
     )
     if instructions_payload != _INSTRUCTIONS.encode("utf-8"):
         raise SessionContextError("session_context.instructions:MISMATCH")
-
-    _binding_path, _binding_payload, _binding_sha, binding_parsed = _read_descriptor_file(
-        root, binding_desc, "session_context.binding_manifest"
-    )
-    binding = validate_session_context_binding(binding_parsed)
-    if binding["binding_id"] != challenge["binding_id"]:
-        raise SessionContextError("session_context_challenge:BINDING_ID_MISMATCH")
-    if binding["base_challenge"]["sha256"] != base_file_sha:
-        raise SessionContextError("session_context_challenge:BASE_CHALLENGE_BINDING_MISMATCH")
-    if binding["base_challenge"]["challenge_id"] != base_row["challenge_id"]:
-        raise SessionContextError("session_context_challenge:BASE_CHALLENGE_ID_MISMATCH")
-
-    _capsule_path, capsule_payload, capsule_sha, capsule_parsed = _read_descriptor_file(
-        root, capsule_desc, "session_context.session_capsule"
-    )
-    try:
-        capsule = validate_session_capsule(capsule_parsed)
-    except OperationalContextError as exc:
-        raise SessionContextError(str(exc)) from exc
-    _context_path, context_payload, context_file_sha, context_parsed = _read_descriptor_file(
-        root, context_desc, "session_context.operational_context"
-    )
-    try:
-        context = validate_context_pack_structure(context_parsed)
-    except OperationalContextError as exc:
-        raise SessionContextError(str(exc)) from exc
-    _verify_context_matches_capsule(context, capsule, capsule_sha)
-    if context["context_sha256"] != context_desc["context_sha256"]:
-        raise SessionContextError("session_context_challenge:CONTEXT_SHA256_MISMATCH")
-
-    reconstructed_body = _binding_body(
-        base_challenge={"challenge_id": binding["base_challenge"]["challenge_id"]},
-        base_challenge_sha256=binding["base_challenge"]["sha256"],
-        capsule=capsule,
-        capsule_sha256=capsule_sha,
-        context=context,
-        context_file_sha256=context_file_sha,
-    )
-    reconstructed = validate_session_context_binding(
-        {**reconstructed_body, "binding_id": sha256_bytes(canonical_json_bytes(reconstructed_body))}
-    )
-    if reconstructed != binding:
-        raise SessionContextError("session_context_binding:ARTIFACT_RELATION_MISMATCH")
-
     _expected_path, _expected_payload, _expected_sha, expected_parsed = _read_descriptor_file(
         root, expected_desc, "session_context.expected_ack"
     )
     expected = validate_session_context_ack(expected_parsed)
-    if expected != _expected_ack(binding):
+    if expected != _expected_ack(binding, manifest):
         raise SessionContextError("session_context.expected_ack:DOES_NOT_MATCH_BINDING")
 
-    ack_payload, ack_sha, ack_parsed = _load_json_file(
-        Path(ack_path), "session_context.ack"
-    )
+    _ack_payload, ack_sha, ack_parsed = _load_json_file(Path(ack_path), "session_context.ack")
     try:
         ack = validate_session_context_ack(ack_parsed)
     except SessionContextError as exc:
@@ -856,16 +935,8 @@ def verify_session_context_ack(
             "binding_id": challenge["binding_id"],
             "challenge_sha256": challenge_sha,
             "ack_sha256": ack_sha,
-            "checks": [
-                {"check_id": "ack.schema", "status": "FAIL", "code": str(exc)}
-            ],
-            "mismatches": [
-                {
-                    "path": "/",
-                    "expected": "schema-valid exact SESSION_CONTEXT_ACK",
-                    "observed": str(exc),
-                }
-            ],
+            "checks": [{"check_id": "ack.schema", "status": "FAIL", "code": str(exc)}],
+            "mismatches": [{"path": "/", "expected": "schema-valid exact SESSION_CONTEXT_ACK", "observed": str(exc)}],
             "outcome": "FAIL",
             "status": "SESSION_CONTEXT_FAIL",
             "release_blocked": True,
@@ -874,25 +945,14 @@ def verify_session_context_ack(
             "can_trade": False,
             "capital_permission": "DENY",
         }
-
     checks: List[Dict[str, str]] = []
     mismatches: List[Dict[str, Any]] = []
     for field in sorted(expected):
         if ack.get(field) == expected.get(field):
-            checks.append(
-                {"check_id": f"ack.{field}", "status": "PASS", "code": "EXACT_MATCH"}
-            )
+            checks.append({"check_id": f"ack.{field}", "status": "PASS", "code": "EXACT_MATCH"})
         else:
-            checks.append(
-                {"check_id": f"ack.{field}", "status": "FAIL", "code": "MISMATCH"}
-            )
-            mismatches.append(
-                {
-                    "path": f"/{field}",
-                    "expected": expected.get(field),
-                    "observed": ack.get(field),
-                }
-            )
+            checks.append({"check_id": f"ack.{field}", "status": "FAIL", "code": "MISMATCH"})
+            mismatches.append({"path": f"/{field}", "expected": expected.get(field), "observed": ack.get(field)})
     passed = not mismatches
     return {
         "schema": SCHEMA_VERDICT,

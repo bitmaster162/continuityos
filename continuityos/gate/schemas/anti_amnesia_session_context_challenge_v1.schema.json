@@ -1,8 +1,234 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "ANTI_AMNESIA_SESSION_CONTEXT_CHALLENGE_V1",
-  "type": "object",
   "additionalProperties": false,
+  "properties": {
+    "authority_generation": {
+      "const": "R63",
+      "type": "string"
+    },
+    "base_challenge": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "binding_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "binding_manifest": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "can_trade": {
+      "const": false,
+      "type": "boolean"
+    },
+    "candidate_ack_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "candidate_instructions": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "candidate_operational_context": {
+      "additionalProperties": false,
+      "properties": {
+        "context_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "context_sha256"
+      ],
+      "type": "object"
+    },
+    "candidate_session_capsule": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "candidate_session_input_manifest": {
+      "additionalProperties": false,
+      "properties": {
+        "manifest_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "manifest_sha256"
+      ],
+      "type": "object"
+    },
+    "capital_permission": {
+      "const": "DENY",
+      "type": "string"
+    },
+    "controller_context_spec": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "controller_context_verification": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "controller_expected_ack": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "gate": {
+      "const": "ANTI_AMNESIA_GATE_V1",
+      "type": "string"
+    },
+    "live_state_modified": {
+      "const": false,
+      "type": "boolean"
+    },
+    "mode": {
+      "const": "SHADOW",
+      "type": "string"
+    },
+    "schema": {
+      "const": "ANTI_AMNESIA_SESSION_CONTEXT_CHALLENGE_V1",
+      "type": "string"
+    },
+    "writes_performed": {
+      "maxItems": 0,
+      "type": "array"
+    }
+  },
   "required": [
     "schema",
     "binding_id",
@@ -11,8 +237,11 @@
     "authority_generation",
     "base_challenge",
     "binding_manifest",
+    "candidate_session_input_manifest",
     "candidate_session_capsule",
     "candidate_operational_context",
+    "controller_context_spec",
+    "controller_context_verification",
     "candidate_ack_schema",
     "candidate_instructions",
     "controller_expected_ack",
@@ -21,96 +250,6 @@
     "can_trade",
     "capital_permission"
   ],
-  "properties": {
-    "schema": {
-      "const": "ANTI_AMNESIA_SESSION_CONTEXT_CHALLENGE_V1"
-    },
-    "binding_id": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
-    },
-    "gate": {
-      "const": "ANTI_AMNESIA_GATE_V1"
-    },
-    "mode": {
-      "const": "SHADOW"
-    },
-    "authority_generation": {
-      "const": "R63"
-    },
-    "base_challenge": {
-      "$ref": "#/definitions/artifact"
-    },
-    "binding_manifest": {
-      "$ref": "#/definitions/artifact"
-    },
-    "candidate_session_capsule": {
-      "$ref": "#/definitions/artifact"
-    },
-    "candidate_operational_context": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "path",
-        "sha256",
-        "context_sha256"
-      ],
-      "properties": {
-        "path": {
-          "type": "string",
-          "minLength": 1
-        },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        "context_sha256": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        }
-      }
-    },
-    "candidate_ack_schema": {
-      "$ref": "#/definitions/artifact"
-    },
-    "candidate_instructions": {
-      "$ref": "#/definitions/artifact"
-    },
-    "controller_expected_ack": {
-      "$ref": "#/definitions/artifact"
-    },
-    "live_state_modified": {
-      "const": false
-    },
-    "writes_performed": {
-      "type": "array",
-      "maxItems": 0
-    },
-    "can_trade": {
-      "const": false
-    },
-    "capital_permission": {
-      "const": "DENY"
-    }
-  },
-  "definitions": {
-    "artifact": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "path",
-        "sha256"
-      ],
-      "properties": {
-        "path": {
-          "type": "string",
-          "minLength": 1
-        },
-        "sha256": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        }
-      }
-    }
-  }
+  "title": "Anti-Amnesia Session Context Challenge v1",
+  "type": "object"
 }

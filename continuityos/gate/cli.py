@@ -584,6 +584,10 @@ def main(argv=None):
     cold_bind.add_argument("--challenge", required=True)
     cold_bind.add_argument("--challenge-sha256", required=True)
     cold_bind.add_argument("--context", required=True)
+    cold_bind.add_argument("--manifest", required=True)
+    cold_bind.add_argument("--manifest-sha256", required=True)
+    cold_bind.add_argument("--context-spec", required=True)
+    cold_bind.add_argument("--context-verification", required=True)
     cold_bind.add_argument("--output", required=True)
     cold_verify_context = cold_sub.add_parser(
         "verify-context",
@@ -612,8 +616,12 @@ def main(argv=None):
                 receipt = prepare_session_context_binding(
                     Path(a.challenge).expanduser(),
                     Path(a.context).expanduser(),
+                    Path(a.manifest).expanduser(),
+                    Path(a.context_spec).expanduser(),
+                    Path(a.context_verification).expanduser(),
                     Path(a.output).expanduser(),
                     expected_base_challenge_sha256=a.challenge_sha256,
+                    expected_session_input_manifest_sha256=a.manifest_sha256,
                 )
             else:
                 receipt = verify_session_context_ack(

@@ -1,87 +1,73 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "ANTI_AMNESIA_SESSION_CONTEXT_BINDING_V1",
-  "type": "object",
   "additionalProperties": false,
-  "required": [
-    "schema",
-    "binding_id",
-    "gate",
-    "mode",
-    "authority_generation",
-    "base_challenge",
-    "session",
-    "session_capsule",
-    "operational_context",
-    "ceilings"
-  ],
   "properties": {
-    "schema": {"const": "ANTI_AMNESIA_SESSION_CONTEXT_BINDING_V1"},
-    "binding_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "gate": {"const": "ANTI_AMNESIA_GATE_V1"},
-    "mode": {"const": "SHADOW"},
-    "authority_generation": {"const": "R63"},
+    "authority_generation": {
+      "const": "R63",
+      "type": "string"
+    },
     "base_challenge": {
-      "type": "object",
       "additionalProperties": false,
-      "required": ["challenge_id", "sha256"],
       "properties": {
-        "challenge_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
-      }
-    },
-    "session": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["role", "active_case", "work_order_id"],
-      "properties": {
-        "role": {"type": "string", "minLength": 1},
-        "active_case": {"type": ["string", "null"]},
-        "work_order_id": {"type": "string", "minLength": 1}
-      }
-    },
-    "session_capsule": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["sha256"],
-      "properties": {
-        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
-      }
-    },
-    "operational_context": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "schema",
-        "file_sha256",
-        "context_sha256",
-        "checkpoint_id",
-        "checkpoint_hash",
-        "event_cursor",
-        "event_chain_head",
-        "projection_sha256",
-        "selection_spec_sha256"
-      ],
-      "properties": {
-        "schema": {"const": "CONTINUITYOS_OPERATIONAL_CONTEXT_PACK_V1"},
-        "file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "context_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "checkpoint_id": {"type": "string", "minLength": 1},
-        "checkpoint_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "event_cursor": {"type": "integer", "minimum": 0},
-        "event_chain_head": {
-          "anyOf": [
-            {"type": "null"},
-            {"type": "string", "pattern": "^[0-9a-f]{64}$"}
-          ]
+        "challenge_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
         },
-        "projection_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "selection_spec_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
-      }
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "challenge_id",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "binding_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
     },
     "ceilings": {
-      "type": "object",
       "additionalProperties": false,
+      "properties": {
+        "accepted_truth_owner": {
+          "const": "CONTROL_CENTER",
+          "type": "string"
+        },
+        "can_trade": {
+          "const": false,
+          "type": "boolean"
+        },
+        "capital_permission": {
+          "const": "DENY",
+          "type": "string"
+        },
+        "content_acceptance": {
+          "const": "NOT_PERFORMED",
+          "type": "string"
+        },
+        "context_is_projection_only": {
+          "const": true,
+          "type": "boolean"
+        },
+        "deploy_permission": {
+          "const": "DENY",
+          "type": "string"
+        },
+        "may_dispatch_codex": {
+          "const": false,
+          "type": "boolean"
+        },
+        "self_application": {
+          "const": false,
+          "type": "boolean"
+        },
+        "state_apply": {
+          "const": "DISABLED",
+          "type": "string"
+        }
+      },
       "required": [
         "accepted_truth_owner",
         "context_is_projection_only",
@@ -93,17 +79,54 @@
         "deploy_permission",
         "self_application"
       ],
+      "type": "object"
+    },
+    "gate": {
+      "const": "ANTI_AMNESIA_GATE_V1",
+      "type": "string"
+    },
+    "mode": {
+      "const": "SHADOW",
+      "type": "string"
+    },
+    "schema": {
+      "const": "ANTI_AMNESIA_SESSION_CONTEXT_BINDING_V1",
+      "type": "string"
+    },
+    "session_input_manifest": {
+      "additionalProperties": false,
       "properties": {
-        "accepted_truth_owner": {"const": "CONTROL_CENTER"},
-        "context_is_projection_only": {"const": true},
-        "content_acceptance": {"const": "NOT_PERFORMED"},
-        "state_apply": {"const": "DISABLED"},
-        "may_dispatch_codex": {"const": false},
-        "can_trade": {"const": false},
-        "capital_permission": {"const": "DENY"},
-        "deploy_permission": {"const": "DENY"},
-        "self_application": {"const": false}
-      }
+        "file_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "manifest_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "schema": {
+          "const": "ANTI_AMNESIA_SESSION_INPUT_MANIFEST_V1",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "file_sha256",
+        "manifest_sha256"
+      ],
+      "type": "object"
     }
-  }
+  },
+  "required": [
+    "schema",
+    "binding_id",
+    "gate",
+    "mode",
+    "authority_generation",
+    "base_challenge",
+    "session_input_manifest",
+    "ceilings"
+  ],
+  "title": "Anti-Amnesia Session Context Binding v1",
+  "type": "object"
 }

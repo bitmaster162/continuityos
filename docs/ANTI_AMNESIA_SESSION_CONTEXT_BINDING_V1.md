@@ -1,22 +1,32 @@
-# Anti-Amnesia Session Context Binding v1
+# Anti-Amnesia Session Context Acknowledgement v1
 
 ## Purpose
 
-Cold-start v1 proves that a fresh model recovered the exact controller-authored
+Cold-start v1 proves that a fresh model recovered the controller-authored
 session capsule. Common Operational Context v1 proves that a bounded memory
-projection was generated from a named checkpoint. Session Context Binding v1
-binds those two artifacts into one read-only session contract without changing
-the base capsule or creating a circular hash dependency.
+projection was generated from a named checkpoint. Session Input Manifest v1
+then binds the capsule, context, controller selection spec and the exact
+successful context-verification receipt.
+
+Session Context Acknowledgement v1 adds one final delivery proof without
+changing those canonical artifacts:
 
 ```text
 R63 boot receipt
   -> cold-start session capsule
-  -> bounded operational context (bound to capsule SHA-256)
-  -> session-context binding manifest
+  -> bounded operational context
+  -> OPERATIONAL_CONTEXT_VERIFY_PASS receipt
+  -> canonical SESSION_INPUT_MANIFEST
+  -> candidate delivery envelope
   -> exact SESSION_CONTEXT_ACK
 ```
 
-The binding does not claim that context content is accepted truth. It preserves:
+The model receives the capsule, context, canonical input manifest, a compact
+binding envelope, strict ACK schema and minimal instructions. The controller
+retains the base challenge, context spec, context-verification receipt and hidden
+expected acknowledgement.
+
+The acknowledgement never means content acceptance or state application:
 
 ```text
 accepted_truth_owner = CONTROL_CENTER
@@ -30,15 +40,22 @@ capital_permission    = DENY
 
 Prerequisites:
 
-1. A verified `COLD_START_CHALLENGE.json` and pinned SHA-256.
-2. A verified `CONTINUITYOS_OPERATIONAL_CONTEXT_PACK_V1` generated from the
-   challenge's exact `SESSION_CAPSULE.json`.
+1. A verified `COLD_START_CHALLENGE.json` and controller-pinned SHA-256.
+2. A canonical `CONTINUITYOS_OPERATIONAL_CONTEXT_PACK_V1`.
+3. Its controller-authored `OPERATIONAL_CONTEXT_SPEC.json`.
+4. An exact `OPERATIONAL_CONTEXT_VERIFY_PASS` receipt.
+5. A canonical `ANTI_AMNESIA_SESSION_INPUT_MANIFEST_V1`, verified byte-for-byte
+   against all four artifacts above.
 
 ```powershell
 continuity cold-start bind-context `
   --challenge COLD_START_CHALLENGE.json `
-  --challenge-sha256 <PINNED_SHA256> `
+  --challenge-sha256 <PINNED_CHALLENGE_SHA256> `
   --context OPERATIONAL_CONTEXT.json `
+  --manifest SESSION_INPUT_MANIFEST.json `
+  --manifest-sha256 <PINNED_MANIFEST_FILE_SHA256> `
+  --context-spec OPERATIONAL_CONTEXT_SPEC.json `
+  --context-verification OPERATIONAL_CONTEXT_VERIFY_RECEIPT.json `
   --output SESSION_CONTEXT_CHALLENGE
 ```
 
@@ -48,6 +65,7 @@ Candidate-facing files:
 candidate/
   SESSION_CAPSULE.json
   OPERATIONAL_CONTEXT.json
+  SESSION_INPUT_MANIFEST.json
   SESSION_CONTEXT_BINDING.json
   SESSION_CONTEXT_ACK.schema.json
   INSTRUCTIONS.md
@@ -58,6 +76,8 @@ Controller-only files:
 ```text
 controller/
   BASE_COLD_START_CHALLENGE.json
+  OPERATIONAL_CONTEXT_SPEC.json
+  OPERATIONAL_CONTEXT_VERIFY_RECEIPT.json
   EXPECTED_SESSION_CONTEXT_ACK.json
 ```
 
@@ -75,17 +95,18 @@ continuity cold-start verify-context `
 
 The verifier rechecks:
 
-- the pinned challenge SHA-256;
-- the copied base challenge identity;
-- capsule, context, schema and instruction hashes;
-- the context pack self-hash;
-- capsule-to-context session binding;
-- checkpoint, cursor, projection and selection-spec binding;
-- exact acknowledgement fields;
-- all read-only and permission ceilings.
+- the pinned delivery challenge SHA-256;
+- the copied base cold-start challenge;
+- the canonical session-input manifest and its pinned file SHA-256;
+- byte-for-byte manifest reconstruction from capsule, context, selection spec
+  and context-verification receipt;
+- capsule/context/checkpoint/replay-cursor/projection relationships;
+- the exact candidate schema and instructions;
+- every acknowledgement field and all permission ceilings.
 
-Any extra field, mismatch, tamper, wrong checkpoint, wrong capsule or permission
-escalation returns `SESSION_CONTEXT_FAIL` with `release_blocked=true`.
+Any extra field, mismatch, tamper, forged verification receipt, wrong checkpoint,
+wrong capsule or permission escalation returns `SESSION_CONTEXT_FAIL` with
+`release_blocked=true`.
 
 ## Non-goals
 
@@ -94,7 +115,7 @@ escalation returns `SESSION_CONTEXT_FAIL` with `release_blocked=true`.
 - no R63 mutation;
 - no operational database write;
 - no Git write or deployment;
-- no proof that a model used the context in every internal reasoning step.
+- no claim that the model used every context item in hidden reasoning.
 
-The last point is addressed later by binding the verified session-context
-challenge and acknowledgement into semantic close.
+The next gated layer is semantic-close v1.2: a return must cite the exact session
+input manifest, delivery challenge and successful context acknowledgement.
