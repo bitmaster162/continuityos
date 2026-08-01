@@ -360,3 +360,29 @@ def test_prepare_does_not_modify_inputs(tmp_path):
     cold_start.prepare_cold_start_challenge(boot_path, spec_path, tmp_path / "out")
     after = {p: digest(p.read_bytes()) for p in [boot_path, spec_path]}
     assert before == after
+
+
+def test_write_new_requests_binary_mode_and_preserves_multiline_bytes(tmp_path, monkeypatch):
+    """Raw challenge artifacts must not receive Windows newline translation."""
+    destination = tmp_path / "multiline.json"
+    payload = b'{\n  "schema": "TEST"\n}\n'
+    observed_flags = []
+    real_open = cold_start.os.open
+    synthetic_o_binary = 0x8000
+
+    monkeypatch.setattr(
+        cold_start.os, "O_BINARY", synthetic_o_binary, raising=False
+    )
+
+    def capturing_open(path, flags, mode=0o777):
+        observed_flags.append(flags)
+        # Linux does not recognize the synthetic Windows-only bit.  Strip it
+        # only for the real host call while retaining the assertion signal.
+        return real_open(path, flags & ~synthetic_o_binary, mode)
+
+    monkeypatch.setattr(cold_start.os, "open", capturing_open)
+    cold_start._write_new(destination, payload)
+
+    assert observed_flags
+    assert observed_flags[0] & synthetic_o_binary
+    assert destination.read_bytes() == payload

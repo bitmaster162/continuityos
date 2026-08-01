@@ -308,7 +308,12 @@ def _prepare_atomic_output(path: Path) -> Tuple[Path, Path]:
 
 
 def _write_new(path: Path, payload: bytes) -> None:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    # Windows CRT file descriptors may otherwise apply text-mode newline
+    # translation to raw JSON/schema/instruction bytes.  All challenge
+    # descriptors are SHA-256 bound to the pre-write payload, so the output
+    # must be opened explicitly in binary mode whenever the platform exposes
+    # O_BINARY.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
     fd = os.open(path, flags, 0o600)
     try:
         view = memoryview(payload)
