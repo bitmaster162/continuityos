@@ -440,6 +440,50 @@ def test_packaged_schemas_are_strict_and_ack_contract_is_exact(tmp_path):
     assert json.loads((out / "candidate" / "SESSION_CONTEXT_ACK.schema.json").read_text("utf-8")) == ack_schema
 
 
+def test_ack_schema_transport_bytes_are_canonical_across_line_endings(tmp_path, monkeypatch):
+    """Source checkouts and wheels must bind the same logical schema bytes.
+
+    A Windows checkout can present the tracked resource with CRLF while the
+    built wheel contains LF.  The challenge must not depend on that formatting
+    difference.
+    """
+
+    schema_path = resource_files("continuityos.gate.schemas").joinpath(
+        "anti_amnesia_session_context_ack_v1.schema.json"
+    )
+    parsed = json.loads(schema_path.read_text("utf-8"))
+    canonical = canonical_bytes(parsed)
+    assert binding._schema_bytes() == canonical
+    assert b"\n" not in canonical
+
+    class _Resource:
+        def joinpath(self, _name):
+            return self
+
+        def read_bytes(self):
+            return json.dumps(parsed, ensure_ascii=False, indent=2).replace(
+                "\n", "\r\n"
+            ).encode("utf-8")
+
+    monkeypatch.setattr(binding, "resource_files", lambda _package: _Resource())
+    assert binding._schema_bytes() == canonical
+
+    out, receipt, _ = bind(tmp_path)
+    candidate_schema = out / "candidate" / "SESSION_CONTEXT_ACK.schema.json"
+    assert candidate_schema.read_bytes() == canonical
+    challenge = json.loads((out / "SESSION_CONTEXT_CHALLENGE.json").read_text("utf-8"))
+    assert challenge["candidate_ack_schema"]["sha256"] == digest(canonical)
+
+    ack = tmp_path / "ACK_CANONICAL_SCHEMA.json"
+    ack.write_bytes((out / "controller" / "EXPECTED_SESSION_CONTEXT_ACK.json").read_bytes())
+    verdict = binding.verify_session_context_ack(
+        out / "SESSION_CONTEXT_CHALLENGE.json",
+        ack,
+        expected_challenge_sha256=receipt["challenge_sha256"],
+    )
+    assert verdict["status"] == "SESSION_CONTEXT_PASS"
+
+
 @pytest.mark.filterwarnings("ignore:jsonschema.RefResolver is deprecated")
 def test_artifacts_match_published_json_schemas(tmp_path):
     jsonschema = pytest.importorskip("jsonschema")

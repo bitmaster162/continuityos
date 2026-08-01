@@ -521,9 +521,24 @@ def validate_session_context_ack(value: Any) -> Dict[str, Any]:
 
 
 def _schema_bytes() -> bytes:
-    return resource_files("continuityos.gate.schemas").joinpath(
+    """Return the ACK schema in one cross-environment canonical encoding.
+
+    Git checkouts on Windows may expose the tracked JSON resource with CRLF
+    line endings while an installed wheel exposes the same logical schema with
+    LF line endings.  Binding the raw resource bytes therefore made a challenge
+    prepared from a source checkout fail when verified by the wheel-only CLI.
+
+    The schema is JSON, so its transport identity must be derived from the
+    parsed document rather than repository presentation whitespace.  Strict
+    parsing also preserves the duplicate-key fail-closed behaviour used by the
+    rest of the Anti-Amnesia surface.
+    """
+
+    raw = resource_files("continuityos.gate.schemas").joinpath(
         "anti_amnesia_session_context_ack_v1.schema.json"
     ).read_bytes()
+    parsed = strict_json_loads(raw, "session_context.ack_schema.resource")
+    return canonical_json_bytes(parsed)
 
 
 def _write_atomic_directory(target: Path, files: Mapping[str, bytes]) -> None:
