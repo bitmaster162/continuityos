@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "continuityos.work_admission.validation_receipt/v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "admission_binding_sha256",
+    "admission_receipt_sha256",
+    "base_head",
+    "candidate_head",
+    "candidate_tree",
+    "commands",
+    "worktree_clean_after",
+    "effects"
+  ],
+  "properties": {
+    "schema": {
+      "const": "continuityos.work_admission.validation_receipt/v1"
+    },
+    "admission_binding_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "base_head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "candidate_head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "candidate_tree": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "commands": {
+      "type": "array"
+    },
+    "worktree_clean_after": {
+      "const": true
+    },
+    "effects": {
+      "type": "object"
+    },
+    "admission_receipt_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

@@ -15,6 +15,8 @@
   continuity preflight shell "<cmd>"      # decide without running
   continuity run exec  -- <cmd...>        # argv-only (safe); rejects shell operators
   continuity run shell -- <cmd...>        # real shell (&&,|,>,$()) — mediated, stricter
+  continuity work-admission verify ...     # bind exact task/capsule/Git/scope
+  continuity work-admission verify-delta ... # verify committed candidate before transport
   continuity audit                        # show + verify the audit ledger
 """
 from __future__ import annotations
@@ -45,6 +47,13 @@ from .github_transition import (
 from .memory_promotion import (
     evaluate_memory_promotion,
     exit_code_for_memory_promotion,
+)
+from .work_admission import (
+    canonical_json_text as work_admission_json_text,
+    exit_code_for_work_admission,
+    exit_code_for_work_delta,
+    verify_work_admission,
+    verify_work_delta,
 )
 
 LEGACY_GATE_AVAILABLE = None
@@ -675,6 +684,33 @@ def main(argv=None):
         "--task-id", dest="task_id", default=GITHUB_TRANSITION_DEFAULT_TASK_ID
     )
 
+    work_admission = sub.add_parser(
+        "work-admission",
+        help="bind or verify one GitHub candidate work run without executing it",
+    )
+    work_admission_sub = work_admission.add_subparsers(
+        dest="work_admission_cmd", required=True
+    )
+    work_admission_verify = work_admission_sub.add_parser(
+        "verify", help="verify task, capsule, Git baseline, scope and effect ceiling"
+    )
+    work_admission_verify.add_argument("--request", dest="request_path", required=True)
+    work_admission_verify.add_argument("--work-order", dest="work_order_path", required=True)
+    work_admission_verify.add_argument("--session-capsule", dest="session_capsule_path", required=True)
+    work_admission_verify.add_argument("--repo", dest="repo_path", required=True)
+    work_admission_verify.add_argument("--remote-name", dest="remote_name", default="origin")
+    work_admission_verify.add_argument("--check-remote", dest="check_remote", action="store_true")
+
+    work_admission_delta = work_admission_sub.add_parser(
+        "verify-delta", help="verify one committed candidate against an admission receipt"
+    )
+    work_admission_delta.add_argument("--admission-receipt", dest="admission_receipt_path", required=True)
+    work_admission_delta.add_argument("--admission-receipt-sha256", dest="admission_receipt_sha256", required=True)
+    work_admission_delta.add_argument("--validation-receipt", dest="validation_receipt_path", required=True)
+    work_admission_delta.add_argument("--repo", dest="repo_path", required=True)
+    work_admission_delta.add_argument("--remote-name", dest="remote_name", default="origin")
+    work_admission_delta.add_argument("--check-remote", dest="check_remote", action="store_true")
+
     memory_promotion = sub.add_parser(
         "memory-promotion",
         help="evaluate a proposal-only memory promotion candidate",
@@ -693,6 +729,46 @@ def main(argv=None):
     )
 
     a = ap.parse_args(argv)
+
+    if a.cmd == "work-admission":
+        try:
+            if a.work_admission_cmd == "verify":
+                receipt = verify_work_admission(
+                    Path(a.request_path).expanduser(),
+                    Path(a.work_order_path).expanduser(),
+                    Path(a.session_capsule_path).expanduser(),
+                    Path(a.repo_path).expanduser(),
+                    remote_name=a.remote_name,
+                    check_remote=a.check_remote,
+                )
+                print(work_admission_json_text(receipt), end="")
+                return exit_code_for_work_admission(receipt)
+            receipt = verify_work_delta(
+                Path(a.admission_receipt_path).expanduser(),
+                Path(a.validation_receipt_path).expanduser(),
+                Path(a.repo_path).expanduser(),
+                expected_admission_receipt_sha256=a.admission_receipt_sha256,
+                remote_name=a.remote_name,
+                check_remote=a.check_remote,
+            )
+            print(work_admission_json_text(receipt), end="")
+            return exit_code_for_work_delta(receipt)
+        except Exception as exc:
+            print(work_admission_json_text({
+                "schema": "continuityos.work_admission.internal_error/v1",
+                "status": "WORK_ADMISSION_REVISE",
+                "outcome": "WOULD_HOLD",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "effect": "VERIFY_ONLY_NO_WRITE",
+                "live_state_modified": False,
+                "writes_performed": [],
+                "can_trade": False,
+                "capital_permission": "DENY",
+                "deploy_permission": "DENY",
+                "self_application": False,
+            }), end="")
+            return 2
 
     if a.cmd == "github-transition":
         try:

@@ -1,3 +1,10 @@
+
+## Unreleased — GitHub Work Admission Gate v1
+
+- Add effect-free pre-work admission binding for exact task, session capsule, Git baseline, candidate branch, path scope and effect ceiling.
+- Add post-work delta verification for linear ancestry, changed paths, resource budgets and exact test receipts.
+- Add four bundled JSON schemas, examples, documentation and adversarial tests.
+
 # Changelog
 
 

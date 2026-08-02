@@ -1,0 +1,42 @@
+{
+  "schema": "continuityos.work_admission.validation_receipt/v1",
+  "admission_binding_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "base_head": "bc0e21aae3eec1719cc83d6bfefe1f17b1641c93",
+  "candidate_head": "0000000000000000000000000000000000000000",
+  "candidate_tree": "0000000000000000000000000000000000000000",
+  "worktree_clean_after": true,
+  "commands": [
+    {
+      "id": "focused",
+      "argv": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_work_admission_gate_v1.py"
+      ],
+      "cwd": "repo",
+      "exit_code": 0,
+      "stdout_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "stderr_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "effects": {
+    "force_push": false,
+    "merge": false,
+    "pull_request_merge": false,
+    "deployment": false,
+    "registry_apply": false,
+    "current_state_apply": false,
+    "r63_apply": false,
+    "trading": false,
+    "wallet_access": false,
+    "order_execution": false,
+    "external_message": false,
+    "self_application": false,
+    "can_trade": false,
+    "capital_permission": "DENY",
+    "deploy_permission": "DENY"
+  },
+  "admission_receipt_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+}

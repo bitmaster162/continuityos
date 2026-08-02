@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "continuityos.work_admission.request/v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "authority_generation",
+    "task",
+    "repository",
+    "scope",
+    "effects",
+    "session",
+    "validation"
+  ],
+  "properties": {
+    "schema": {
+      "const": "continuityos.work_admission.request/v1"
+    },
+    "authority_generation": {
+      "const": "R63"
+    },
+    "task": {
+      "type": "object"
+    },
+    "repository": {
+      "type": "object"
+    },
+    "scope": {
+      "type": "object"
+    },
+    "effects": {
+      "type": "object"
+    },
+    "session": {
+      "type": "object"
+    },
+    "validation": {
+      "type": "object"
+    },
+    "evidence": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

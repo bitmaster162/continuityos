@@ -1,0 +1,52 @@
+{
+  "schema": "control.memory.session_capsule.v1",
+  "authority_generation": "R63",
+  "role": "GPT",
+  "active_task": {
+    "task_id": "CONTINUITYOS_GITHUB_WORK_ADMISSION_GATE_V1",
+    "task_body_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "repository": {
+    "owner": "bitmaster162",
+    "name": "continuityos",
+    "base_branch": "gpt/github-transition-gate-v1",
+    "base_head": "bc0e21aae3eec1719cc83d6bfefe1f17b1641c93",
+    "base_tree": "87cc3bf4453dc1d87d8b39905024576052a09ea3",
+    "candidate_branch": "gpt/github-work-admission-gate-v1"
+  },
+  "allowed_paths": [
+    "continuityos/gate/work_admission.py",
+    "continuityos/work_admission_schemas",
+    "tests/test_work_admission_gate_v1.py",
+    "docs/GITHUB_WORK_ADMISSION_GATE_V1.md",
+    "examples/work_admission_v1",
+    "pyproject.toml",
+    "CHANGELOG.md"
+  ],
+  "terminal_condition": "Candidate delta verified; stop without merge or deployment.",
+  "effects": {
+    "worktree_write": true,
+    "test_execution": true,
+    "local_commit": true,
+    "candidate_push": false,
+    "workflow_changes": false,
+    "force_push": false,
+    "merge": false,
+    "pull_request_merge": false,
+    "deployment": false,
+    "registry_apply": false,
+    "current_state_apply": false,
+    "r63_apply": false,
+    "trading": false,
+    "wallet_access": false,
+    "order_execution": false,
+    "external_message": false,
+    "self_application": false,
+    "can_trade": false,
+    "capital_permission": "DENY"
+  },
+  "can_trade": false,
+  "capital_permission": "DENY",
+  "deploy_permission": "DENY",
+  "self_application": false
+}
