@@ -268,6 +268,22 @@ class WorkValidationEvidenceTests(unittest.TestCase):
             )
             self.assertEqual(result["status"], EXECUTION_REVISE)
 
+    def test_high_volume_output_below_cap_does_not_deadlock(self):
+        with tempfile.TemporaryDirectory() as td:
+            payload_bytes = 1024 * 1024
+            fx = ValidationFixture(
+                Path(td),
+                command=["python", "-c", f"__import__('sys').stdout.write('x' * {payload_bytes})"],
+                command_overrides={"max_stdout_bytes": 2 * payload_bytes},
+            )
+            fx.prepare()
+            result = execute_work_validation(
+                fx.admission, fx.repo, fx.output,
+                expected_admission_receipt_sha256=sha256_file(fx.admission),
+            )
+            self.assertEqual(result["status"], EXECUTION_PASS)
+            self.assertEqual((fx.output / "raw/focused.stdout.bin").stat().st_size, payload_bytes)
+
     def test_output_capture_hard_cap_prevents_file_overshoot(self):
         with tempfile.TemporaryDirectory() as td:
             fx = ValidationFixture(

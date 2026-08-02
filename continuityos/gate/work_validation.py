@@ -263,7 +263,12 @@ def _bounded_command(
         try:
             with destination.open("wb") as output:
                 while True:
-                    chunk = stream.read(64 * 1024)
+                    # ``BufferedReader.read(n)`` may wait for a large request to
+                    # fill while the child is simultaneously blocked on a much
+                    # smaller OS pipe.  ``os.read`` returns the bytes currently
+                    # available and therefore drains high-volume producers
+                    # without a pipe-size deadlock.
+                    chunk = os.read(stream.fileno(), 64 * 1024)
                     if not chunk:
                         break
                     with lock:
