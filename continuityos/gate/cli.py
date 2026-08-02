@@ -89,7 +89,6 @@ from .github_candidate_review import (
     evaluate_github_candidate_review,
     exit_code_for_github_candidate_review,
 )
-)
 
 LEGACY_GATE_AVAILABLE = None
 LEGACY_GATE_IMPORT_ERROR = ""
@@ -1022,14 +1021,6 @@ def main(argv=None):
             }), end="")
             return 2
 
-                "live_state_modified": False,
-                "writes_performed": [],
-                "can_trade": False,
-                "capital_permission": "DENY",
-                "deploy_permission": "DENY",
-                "self_application": False,
-            }), end="")
-            return 2
 
     if a.cmd == "github-transition":
         try:

@@ -1,3 +1,10 @@
+## Unreleased — GitHub Control-Plane Integration v1
+
+- Reconcile the sibling Work Validation Evidence, Work Ledger and GitHub Candidate Review branches into one linear candidate history.
+- Preserve all three CLI surfaces and schema packages in the built distribution.
+- Add integration documentation and smoke tests that prevent silent omission of any lifecycle gate.
+- Keep merge, deployment, R63/current-state/registry apply and trading effects out of scope.
+
 
 ## Unreleased — Work Validation Evidence Gate v1
 
