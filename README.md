@@ -414,6 +414,37 @@ continuity memory-promotion evaluate \
 Even a successful result is only `PROMOTION_CANDIDATE_ELIGIBLE`; R63 and live
 state are not changed. See `docs/GITHUB_TRANSITION_GATE_V1.md`.
 
+## GitHub Work Admission Gate v1
+
+Before persistent code work, bind exact task bytes, session capsule, Git
+baseline, candidate branch, workspace, path scope, validation commands and
+effect ceiling:
+
+```bash
+continuity work-admission verify \
+  --request WORK_ADMISSION_REQUEST.json \
+  --work-order WORK_ORDER.md \
+  --session-capsule SESSION_CAPSULE.json \
+  --repo /path/to/disposable/clone \
+  --check-remote
+```
+
+After a committed candidate, verify the exact admission receipt, linear Git
+ancestry, changed paths, file/byte/commit budgets and bound validation receipt:
+
+```bash
+continuity work-admission verify-delta \
+  --admission-receipt WORK_ADMISSION_RECEIPT.json \
+  --admission-receipt-sha256 <SHA256> \
+  --validation-receipt WORK_VALIDATION_RECEIPT.json \
+  --repo /path/to/candidate \
+  --check-remote
+```
+
+A pass authorizes only later candidate transport. The gate does not create a
+branch, push, merge, deploy, apply R63/current state, trade or use capital. See
+`docs/GITHUB_WORK_ADMISSION_GATE_V1.md`.
+
 ## Common Operational Context v1
 
 Create a bounded, evidence-bound context pack from a quiescent local Common

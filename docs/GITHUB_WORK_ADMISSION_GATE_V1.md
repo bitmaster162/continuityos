@@ -20,6 +20,10 @@ A pass proves:
 - the work-order and session-capsule bytes match their declared SHA-256;
 - the capsule binds role, task, repository, scope and effect ceiling;
 - branch, HEAD, tree, remote and clean status match the request;
+- the repository is the exact Git top-level, is not a symlink, passes
+  `git fsck --full --strict`, and has no merge/rebase/cherry-pick in progress;
+- optional disposable-workspace allow/deny roots are enforced;
+- local and remote candidate-branch state match the admission request;
 - the candidate branch is separate from base/default branches;
 - allowed paths and resource limits are explicit;
 - force push, merge, deployment, R63/current-state/registry apply, trading,
@@ -50,9 +54,14 @@ The delta gate verifies:
 - candidate branch and linear ancestry from the exact admitted base;
 - no merge commits and a clean worktree;
 - every changed path is admitted and no protected content is introduced;
-- changed-file, byte and commit budgets;
+- changed-file, positive-byte and commit budgets;
+- no unmerged/type changes, symlinks, submodules, protected credentials, raw
+  chat exports, runtime databases or archive payloads unless explicitly allowed;
+- `git diff --check` and Git integrity remain clean;
 - new-file/deletion/binary/workflow permissions;
-- test receipts bound to the exact candidate HEAD/tree and admission SHA;
+- test receipts bound to the exact candidate HEAD/tree, admission receipt and
+  binding SHA; required argv/cwd are exact, unadmitted commands are rejected,
+  and network/install/full-suite budgets cannot widen;
 - no dangerous effect or remote-branch conflict.
 
 Even `WORK_DELTA_PASS` permits only a later candidate-transport step.  It does
