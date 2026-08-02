@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "continuityos.github_candidate_review.evaluation/v1",
+  "type": "object",
+  "required": [
+    "schema", "status", "outcome", "checks", "reasons", "holds",
+    "merge_executed", "human_irreversible_approval", "live_state_modified",
+    "can_trade", "capital_permission", "deploy_permission", "self_application"
+  ],
+  "properties": {
+    "schema": {"const": "continuityos.github_candidate_review.evaluation/v1"},
+    "status": {"enum": ["GITHUB_CANDIDATE_REVIEW_PASS", "GITHUB_CANDIDATE_REVIEW_HOLD", "GITHUB_CANDIDATE_REVIEW_REVISE"]},
+    "outcome": {"enum": ["MERGE_CANDIDATE_ELIGIBLE", "WOULD_HOLD"]},
+    "checks": {"type": "array"},
+    "reasons": {"type": "array"},
+    "holds": {"type": "array"},
+    "merge_executed": {"const": false},
+    "human_irreversible_approval": {"const": false},
+    "live_state_modified": {"const": false},
+    "can_trade": {"const": false},
+    "capital_permission": {"const": "DENY"},
+    "deploy_permission": {"const": "DENY"},
+    "self_application": {"const": false}
+  },
+  "additionalProperties": true
+}

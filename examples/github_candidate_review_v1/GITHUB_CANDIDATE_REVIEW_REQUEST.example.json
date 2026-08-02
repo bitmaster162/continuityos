@@ -1,0 +1,63 @@
+{
+  "schema": "continuityos.github_candidate_review.request/v1",
+  "authority_generation": "R63",
+  "task": {
+    "task_id": "CONTINUITYOS_GITHUB_WORK_ADMISSION_GATE_V1_1_R11_1",
+    "task_body_sha256": "d92448757f93804c5a409ec900a05ac05303564079c87ed4808b3e7e7e125f30",
+    "terminal_condition": "Candidate review evaluated; stop without merge or deployment."
+  },
+  "repository": {
+    "owner": "bitmaster162",
+    "name": "continuityos",
+    "visibility": "PRIVATE",
+    "base_branch": "gpt/github-work-admission-gate-v1",
+    "base_head": "03f72c9a370054d366959b45106da0dc6dba47e0",
+    "base_tree": "c4815b1b5c9392c5d63cfaaee588a966ce6f62ce",
+    "candidate_branch": "gpt/github-work-admission-gate-v1.1",
+    "candidate_head": "1472b907c77b127271387e22ec8a2d4c5bca1092",
+    "candidate_tree": "4d2ced451badab2e79650708408376a640f78e8c",
+    "remote_url": "https://github.com/bitmaster162/continuityos.git"
+  },
+  "bindings": {
+    "session_capsule_sha256": "6bd8c389a16e49725b1a995118b9e2d6607d069ea3590893514bf020d6a9cfe6",
+    "admission_receipt_sha256": "917032ade1e17ecbf82e4cbc0d0f3276edb9b69036e297935d92bfb0a4cd026f",
+    "delta_receipt_sha256": "fd289cbbce3f458726f39e92963d3466ccf1993e46d9a9bb5accf18b8714e6fe"
+  },
+  "ci_policy": {
+    "required_workflows": [
+      "review-gates"
+    ],
+    "required_status": "completed",
+    "required_conclusion": "success"
+  },
+  "review_policy": {
+    "mode": "CONTROLLER_REVIEW",
+    "required_reviewer_role": "GPT",
+    "separation_required": false,
+    "executor_actor_id": "GPT-IMPLEMENTER-R11_1"
+  },
+  "pull_request_policy": {
+    "allowed": false,
+    "required": false,
+    "draft_required": false
+  },
+  "effects": {
+    "candidate_push": true,
+    "pull_request_create": false,
+    "force_push": false,
+    "merge": false,
+    "pull_request_merge": false,
+    "auto_merge": false,
+    "deployment": false,
+    "registry_apply": false,
+    "current_state_apply": false,
+    "r63_apply": false,
+    "trading": false,
+    "wallet_access": false,
+    "order_execution": false,
+    "self_application": false,
+    "can_trade": false,
+    "capital_permission": "DENY",
+    "deploy_permission": "DENY"
+  }
+}

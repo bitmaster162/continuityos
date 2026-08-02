@@ -1,0 +1,284 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "continuityos.github_candidate_review.request/v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "authority_generation",
+    "task",
+    "repository",
+    "bindings",
+    "ci_policy",
+    "review_policy",
+    "pull_request_policy",
+    "effects"
+  ],
+  "properties": {
+    "schema": {
+      "const": "continuityos.github_candidate_review.request/v1"
+    },
+    "authority_generation": {
+      "const": "R63"
+    },
+    "task": {
+      "type": "object",
+      "required": [
+        "task_id",
+        "task_body_sha256",
+        "terminal_condition"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "pattern": "^[A-Z0-9][A-Z0-9_.:-]{2,127}$"
+        },
+        "task_body_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "terminal_condition": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "repository": {
+      "type": "object",
+      "required": [
+        "owner",
+        "name",
+        "remote_url",
+        "visibility",
+        "base_branch",
+        "base_head",
+        "base_tree",
+        "candidate_branch",
+        "candidate_head",
+        "candidate_tree"
+      ],
+      "properties": {
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "visibility": {
+          "enum": [
+            "PRIVATE",
+            "PUBLIC"
+          ]
+        },
+        "base_branch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "base_head": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "base_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "candidate_branch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "candidate_head": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "candidate_tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "remote_url": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "bindings": {
+      "type": "object",
+      "required": [
+        "session_capsule_sha256",
+        "admission_receipt_sha256",
+        "delta_receipt_sha256"
+      ],
+      "properties": {
+        "session_capsule_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "admission_receipt_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "delta_receipt_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ci_policy": {
+      "type": "object",
+      "required": [
+        "required_workflows",
+        "required_status",
+        "required_conclusion"
+      ],
+      "properties": {
+        "required_workflows": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required_status": {
+          "const": "completed"
+        },
+        "required_conclusion": {
+          "const": "success"
+        }
+      },
+      "additionalProperties": false
+    },
+    "review_policy": {
+      "type": "object",
+      "required": [
+        "mode",
+        "required_reviewer_role",
+        "separation_required",
+        "executor_actor_id"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "CONTROLLER_REVIEW",
+            "INDEPENDENT_REVIEW"
+          ]
+        },
+        "required_reviewer_role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "separation_required": {
+          "type": "boolean"
+        },
+        "executor_actor_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "pull_request_policy": {
+      "type": "object",
+      "required": [
+        "allowed",
+        "required",
+        "draft_required"
+      ],
+      "properties": {
+        "allowed": {
+          "type": "boolean"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "draft_required": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "effects": {
+      "type": "object",
+      "required": [
+        "candidate_push",
+        "pull_request_create",
+        "force_push",
+        "merge",
+        "pull_request_merge",
+        "auto_merge",
+        "deployment",
+        "registry_apply",
+        "current_state_apply",
+        "r63_apply",
+        "trading",
+        "wallet_access",
+        "order_execution",
+        "self_application",
+        "can_trade",
+        "capital_permission",
+        "deploy_permission"
+      ],
+      "properties": {
+        "candidate_push": {
+          "const": true
+        },
+        "pull_request_create": {
+          "type": "boolean"
+        },
+        "force_push": {
+          "const": false
+        },
+        "merge": {
+          "const": false
+        },
+        "pull_request_merge": {
+          "const": false
+        },
+        "auto_merge": {
+          "const": false
+        },
+        "deployment": {
+          "const": false
+        },
+        "registry_apply": {
+          "const": false
+        },
+        "current_state_apply": {
+          "const": false
+        },
+        "r63_apply": {
+          "const": false
+        },
+        "trading": {
+          "const": false
+        },
+        "wallet_access": {
+          "const": false
+        },
+        "order_execution": {
+          "const": false
+        },
+        "self_application": {
+          "const": false
+        },
+        "can_trade": {
+          "const": false
+        },
+        "capital_permission": {
+          "const": "DENY"
+        },
+        "deploy_permission": {
+          "const": "DENY"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

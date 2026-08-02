@@ -27,6 +27,13 @@
 - Document that actor-role fields are content bindings; external receipt hashes
   and Git commits remain the identity/provenance anchors.
 
+## Unreleased — GitHub Candidate Review Gate v1
+
+- Add a proposal-only post-transport review gate that binds exact Work Admission and Work Delta receipts to remote candidate HEAD/tree, required GitHub Actions runs, secret-scan evidence and an exact semantic review decision.
+- HOLD on remote base drift, pending CI, missing required PR evidence or an explicit semantic hold; REVISE on failed/wrong-head CI, forbidden effects, visibility changes, secret leakage, self-review violations, unresolved P0/P1 findings or invalid PR state.
+- PASS emits only `MERGE_CANDIDATE_ELIGIBLE`; the gate cannot push, create/merge a PR, deploy, apply R63/current state/registry, record human approval or trade.
+- Add four packaged JSON Schemas, examples, documentation and adversarial tests.
+
 
 ## Unreleased — GitHub Work Admission Gate v1
 

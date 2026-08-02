@@ -1,0 +1,52 @@
+{
+  "schema": "continuityos.github_candidate_review.transport_receipt/v1",
+  "repository": "bitmaster162/continuityos",
+  "visibility": "PRIVATE",
+  "visibility_changed": false,
+  "base_branch": "gpt/github-work-admission-gate-v1",
+  "remote_base_head": "03f72c9a370054d366959b45106da0dc6dba47e0",
+  "remote_base_tree": "c4815b1b5c9392c5d63cfaaee588a966ce6f62ce",
+  "candidate_branch": "gpt/github-work-admission-gate-v1.1",
+  "local_candidate_head": "1472b907c77b127271387e22ec8a2d4c5bca1092",
+  "local_candidate_tree": "4d2ced451badab2e79650708408376a640f78e8c",
+  "remote_candidate_head": "1472b907c77b127271387e22ec8a2d4c5bca1092",
+  "remote_candidate_tree": "4d2ced451badab2e79650708408376a640f78e8c",
+  "push_effect": "PUSHED_NEW_BRANCH",
+  "workflow_runs": [
+    {
+      "workflow_name": "review-gates",
+      "head_sha": "1472b907c77b127271387e22ec8a2d4c5bca1092",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 123456789
+    }
+  ],
+  "secret_scan": {
+    "status": "PASS",
+    "candidate_head": "1472b907c77b127271387e22ec8a2d4c5bca1092",
+    "findings": 0,
+    "raw_evidence_leak": false
+  },
+  "pull_request_create": false,
+  "pull_request": null,
+  "force_push": false,
+  "merge": false,
+  "pull_request_merge": false,
+  "auto_merge": false,
+  "deployment": false,
+  "registry_apply": false,
+  "current_state_apply": false,
+  "r63_apply": false,
+  "trading": false,
+  "wallet_access": false,
+  "order_execution": false,
+  "self_application": false,
+  "can_trade": false,
+  "capital_permission": "DENY",
+  "deploy_permission": "DENY",
+  "provider": "GITHUB",
+  "authenticated_actor": "bitmaster162",
+  "remote_url": "https://github.com/bitmaster162/continuityos.git",
+  "remote_readback": true,
+  "actions_readback": true
+}

@@ -26,6 +26,8 @@
   continuity work-ledger finalize ...      # close accepted/rejected work without apply
   continuity work-ledger verify ...        # verify hash chain and legal transitions
   continuity work-ledger verify-extension ... # prove exact one-event append relation
+  continuity github-review evaluate ...     # verify transport/CI/review before merge eligibility
+
   continuity audit                        # show + verify the audit ledger
 """
 from __future__ import annotations
@@ -81,6 +83,11 @@ from .work_ledger import (
     project_work_ledger,
     verify_work_ledger,
     verify_work_ledger_extension,
+)
+from .github_candidate_review import (
+    canonical_json_text as github_candidate_review_json_text,
+    evaluate_github_candidate_review,
+    exit_code_for_github_candidate_review,
 )
 )
 
@@ -819,6 +826,30 @@ def main(argv=None):
     )
     work_ledger_project.add_argument("--ledger", required=True)
 
+    github_review = sub.add_parser(
+        "github-review",
+        help="evaluate exact candidate transport, CI and semantic review without merge",
+    )
+    github_review_sub = github_review.add_subparsers(
+        dest="github_review_cmd", required=True
+    )
+    github_review_evaluate = github_review_sub.add_parser(
+        "evaluate", help="bind work admission/delta to exact remote readback and review"
+    )
+    github_review_evaluate.add_argument("--request", dest="review_request_path", required=True)
+    github_review_evaluate.add_argument(
+        "--admission-receipt", dest="review_admission_receipt_path", required=True
+    )
+    github_review_evaluate.add_argument(
+        "--delta-receipt", dest="review_delta_receipt_path", required=True
+    )
+    github_review_evaluate.add_argument(
+        "--transport-receipt", dest="review_transport_receipt_path", required=True
+    )
+    github_review_evaluate.add_argument(
+        "--semantic-decision", dest="review_semantic_decision_path", required=True
+    )
+
     memory_promotion = sub.add_parser(
         "memory-promotion",
         help="evaluate a proposal-only memory promotion candidate",
@@ -952,6 +983,45 @@ def main(argv=None):
                 "error_type": type(exc).__name__,
                 "error": str(exc),
                 "effect": "VERIFY_ONLY_NO_WRITE",
+                "live_state_modified": False,
+                "writes_performed": [],
+                "can_trade": False,
+                "capital_permission": "DENY",
+                "deploy_permission": "DENY",
+                "self_application": False,
+            }), end="")
+            return 2
+
+    if a.cmd == "github-review":
+        try:
+            receipt = evaluate_github_candidate_review(
+                Path(a.review_request_path).expanduser(),
+                Path(a.review_admission_receipt_path).expanduser(),
+                Path(a.review_delta_receipt_path).expanduser(),
+                Path(a.review_transport_receipt_path).expanduser(),
+                Path(a.review_semantic_decision_path).expanduser(),
+            )
+            print(github_candidate_review_json_text(receipt), end="")
+            return exit_code_for_github_candidate_review(receipt)
+        except Exception as exc:
+            print(github_candidate_review_json_text({
+                "schema": "continuityos.github_candidate_review.internal_error/v1",
+                "status": "GITHUB_CANDIDATE_REVIEW_REVISE",
+                "outcome": "WOULD_HOLD",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "effect": "VERIFY_ONLY_NO_WRITE",
+                "merge_executed": False,
+                "human_irreversible_approval": False,
+                "live_state_modified": False,
+                "writes_performed": [],
+                "can_trade": False,
+                "capital_permission": "DENY",
+                "deploy_permission": "DENY",
+                "self_application": False,
+            }), end="")
+            return 2
+
                 "live_state_modified": False,
                 "writes_performed": [],
                 "can_trade": False,

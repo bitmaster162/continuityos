@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "continuityos.github_candidate_review.transport_receipt/v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "actions_readback",
+    "remote_readback",
+    "remote_url",
+    "authenticated_actor",
+    "provider",
+    "repository",
+    "visibility",
+    "visibility_changed",
+    "base_branch",
+    "remote_base_head",
+    "remote_base_tree",
+    "candidate_branch",
+    "local_candidate_head",
+    "local_candidate_tree",
+    "remote_candidate_head",
+    "remote_candidate_tree",
+    "push_effect",
+    "workflow_runs",
+    "secret_scan",
+    "pull_request_create",
+    "force_push",
+    "merge",
+    "pull_request_merge",
+    "auto_merge",
+    "deployment",
+    "registry_apply",
+    "current_state_apply",
+    "r63_apply",
+    "trading",
+    "wallet_access",
+    "order_execution",
+    "self_application",
+    "can_trade",
+    "capital_permission",
+    "deploy_permission"
+  ],
+  "properties": {
+    "schema": {
+      "const": "continuityos.github_candidate_review.transport_receipt/v1"
+    },
+    "repository": {
+      "type": "string",
+      "minLength": 3
+    },
+    "visibility": {
+      "enum": [
+        "PRIVATE",
+        "PUBLIC"
+      ]
+    },
+    "visibility_changed": {
+      "const": false
+    },
+    "base_branch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "remote_base_head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "remote_base_tree": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "candidate_branch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "local_candidate_head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "local_candidate_tree": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "remote_candidate_head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "remote_candidate_tree": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "push_effect": {
+      "enum": [
+        "PUSHED_NEW_BRANCH",
+        "FAST_FORWARD_EXACT",
+        "NO_OP_BRANCH_ALREADY_EXACT"
+      ]
+    },
+    "workflow_runs": {
+      "type": "array",
+      "maxItems": 64
+    },
+    "secret_scan": {
+      "type": "object"
+    },
+    "pull_request_create": {
+      "type": "boolean"
+    },
+    "pull_request": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "force_push": {
+      "const": false
+    },
+    "merge": {
+      "const": false
+    },
+    "pull_request_merge": {
+      "const": false
+    },
+    "auto_merge": {
+      "const": false
+    },
+    "deployment": {
+      "const": false
+    },
+    "registry_apply": {
+      "const": false
+    },
+    "current_state_apply": {
+      "const": false
+    },
+    "r63_apply": {
+      "const": false
+    },
+    "trading": {
+      "const": false
+    },
+    "wallet_access": {
+      "const": false
+    },
+    "order_execution": {
+      "const": false
+    },
+    "self_application": {
+      "const": false
+    },
+    "can_trade": {
+      "const": false
+    },
+    "capital_permission": {
+      "const": "DENY"
+    },
+    "deploy_permission": {
+      "const": "DENY"
+    },
+    "provider": {
+      "const": "GITHUB"
+    },
+    "authenticated_actor": {
+      "type": "string",
+      "minLength": 1
+    },
+    "remote_url": {
+      "type": "string",
+      "minLength": 1
+    },
+    "remote_readback": {
+      "const": true
+    },
+    "actions_readback": {
+      "const": true
+    }
+  },
+  "additionalProperties": true
+}

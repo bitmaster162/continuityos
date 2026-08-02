@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "continuityos.github_candidate_review.semantic_decision/v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "request_sha256",
+    "admission_receipt_sha256",
+    "delta_receipt_sha256",
+    "transport_receipt_sha256",
+    "candidate_head",
+    "candidate_tree",
+    "review_mode",
+    "reviewer",
+    "verdict",
+    "conditions",
+    "findings",
+    "effects",
+    "human_irreversible_approval",
+    "merge_authorized",
+    "self_application"
+  ],
+  "properties": {
+    "schema": {
+      "const": "continuityos.github_candidate_review.semantic_decision/v1"
+    },
+    "request_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "admission_receipt_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "delta_receipt_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "transport_receipt_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "candidate_head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "candidate_tree": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "review_mode": {
+      "enum": [
+        "CONTROLLER_REVIEW",
+        "INDEPENDENT_REVIEW"
+      ]
+    },
+    "reviewer": {
+      "type": "object",
+      "required": [
+        "role",
+        "actor_id"
+      ],
+      "properties": {
+        "role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actor_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "verdict": {
+      "enum": [
+        "APPROVE_CANDIDATE",
+        "APPROVE_WITH_CONDITIONS",
+        "HOLD",
+        "REVISE",
+        "REJECT"
+      ]
+    },
+    "conditions": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 512
+    },
+    "effects": {
+      "type": "object"
+    },
+    "human_irreversible_approval": {
+      "const": false
+    },
+    "merge_authorized": {
+      "const": false
+    },
+    "self_application": {
+      "const": false
+    }
+  },
+  "additionalProperties": true
+}
