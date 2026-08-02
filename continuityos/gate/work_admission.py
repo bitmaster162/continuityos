@@ -924,6 +924,19 @@ def verify_work_delta(
             errors.append("candidate has an active Git operation")
         if observed.get("git_fsck") != "PASS":
             errors.append("candidate git fsck failed")
+        try:
+            if _canonical_github_repo(observed["remote_url"]) != _canonical_github_repo(request["repository"]["remote_url"]):
+                errors.append("candidate remote repository mismatch")
+        except Exception as exc:
+            errors.append(f"candidate remote URL invalid: {exc}")
+        workspace = request["workspace"]
+        candidate_path = Path(observed["path"])
+        if any(_under_host_prefix(candidate_path, prefix) for prefix in workspace["forbidden_root_prefixes"]):
+            errors.append("candidate repository is under a forbidden workspace root")
+        if workspace["mode"] == "DISPOSABLE_CLONE_REQUIRED" and not any(
+            _under_host_prefix(candidate_path, prefix) for prefix in workspace["allowed_root_prefixes"]
+        ):
+            errors.append("candidate repository is outside every allowed disposable workspace root")
         diff_check = _run(
             ["git", "diff", "--check", request["repository"]["base_head"], observed["head"]],
             cwd=Path(observed["path"]), check=False,

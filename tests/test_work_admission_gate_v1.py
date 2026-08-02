@@ -17,6 +17,8 @@ from continuityos.gate.work_admission import (
     VALIDATION_SCHEMA,
     canonical_json_text,
     sha256_bytes,
+    canonical_json_text,
+    sha256_bytes,
     sha256_file,
     verify_work_admission,
     verify_work_delta,
@@ -478,6 +480,37 @@ class WorkspaceAndGitStateTests(unittest.TestCase):
             fx = WorkFixture(Path(td))
             run(["git", "branch", "gpt/candidate"], fx.repo)
             self.assertEqual(fx.admit()["status"], ADMISSION_REVISE)
+
+    def test_delta_rejects_candidate_outside_disposable_workspace(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = WorkFixture(Path(td))
+            fx._write_inputs(mutate_request=lambda r: r["workspace"].update({
+                "mode": "DISPOSABLE_CLONE_REQUIRED",
+                "allowed_root_prefixes": [str(fx.root / "different")],
+            }))
+            # Admission itself is expected to reject, so create a normal admission
+            # first and then tamper only the bound workspace in its request/binding.
+            fx._write_inputs()
+            admission = fx.admit()
+            fx.create_candidate(); fx.write_validation(admission)
+            obj = json.loads(fx.admission.read_text())
+            obj["request"]["workspace"] = {
+                "mode": "DISPOSABLE_CLONE_REQUIRED",
+                "allowed_root_prefixes": [str(fx.root / "different")],
+                "forbidden_root_prefixes": [],
+            }
+            obj["binding"]["workspace"] = obj["request"]["workspace"]
+            obj["admission_binding_sha256"] = sha256_bytes(canonical_json_text(obj["binding"]).encode("utf-8"))
+            fx.admission.write_text(json.dumps(obj))
+            validation = json.loads(fx.validation.read_text())
+            validation["admission_binding_sha256"] = obj["admission_binding_sha256"]
+            validation["admission_receipt_sha256"] = sha256_file(fx.admission)
+            fx.validation.write_text(json.dumps(validation))
+            receipt = verify_work_delta(
+                fx.admission, fx.validation, fx.repo,
+                expected_admission_receipt_sha256=sha256_file(fx.admission),
+            )
+            self.assertEqual(receipt["status"], DELTA_REVISE)
 
 
 if __name__ == "__main__":
