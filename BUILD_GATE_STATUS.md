@@ -150,3 +150,29 @@ _RUN_ORCA_PILOT.bat are excluded.
 After operator review, commit the selectively staged repair, run remote Linux and Windows CI, then
 physically enable and prove one Hermes terminal interception path. Do not enable trading or claim
 universal enforcement before that boundary receipt exists.
+
+---
+
+## R12 candidate — Work Validation Evidence Gate v1 (2026-08-02)
+
+Local candidate only; GitHub transport and remote CI remain pending.
+
+```text
+branch                    gpt/work-validation-evidence-gate-v1
+accepted parent HEAD      1472b907c77b127271387e22ec8a2d4c5bca1092
+accepted parent tree      4d2ced451badab2e79650708408376a640f78e8c
+focused admission tests   71 passed
+full repository suite     556 passed, 8 subtests passed
+release hardening         10 / 10 PASS
+Python 3.10 grammar       PASS
+compile                   PASS
+can_trade                 false
+capital_permission        DENY
+deploy_permission         DENY
+```
+
+R12 adds exact raw stdout/stderr evidence, bounded execution, independent
+manifest/READY rehashing, raw-evidence binding in the delta gate and mandatory
+disposable workspaces.  Direct network/install argv are denied, but this is not
+an OS network sandbox; indirect network behavior inside admitted test code is
+outside the proof ceiling.

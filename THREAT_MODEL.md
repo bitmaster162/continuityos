@@ -48,6 +48,21 @@ the controlled CLI/hook instead of silently reverting to defaults.
   `exec` mode is argv-only and refuses shell operators; `shell` mode runs them but is
   classified more strictly. Prefer `exec`.
 
+## Validation-evidence boundary
+
+The Work Validation Evidence Gate executes only admission-bound argv vectors and
+rehashes the resulting raw stdout/stderr bytes. This closes receipt fabrication,
+but it is not a general process sandbox:
+
+- arbitrary admitted test code can still open sockets indirectly;
+- inherited environment variables remain visible to the child process;
+- raw command output can contain sensitive data and must stay outside Git;
+- timeout/process-tree cleanup is best-effort on the host OS;
+- READY-last is a custody claim plus hash binding, not a trusted hardware clock.
+
+Use disposable clones, private evidence storage and narrow test vectors. Do not
+admit untrusted scripts merely because their command line is well formed.
+
 ## Rollback scope
 
 The v1 controlled runner snapshots explicit regular files, SQLite databases (through the SQLite
@@ -116,3 +131,13 @@ write access can rewrite the chain, and there is no external anchor.
 
 Found a real bypass or a memory-poisoning path? Open a GitHub issue or contact the
 maintainers. Honest edge reports are more welcome than benchmark wins.
+
+### R12 validation-workspace and output-capture hardening
+
+Raw validation evidence is admitted only for disposable clones.  Candidate and
+evidence paths are checked against the admission-bound host prefixes.  Stdout
+and stderr are drained through bounded pipes, so a high-rate producer cannot
+overshoot its disk budget by writing directly to an unconstrained file between
+polls.  This still is not an OS network sandbox: indirect network access inside
+admitted test code remains outside the proof ceiling and must be handled by a
+separate isolated runner where required.

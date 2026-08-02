@@ -1,4 +1,13 @@
 
+## Unreleased — Work Validation Evidence Gate v1
+
+- Add deterministic execution of exact admitted validation argv vectors without a shell.
+- Persist raw stdout/stderr bytes outside the repository with per-command timeout and output budgets.
+- Add independent manifest/READY verification that recomputes every raw-output hash.
+- Add `raw_evidence_required` admission policy and bind verified evidence into `verify-delta`.
+- Reject direct network/install command vectors when the admitted policy denies those effects.
+- Add four packaged schemas, examples, documentation and adversarial tests.
+
 ## Unreleased — GitHub Work Admission Gate v1
 
 - Add effect-free pre-work admission binding for exact task, session capsule, Git baseline, candidate branch, path scope and effect ceiling.
@@ -162,3 +171,9 @@ governance Gate, MCP server, CLI, HTTP API, and Docker packaging.
 
 [Unreleased]: https://github.com/continuityos/continuityos/compare/v0.7.0...HEAD
 [0.7.0]: https://github.com/continuityos/continuityos/releases/tag/v0.7.0
+
+### R12 validation evidence hardening
+
+- Require `DISPOSABLE_CLONE_REQUIRED` whenever raw validation evidence is mandatory.
+- Bind candidate and evidence paths to admitted host prefixes.
+- Replace post-hoc output-file polling with hard-bounded pipe capture.

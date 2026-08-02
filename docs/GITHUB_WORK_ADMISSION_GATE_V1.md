@@ -73,5 +73,18 @@ The delta gate verifies:
   and network/install/full-suite budgets cannot widen;
 - no dangerous effect or remote-branch conflict.
 
+When the request sets `validation.raw_evidence_required=true`, the lifecycle
+must include:
+
+```text
+continuity work-admission run-validation ...
+continuity work-admission verify-validation ...
+continuity work-admission verify-delta --validation-evidence-dir ...
+```
+
+The raw-evidence gate rehashes the actual stdout/stderr bytes and prevents a
+fabricated validation receipt from satisfying the delta gate. See
+`GITHUB_WORK_VALIDATION_EVIDENCE_V1.md`.
+
 Even `WORK_DELTA_PASS` permits only a later candidate-transport step.  It does
 not push, merge, deploy, modify R63/current state, or trade.

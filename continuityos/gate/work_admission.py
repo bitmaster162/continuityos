@@ -46,6 +46,10 @@ MAX_WORK_ORDER_BYTES = 8 * 1024 * 1024
 MAX_REQUIRED_COMMANDS = 100
 MAX_ARGV_ITEMS = 64
 MAX_ARG_TOKEN_BYTES = 4096
+MAX_COMMAND_TIMEOUT_SECONDS = 2 * 60 * 60
+MAX_COMMAND_OUTPUT_BYTES = 64 * 1024 * 1024
+MAX_TOTAL_VALIDATION_OUTPUT_BYTES = 128 * 1024 * 1024
+VALIDATION_COMMAND_KINDS = {"FOCUSED", "FULL_SUITE", "BUILD", "STATIC", "SECURITY", "OTHER"}
 WINDOWS_RESERVED_NAMES = {
     "CON", "PRN", "AUX", "NUL",
     *(f"COM{i}" for i in range(1, 10)),
@@ -335,7 +339,36 @@ def _normalize_required_commands(value: Any) -> list[dict[str, Any]]:
                     f"validation command {command_id} PowerShell requires -File and denies -Command/-EncodedCommand"
                 )
         cwd = _safe_rel_path(row.get("cwd", "repo"), f"validation command {command_id} cwd")
-        out.append({"id": command_id, "argv": list(argv), "cwd": cwd})
+        kind = row.get("kind", "OTHER")
+        if kind not in VALIDATION_COMMAND_KINDS:
+            raise ValueError(f"validation command {command_id} kind is invalid")
+        timeout_seconds = _require_int(
+            row.get("timeout_seconds", 1800),
+            f"validation command {command_id} timeout_seconds",
+            minimum=1,
+            maximum=MAX_COMMAND_TIMEOUT_SECONDS,
+        )
+        max_stdout_bytes = _require_int(
+            row.get("max_stdout_bytes", 16 * 1024 * 1024),
+            f"validation command {command_id} max_stdout_bytes",
+            minimum=0,
+            maximum=MAX_COMMAND_OUTPUT_BYTES,
+        )
+        max_stderr_bytes = _require_int(
+            row.get("max_stderr_bytes", 16 * 1024 * 1024),
+            f"validation command {command_id} max_stderr_bytes",
+            minimum=0,
+            maximum=MAX_COMMAND_OUTPUT_BYTES,
+        )
+        out.append({
+            "id": command_id,
+            "argv": list(argv),
+            "cwd": cwd,
+            "kind": kind,
+            "timeout_seconds": timeout_seconds,
+            "max_stdout_bytes": max_stdout_bytes,
+            "max_stderr_bytes": max_stderr_bytes,
+        })
     return out
 
 
@@ -455,7 +488,24 @@ def normalize_work_admission_request(value: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("validation.dependency_install must be DENY or LOCKED_ONLY")
     max_full_suite_runs = _require_int(validation.get("max_full_suite_runs", 1), "validation.max_full_suite_runs", minimum=0, maximum=3)
     max_install_attempts = _require_int(validation.get("max_install_attempts", 0), "validation.max_install_attempts", minimum=0, maximum=2)
-
+    raw_evidence_required = _require_bool(
+        validation.get("raw_evidence_required", False),
+        "validation.raw_evidence_required",
+    )
+    continue_on_failure = _require_bool(
+        validation.get("continue_on_failure", False),
+        "validation.continue_on_failure",
+    )
+    max_total_output_bytes = _require_int(
+        validation.get("max_total_output_bytes", 64 * 1024 * 1024),
+        "validation.max_total_output_bytes",
+        minimum=0,
+        maximum=MAX_TOTAL_VALIDATION_OUTPUT_BYTES,
+    )
+    if raw_evidence_required and workspace_mode != "DISPOSABLE_CLONE_REQUIRED":
+        raise ValueError(
+            "validation.raw_evidence_required=true requires workspace.mode=DISPOSABLE_CLONE_REQUIRED"
+        )
     evidence = _require_dict(value.get("evidence", {}), "evidence")
     accepted_parent_terminal = evidence.get("accepted_parent_terminal")
     accepted_parent_receipt_sha256 = evidence.get("accepted_parent_receipt_sha256")
@@ -515,6 +565,9 @@ def normalize_work_admission_request(value: dict[str, Any]) -> dict[str, Any]:
             "dependency_install": dependency_install,
             "max_full_suite_runs": max_full_suite_runs,
             "max_install_attempts": max_install_attempts,
+            "raw_evidence_required": raw_evidence_required,
+            "continue_on_failure": continue_on_failure,
+            "max_total_output_bytes": max_total_output_bytes,
         },
         "evidence": {
             "accepted_parent_terminal": accepted_parent_terminal,
@@ -903,7 +956,14 @@ def _verify_validation_receipt(receipt: dict[str, Any], request: dict[str, Any],
         if row is None:
             errors.append(f"missing required validation command: {required['id']}")
             continue
-        if row.get("argv") != required["argv"] or row.get("cwd") != required["cwd"]:
+        if (
+            row.get("argv") != required["argv"]
+            or row.get("cwd") != required["cwd"]
+            or row.get("kind", "OTHER") != required["kind"]
+            or row.get("timeout_seconds", required["timeout_seconds"]) != required["timeout_seconds"]
+            or row.get("max_stdout_bytes", required["max_stdout_bytes"]) != required["max_stdout_bytes"]
+            or row.get("max_stderr_bytes", required["max_stderr_bytes"]) != required["max_stderr_bytes"]
+        ):
             errors.append(f"validation command binding mismatch: {required['id']}")
         if row.get("exit_code") != 0:
             errors.append(f"validation command failed: {required['id']}")
@@ -943,6 +1003,7 @@ def verify_work_delta(
     repo_path: Path,
     *,
     expected_admission_receipt_sha256: str,
+    validation_evidence_dir: Path | None = None,
     remote_name: str = "origin",
     check_remote: bool = False,
 ) -> dict[str, Any]:
@@ -1107,6 +1168,59 @@ def verify_work_delta(
         except Exception as exc:
             _check(checks, "VALIDATION_RECEIPT", "FAIL", f"{type(exc).__name__}: {exc}")
 
+    validation_evidence: dict[str, Any] | None = None
+    validation_evidence_sha: str | None = None
+    raw_required = request["validation"]["raw_evidence_required"]
+    if raw_required or validation_evidence_dir is not None:
+        if validation_evidence_dir is None:
+            _check(
+                checks,
+                "VALIDATION_RAW_EVIDENCE",
+                "FAIL",
+                "Raw validation evidence is required but no evidence directory was supplied.",
+            )
+        else:
+            try:
+                from .work_validation import EVIDENCE_PASS, verify_work_validation_evidence
+
+                validation_evidence = verify_work_validation_evidence(
+                    validation_evidence_dir,
+                    admission_receipt_path,
+                    repo_path,
+                    expected_admission_receipt_sha256=expected_admission_receipt_sha256,
+                    remote_name=remote_name,
+                )
+                validation_evidence_sha = sha256_bytes(
+                    canonical_json_text(validation_evidence).encode("utf-8")
+                )
+                if validation_evidence.get("status") != EVIDENCE_PASS:
+                    _check(
+                        checks,
+                        "VALIDATION_RAW_EVIDENCE",
+                        "FAIL",
+                        "Raw validation evidence did not pass independent verification.",
+                        verification=validation_evidence,
+                    )
+                elif validation_evidence.get("validation_receipt_sha256") != validation_sha:
+                    _check(
+                        checks,
+                        "VALIDATION_RAW_EVIDENCE",
+                        "FAIL",
+                        "Raw evidence is bound to a different validation receipt.",
+                        evidence_validation_receipt_sha256=validation_evidence.get("validation_receipt_sha256"),
+                        supplied_validation_receipt_sha256=validation_sha,
+                    )
+                else:
+                    _check(
+                        checks,
+                        "VALIDATION_RAW_EVIDENCE",
+                        "PASS",
+                        "Raw stdout/stderr bytes and manifest are independently verified.",
+                        verification_sha256=validation_evidence_sha,
+                    )
+            except Exception as exc:
+                _check(checks, "VALIDATION_RAW_EVIDENCE", "FAIL", f"{type(exc).__name__}: {exc}")
+
     remote_mode = request["repository"]["remote_readback_mode"]
     if not request["effects"]["candidate_push"]:
         _check(checks, "CANDIDATE_REMOTE", "PASS", "Candidate push is outside this work order; no remote candidate check required.")
@@ -1129,7 +1243,19 @@ def verify_work_delta(
         except Exception as exc:
             _check(checks, "CANDIDATE_REMOTE", "FAIL", f"{type(exc).__name__}: {exc}")
 
-    return _delta_receipt(generated, checks, request, binding_sha, observed, changed_rows, validation, validation_sha, admission_receipt_sha)
+    return _delta_receipt(
+        generated,
+        checks,
+        request,
+        binding_sha,
+        observed,
+        changed_rows,
+        validation,
+        validation_sha,
+        admission_receipt_sha,
+        validation_evidence,
+        validation_evidence_sha,
+    )
 
 
 def _delta_receipt(
@@ -1142,6 +1268,8 @@ def _delta_receipt(
     validation: dict[str, Any] | None,
     validation_sha: str | None = None,
     admission_receipt_sha: str | None = None,
+    validation_evidence: dict[str, Any] | None = None,
+    validation_evidence_sha: str | None = None,
 ) -> dict[str, Any]:
     statuses = {row["status"] for row in checks}
     if "FAIL" in statuses:
@@ -1162,6 +1290,8 @@ def _delta_receipt(
         "repository_observed": observed,
         "changed_files": changed_rows or [],
         "validation_receipt_sha256": validation_sha,
+        "validation_evidence_verification": validation_evidence,
+        "validation_evidence_verification_sha256": validation_evidence_sha,
         "effect": "VERIFY_ONLY_NO_WRITE",
         "live_state_modified": False,
         "writes_performed": [],

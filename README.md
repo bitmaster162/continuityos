@@ -429,21 +429,40 @@ continuity work-admission verify \
   --check-remote
 ```
 
-After a committed candidate, verify the exact admission receipt, linear Git
-ancestry, changed paths, file/byte/commit budgets and bound validation receipt:
+After the candidate commit, ContinuityOS can execute the exact admitted test
+vectors itself and bind the actual stdout/stderr bytes:
+
+```bash
+continuity work-admission run-validation \
+  --admission-receipt WORK_ADMISSION_RECEIPT.json \
+  --admission-receipt-sha256 <SHA256> \
+  --repo /path/to/candidate \
+  --output-dir /outside/repo/validation-evidence
+
+continuity work-admission verify-validation \
+  --admission-receipt WORK_ADMISSION_RECEIPT.json \
+  --admission-receipt-sha256 <SHA256> \
+  --repo /path/to/candidate \
+  --evidence-dir /outside/repo/validation-evidence
+```
+
+Then verify linear Git ancestry, changed paths, file/byte/commit budgets, the
+validation receipt and independently rehashed raw evidence:
 
 ```bash
 continuity work-admission verify-delta \
   --admission-receipt WORK_ADMISSION_RECEIPT.json \
   --admission-receipt-sha256 <SHA256> \
-  --validation-receipt WORK_VALIDATION_RECEIPT.json \
+  --validation-receipt /outside/repo/validation-evidence/WORK_VALIDATION_RECEIPT.json \
+  --validation-evidence-dir /outside/repo/validation-evidence \
   --repo /path/to/candidate \
   --check-remote
 ```
 
-A pass authorizes only later candidate transport. The gate does not create a
+A pass authorizes only later candidate transport. The gates do not create a
 branch, push, merge, deploy, apply R63/current state, trade or use capital. See
-`docs/GITHUB_WORK_ADMISSION_GATE_V1.md`.
+`docs/GITHUB_WORK_ADMISSION_GATE_V1.md` and
+`docs/GITHUB_WORK_VALIDATION_EVIDENCE_V1.md`.
 
 ## Common Operational Context v1
 

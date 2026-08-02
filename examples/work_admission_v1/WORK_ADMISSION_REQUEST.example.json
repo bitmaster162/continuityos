@@ -78,7 +78,11 @@
           "-q",
           "tests/test_work_admission_gate_v1.py"
         ],
-        "cwd": "repo"
+        "cwd": "repo",
+        "kind": "FOCUSED",
+        "timeout_seconds": 900,
+        "max_stdout_bytes": 8388608,
+        "max_stderr_bytes": 8388608
       },
       {
         "id": "full",
@@ -88,13 +92,20 @@
           "pytest",
           "-q"
         ],
-        "cwd": "repo"
+        "cwd": "repo",
+        "kind": "FULL_SUITE",
+        "timeout_seconds": 1800,
+        "max_stdout_bytes": 8388608,
+        "max_stderr_bytes": 8388608
       }
     ],
     "network_access": "DENY",
     "dependency_install": "DENY",
     "max_full_suite_runs": 2,
-    "max_install_attempts": 0
+    "max_install_attempts": 0,
+    "raw_evidence_required": true,
+    "continue_on_failure": false,
+    "max_total_output_bytes": 33554432
   },
   "evidence": {
     "accepted_parent_terminal": "WINDOWS_SEMANTIC_CLOSE_V1_2_R9_3_PASS",

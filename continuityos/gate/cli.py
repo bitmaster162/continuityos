@@ -16,6 +16,8 @@
   continuity run exec  -- <cmd...>        # argv-only (safe); rejects shell operators
   continuity run shell -- <cmd...>        # real shell (&&,|,>,$()) — mediated, stricter
   continuity work-admission verify ...     # bind exact task/capsule/Git/scope
+  continuity work-admission run-validation ... # execute exact admitted argv and capture raw bytes
+  continuity work-admission verify-validation ... # rehash validation evidence independently
   continuity work-admission verify-delta ... # verify committed candidate before transport
   continuity audit                        # show + verify the audit ledger
 """
@@ -54,6 +56,12 @@ from .work_admission import (
     exit_code_for_work_delta,
     verify_work_admission,
     verify_work_delta,
+)
+from .work_validation import (
+    execute_work_validation,
+    exit_code_for_work_validation_evidence,
+    exit_code_for_work_validation_execution,
+    verify_work_validation_evidence,
 )
 
 LEGACY_GATE_AVAILABLE = None
@@ -701,12 +709,45 @@ def main(argv=None):
     work_admission_verify.add_argument("--remote-name", dest="remote_name", default="origin")
     work_admission_verify.add_argument("--check-remote", dest="check_remote", action="store_true")
 
+    work_admission_run_validation = work_admission_sub.add_parser(
+        "run-validation",
+        help="execute exact admitted validation argv and write raw evidence outside the repo",
+    )
+    work_admission_run_validation.add_argument(
+        "--admission-receipt", dest="admission_receipt_path", required=True
+    )
+    work_admission_run_validation.add_argument(
+        "--admission-receipt-sha256", dest="admission_receipt_sha256", required=True
+    )
+    work_admission_run_validation.add_argument("--repo", dest="repo_path", required=True)
+    work_admission_run_validation.add_argument("--output-dir", dest="output_dir", required=True)
+    work_admission_run_validation.add_argument("--remote-name", dest="remote_name", default="origin")
+
+    work_admission_verify_validation = work_admission_sub.add_parser(
+        "verify-validation",
+        help="independently verify raw stdout/stderr evidence and manifest",
+    )
+    work_admission_verify_validation.add_argument(
+        "--admission-receipt", dest="admission_receipt_path", required=True
+    )
+    work_admission_verify_validation.add_argument(
+        "--admission-receipt-sha256", dest="admission_receipt_sha256", required=True
+    )
+    work_admission_verify_validation.add_argument("--repo", dest="repo_path", required=True)
+    work_admission_verify_validation.add_argument(
+        "--evidence-dir", dest="validation_evidence_dir", required=True
+    )
+    work_admission_verify_validation.add_argument("--remote-name", dest="remote_name", default="origin")
+
     work_admission_delta = work_admission_sub.add_parser(
         "verify-delta", help="verify one committed candidate against an admission receipt"
     )
     work_admission_delta.add_argument("--admission-receipt", dest="admission_receipt_path", required=True)
     work_admission_delta.add_argument("--admission-receipt-sha256", dest="admission_receipt_sha256", required=True)
     work_admission_delta.add_argument("--validation-receipt", dest="validation_receipt_path", required=True)
+    work_admission_delta.add_argument(
+        "--validation-evidence-dir", dest="validation_evidence_dir", required=False
+    )
     work_admission_delta.add_argument("--repo", dest="repo_path", required=True)
     work_admission_delta.add_argument("--remote-name", dest="remote_name", default="origin")
     work_admission_delta.add_argument("--check-remote", dest="check_remote", action="store_true")
@@ -743,11 +784,36 @@ def main(argv=None):
                 )
                 print(work_admission_json_text(receipt), end="")
                 return exit_code_for_work_admission(receipt)
+            if a.work_admission_cmd == "run-validation":
+                receipt = execute_work_validation(
+                    Path(a.admission_receipt_path).expanduser(),
+                    Path(a.repo_path).expanduser(),
+                    Path(a.output_dir).expanduser(),
+                    expected_admission_receipt_sha256=a.admission_receipt_sha256,
+                    remote_name=a.remote_name,
+                )
+                print(work_admission_json_text(receipt), end="")
+                return exit_code_for_work_validation_execution(receipt)
+            if a.work_admission_cmd == "verify-validation":
+                receipt = verify_work_validation_evidence(
+                    Path(a.validation_evidence_dir).expanduser(),
+                    Path(a.admission_receipt_path).expanduser(),
+                    Path(a.repo_path).expanduser(),
+                    expected_admission_receipt_sha256=a.admission_receipt_sha256,
+                    remote_name=a.remote_name,
+                )
+                print(work_admission_json_text(receipt), end="")
+                return exit_code_for_work_validation_evidence(receipt)
             receipt = verify_work_delta(
                 Path(a.admission_receipt_path).expanduser(),
                 Path(a.validation_receipt_path).expanduser(),
                 Path(a.repo_path).expanduser(),
                 expected_admission_receipt_sha256=a.admission_receipt_sha256,
+                validation_evidence_dir=(
+                    Path(a.validation_evidence_dir).expanduser()
+                    if a.validation_evidence_dir
+                    else None
+                ),
                 remote_name=a.remote_name,
                 check_remote=a.check_remote,
             )
