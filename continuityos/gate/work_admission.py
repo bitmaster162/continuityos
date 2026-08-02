@@ -183,7 +183,7 @@ def _globally_blocked_path(path: str, *, allow_archive_files: bool) -> str | Non
     if not allow_archive_files and base.endswith((".zip", ".7z", ".rar", ".tar", ".tgz", ".gz")):
         return "archive payloads are not admitted by this request"
     joined = "/".join(lowered)
-    if any(token in joined for token in ("raw_chat", "chat_export", "drivefs", "wallet", "private_key")):
+    if any(token in joined for token in ("raw_chat", "chat_export", "drivefs", "wallet_backup", "wallet_seed", "wallet_export", "private_key")):
         return "protected raw evidence or account material"
     return None
 
@@ -294,7 +294,14 @@ def normalize_work_admission_request(value: dict[str, Any]) -> dict[str, Any]:
     default_branch = _require_str(repository.get("default_branch"), "repository.default_branch")
     if candidate_branch in {"main", "master", default_branch, base_branch}:
         raise ValueError("candidate_branch must be distinct from base/default branches")
-    if not BRANCH_RE.fullmatch(candidate_branch) or "//" in candidate_branch or candidate_branch.endswith("/"):
+    if (
+        not BRANCH_RE.fullmatch(candidate_branch)
+        or "//" in candidate_branch
+        or ".." in candidate_branch
+        or "@{" in candidate_branch
+        or candidate_branch.endswith(("/", ".", ".lock"))
+        or "/." in candidate_branch
+    ):
         raise ValueError("candidate_branch is outside the admitted candidate namespaces")
     remote_mode = repository.get("remote_readback_mode", "REQUIRED")
     if remote_mode not in {"REQUIRED", "OPTIONAL", "DENY"}:
@@ -332,7 +339,10 @@ def normalize_work_admission_request(value: dict[str, Any]) -> dict[str, Any]:
         normalized_effects[key] = False
     if effects.get("capital_permission") != "DENY":
         raise ValueError("effects.capital_permission must be DENY")
+    if effects.get("deploy_permission") != "DENY":
+        raise ValueError("effects.deploy_permission must be DENY")
     normalized_effects["capital_permission"] = "DENY"
+    normalized_effects["deploy_permission"] = "DENY"
     normalized_effects["can_trade"] = _require_bool(effects.get("can_trade", False), "effects.can_trade")
     if normalized_effects["can_trade"]:
         raise ValueError("effects.can_trade must be false")
@@ -741,6 +751,10 @@ def _verify_validation_receipt(receipt: dict[str, Any], request: dict[str, Any],
             if row["id"] in by_id:
                 errors.append(f"duplicate validation command receipt: {row['id']}")
             by_id[row["id"]] = row
+    required_ids = {row["id"] for row in request["validation"]["required_commands"]}
+    extra_ids = sorted(set(by_id) - required_ids)
+    if extra_ids:
+        errors.append("unadmitted validation commands: " + ", ".join(extra_ids))
     for required in request["validation"]["required_commands"]:
         row = by_id.get(required["id"])
         if row is None:
@@ -754,6 +768,20 @@ def _verify_validation_receipt(receipt: dict[str, Any], request: dict[str, Any],
             value = row.get(label)
             if not isinstance(value, str) or not SHA256_RE.fullmatch(value):
                 errors.append(f"validation command {required['id']} has invalid {label}")
+    network_used = receipt.get("network_access_used")
+    dependency_used = receipt.get("dependency_install_used")
+    full_suite_runs = receipt.get("full_suite_runs")
+    install_attempts = receipt.get("install_attempts")
+    allowed_network = request["validation"]["network_access"]
+    if network_used not in {"DENY", "READ_ONLY"} or (allowed_network == "DENY" and network_used != "DENY"):
+        errors.append("validation receipt network access exceeds admission")
+    allowed_dependency = request["validation"]["dependency_install"]
+    if dependency_used not in {"DENY", "LOCKED_ONLY"} or (allowed_dependency == "DENY" and dependency_used != "DENY"):
+        errors.append("validation receipt dependency install exceeds admission")
+    if not isinstance(full_suite_runs, int) or isinstance(full_suite_runs, bool) or not (0 <= full_suite_runs <= request["validation"]["max_full_suite_runs"]):
+        errors.append("validation receipt full_suite_runs exceeds admission")
+    if not isinstance(install_attempts, int) or isinstance(install_attempts, bool) or not (0 <= install_attempts <= request["validation"]["max_install_attempts"]):
+        errors.append("validation receipt install_attempts exceeds admission")
     effects = receipt.get("effects")
     if not isinstance(effects, dict):
         errors.append("validation receipt effects missing")
@@ -855,10 +883,18 @@ def verify_work_delta(
                     errors.append(f"protected path {path}: {blocker}")
                 if _path_is_within(path, ".github/workflows") and not request["effects"]["workflow_changes"]:
                     errors.append(f"workflow change not admitted: {path}")
+                if status in {"T", "U"}:
+                    errors.append(f"Git type/unmerged change not admitted: {path}")
                 if status == "A" and not scope["allow_new_files"]:
                     errors.append(f"new file not admitted: {path}")
                 if status == "D" and not scope["allow_deletions"]:
                     errors.append(f"deletion not admitted: {path}")
+                new_mode = None
+                if status != "D" and _git_path_exists(repo, head, path):
+                    ls_tree = _git(repo, "ls-tree", head, "--", path)
+                    new_mode = ls_tree.split()[0] if ls_tree else None
+                    if new_mode in {"120000", "160000"}:
+                        errors.append(f"symlink or submodule not admitted: {path}")
                 new_size = _git_blob_size(repo, head, path) if status != "D" and _git_path_exists(repo, head, path) else 0
                 old_size = _git_blob_size(repo, base, path) if status != "A" and _git_path_exists(repo, base, path) else 0
                 added = max(0, new_size - old_size)
@@ -876,6 +912,7 @@ def verify_work_delta(
                     "new_bytes": new_size,
                     "positive_byte_delta": added,
                     "binary": is_binary,
+                    "git_mode": new_mode,
                 })
             if len(rows) > scope["max_changed_files"]:
                 errors.append("candidate exceeds max_changed_files")

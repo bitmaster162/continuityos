@@ -106,6 +106,7 @@ class WorkFixture:
                 "self_application": False,
                 "can_trade": False,
                 "capital_permission": "DENY",
+                "deploy_permission": "DENY",
             },
             "session": {"required_role": "GPT", "capsule_sha256": "0" * 64},
             "validation": {
@@ -181,6 +182,10 @@ class WorkFixture:
             "candidate_head": head,
             "candidate_tree": tree,
             "worktree_clean_after": True,
+            "network_access_used": "DENY",
+            "dependency_install_used": "DENY",
+            "full_suite_runs": 1,
+            "install_attempts": 0,
             "commands": [{
                 "id": "focused",
                 "argv": argv or ["python", "-m", "pytest", "-q", "tests"],
@@ -403,6 +408,53 @@ class AdditionalDeltaTests(unittest.TestCase):
             (fx.repo / "src/a.py").write_text("a=1\n"); run(["git", "add", "."], fx.repo); run(["git", "commit", "-m", "a"], fx.repo)
             (fx.repo / "src/b.py").write_text("b=1\n"); run(["git", "add", "."], fx.repo); run(["git", "commit", "-m", "b"], fx.repo)
             fx.write_validation(admission)
+            self.assertEqual(verify_work_delta(fx.admission, fx.validation, fx.repo, expected_admission_receipt_sha256=sha256_file(fx.admission))["status"], DELTA_REVISE)
+
+
+class HardeningRegressionTests(unittest.TestCase):
+    def test_candidate_ref_with_dotdot_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = WorkFixture(Path(td))
+            fx._write_inputs(mutate_request=lambda r: r["repository"].__setitem__("candidate_branch", "gpt/foo..bar"))
+            self.assertEqual(fx.admit()["status"], ADMISSION_REVISE)
+
+    def test_missing_deploy_permission_denied(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = WorkFixture(Path(td))
+            fx._write_inputs(mutate_request=lambda r: r["effects"].pop("deploy_permission", None))
+            self.assertEqual(fx.admit()["status"], ADMISSION_REVISE)
+
+    def test_extra_validation_command_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = WorkFixture(Path(td)); admission = fx.admit(); fx.create_candidate(); fx.write_validation(admission)
+            obj = json.loads(fx.validation.read_text())
+            obj["commands"].append({
+                "id":"extra","argv":["python","-c","print(1)"],"cwd":"repo","exit_code":0,
+                "stdout_sha256":"0"*64,"stderr_sha256":"0"*64,
+            })
+            fx.validation.write_text(json.dumps(obj))
+            self.assertEqual(verify_work_delta(fx.admission, fx.validation, fx.repo, expected_admission_receipt_sha256=sha256_file(fx.admission))["status"], DELTA_REVISE)
+
+    def test_network_widening_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = WorkFixture(Path(td)); admission = fx.admit(); fx.create_candidate(); fx.write_validation(admission)
+            obj = json.loads(fx.validation.read_text()); obj["network_access_used"] = "READ_ONLY"; fx.validation.write_text(json.dumps(obj))
+            self.assertEqual(verify_work_delta(fx.admission, fx.validation, fx.repo, expected_admission_receipt_sha256=sha256_file(fx.admission))["status"], DELTA_REVISE)
+
+    def test_install_attempt_budget_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = WorkFixture(Path(td)); admission = fx.admit(); fx.create_candidate(); fx.write_validation(admission)
+            obj = json.loads(fx.validation.read_text()); obj["install_attempts"] = 1; fx.validation.write_text(json.dumps(obj))
+            self.assertEqual(verify_work_delta(fx.admission, fx.validation, fx.repo, expected_admission_receipt_sha256=sha256_file(fx.admission))["status"], DELTA_REVISE)
+
+    def test_symlink_candidate_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = WorkFixture(Path(td)); admission = fx.admit(); run(["git", "switch", "-c", "gpt/candidate"], fx.repo)
+            try:
+                (fx.repo / "src/link.py").symlink_to("base.py")
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink unavailable")
+            run(["git", "add", "."], fx.repo); run(["git", "commit", "-m", "symlink"], fx.repo); fx.write_validation(admission)
             self.assertEqual(verify_work_delta(fx.admission, fx.validation, fx.repo, expected_admission_receipt_sha256=sha256_file(fx.admission))["status"], DELTA_REVISE)
 
 

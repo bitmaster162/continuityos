@@ -11,7 +11,11 @@
     "candidate_tree",
     "commands",
     "worktree_clean_after",
-    "effects"
+    "effects",
+    "network_access_used",
+    "dependency_install_used",
+    "full_suite_runs",
+    "install_attempts"
   ],
   "properties": {
     "schema": {
@@ -45,6 +49,26 @@
     "admission_receipt_sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
+    },
+    "network_access_used": {
+      "enum": [
+        "DENY",
+        "READ_ONLY"
+      ]
+    },
+    "dependency_install_used": {
+      "enum": [
+        "DENY",
+        "LOCKED_ONLY"
+      ]
+    },
+    "full_suite_runs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "install_attempts": {
+      "type": "integer",
+      "minimum": 0
     }
   }
 }

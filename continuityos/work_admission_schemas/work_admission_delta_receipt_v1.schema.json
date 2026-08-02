@@ -11,7 +11,10 @@
     "live_state_modified",
     "can_trade",
     "capital_permission",
-    "self_application"
+    "self_application",
+    "admission_binding_sha256",
+    "admission_receipt_sha256",
+    "validation_receipt_sha256"
   ],
   "properties": {
     "schema": {
@@ -47,6 +50,18 @@
     },
     "self_application": {
       "const": false
+    },
+    "admission_binding_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "admission_receipt_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "validation_receipt_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
     }
   }
 }

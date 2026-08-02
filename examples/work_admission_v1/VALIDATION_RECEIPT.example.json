@@ -38,5 +38,9 @@
     "capital_permission": "DENY",
     "deploy_permission": "DENY"
   },
-  "admission_receipt_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  "admission_receipt_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "network_access_used": "DENY",
+  "dependency_install_used": "DENY",
+  "full_suite_runs": 1,
+  "install_attempts": 0
 }

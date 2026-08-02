@@ -43,7 +43,8 @@
     "external_message": false,
     "self_application": false,
     "can_trade": false,
-    "capital_permission": "DENY"
+    "capital_permission": "DENY",
+    "deploy_permission": "DENY"
   },
   "can_trade": false,
   "capital_permission": "DENY",
