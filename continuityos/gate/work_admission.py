@@ -41,6 +41,19 @@ GIT_OID_RE = re.compile(r"^[0-9a-f]{40}$")
 TASK_ID_RE = re.compile(r"^[A-Z0-9][A-Z0-9_.:-]{2,127}$")
 BRANCH_RE = re.compile(r"^(?:gpt|agent|codex|spark|claude|fable|work|controller|candidate)/[A-Za-z0-9._/-]+$")
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+MAX_JSON_BYTES = 4 * 1024 * 1024
+MAX_WORK_ORDER_BYTES = 8 * 1024 * 1024
+MAX_REQUIRED_COMMANDS = 100
+MAX_ARGV_ITEMS = 64
+MAX_ARG_TOKEN_BYTES = 4096
+WINDOWS_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+SHELL_EXECUTABLES = {"sh", "bash", "zsh", "fish", "cmd", "cmd.exe"}
+POWERSHELL_EXECUTABLES = {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}
+SHELL_META_RE = re.compile(r"&&|\|\||[;|<>]|\$\(|`")
 
 DANGEROUS_EFFECTS = (
     "force_push",
@@ -115,6 +128,10 @@ def _check(checks: list[dict[str, Any]], check_id: str, status: str, detail: str
 
 
 def _load_json(path: Path, label: str) -> dict[str, Any]:
+    if not path.is_file():
+        raise ValueError(f"{label} file is missing")
+    if path.stat().st_size > MAX_JSON_BYTES:
+        raise ValueError(f"{label} exceeds {MAX_JSON_BYTES} bytes")
     try:
         value = json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception as exc:
@@ -157,6 +174,12 @@ def _safe_rel_path(value: Any, label: str) -> str:
         raise ValueError(f"{label} is not a safe relative path")
     if re.match(r"^[A-Za-z]:", text):
         raise ValueError(f"{label} must not be a Windows drive path")
+    for part in p.parts:
+        if part.endswith((" ", ".")) or any(ch in part for ch in '<>:"|?*'):
+            raise ValueError(f"{label} contains a cross-platform-invalid component")
+        stem = part.split(".", 1)[0].upper()
+        if stem in WINDOWS_RESERVED_NAMES:
+            raise ValueError(f"{label} contains a Windows-reserved component")
     return str(p)
 
 
@@ -179,6 +202,8 @@ def _normalize_host_roots(value: Any, label: str) -> list[str]:
     for item in value:
         if "\x00" in item:
             raise ValueError(f"{label} contains a NUL byte")
+        if not Path(item).expanduser().is_absolute():
+            raise ValueError(f"{label} entries must be absolute host paths")
         if item not in out:
             out.append(item)
     return out
@@ -205,7 +230,11 @@ def _globally_blocked_path(path: str, *, allow_archive_files: bool) -> str | Non
     if ".git" in lowered:
         return ".git content is never admissible"
     base = lowered[-1]
-    if base in GLOBAL_BLOCKED_BASENAMES or base.startswith("credentials."):
+    if (
+        base in GLOBAL_BLOCKED_BASENAMES
+        or base.startswith(("credentials.", "client_secret.", "service_account.", "token."))
+        or base.startswith(".env.")
+    ):
         return "credential, chat-export, or environment material is protected"
     if any(base.endswith(suffix) for suffix in GLOBAL_BLOCKED_SUFFIXES):
         return "runtime database or key material is protected"
@@ -268,6 +297,8 @@ def _ls_remote(remote_url: str, branch: str) -> str | None:
 def _normalize_required_commands(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list) or not value:
         raise ValueError("validation.required_commands must be a non-empty list")
+    if len(value) > MAX_REQUIRED_COMMANDS:
+        raise ValueError(f"validation.required_commands exceeds {MAX_REQUIRED_COMMANDS} rows")
     seen: set[str] = set()
     out: list[dict[str, Any]] = []
     for index, raw in enumerate(value):
@@ -277,11 +308,32 @@ def _normalize_required_commands(value: Any) -> list[dict[str, Any]]:
             raise ValueError(f"invalid or duplicate validation command id: {command_id}")
         seen.add(command_id)
         argv = row.get("argv")
-        if not isinstance(argv, list) or not argv or not all(isinstance(item, str) and item for item in argv):
-            raise ValueError(f"validation command {command_id} argv must be a non-empty string list")
-        for token in argv:
-            if token in SHELL_OPERATOR_TOKENS or "\x00" in token or "\n" in token or "\r" in token:
-                raise ValueError(f"validation command {command_id} contains shell/control syntax")
+        if (
+            not isinstance(argv, list)
+            or not argv
+            or len(argv) > MAX_ARGV_ITEMS
+            or not all(
+                isinstance(item, str)
+                and item
+                and len(item.encode("utf-8")) <= MAX_ARG_TOKEN_BYTES
+                and "\x00" not in item
+                and "\n" not in item
+                and "\r" not in item
+                for item in argv
+            )
+        ):
+            raise ValueError(f"validation command {command_id} argv is invalid or exceeds bounds")
+        if any(item in SHELL_OPERATOR_TOKENS or SHELL_META_RE.search(item) for item in argv):
+            raise ValueError(f"validation command {command_id} contains shell syntax")
+        executable = Path(argv[0]).name.lower()
+        if executable in SHELL_EXECUTABLES:
+            raise ValueError(f"validation command {command_id} may not use a shell executable")
+        if executable in POWERSHELL_EXECUTABLES:
+            lowered = {item.lower() for item in argv[1:]}
+            if "-file" not in lowered or {"-command", "-encodedcommand"} & lowered:
+                raise ValueError(
+                    f"validation command {command_id} PowerShell requires -File and denies -Command/-EncodedCommand"
+                )
         cwd = _safe_rel_path(row.get("cwd", "repo"), f"validation command {command_id} cwd")
         out.append({"id": command_id, "argv": list(argv), "cwd": cwd})
     return out
@@ -610,8 +662,17 @@ def verify_work_admission(
         return _admission_receipt(generated, checks, None, None, None, None, None)
 
     request_sha = sha256_file(request_path)
-    work_order_sha = sha256_file(work_order_path) if work_order_path.is_file() else None
-    capsule_sha = sha256_file(session_capsule_path) if session_capsule_path.is_file() else None
+    work_order_sha = None
+    if work_order_path.is_file() and work_order_path.stat().st_size <= MAX_WORK_ORDER_BYTES:
+        work_order_sha = sha256_file(work_order_path)
+    capsule_sha = None
+    if session_capsule_path.is_file() and session_capsule_path.stat().st_size <= MAX_JSON_BYTES:
+        capsule_sha = sha256_file(session_capsule_path)
+
+    if work_order_path.is_file() and work_order_path.stat().st_size > MAX_WORK_ORDER_BYTES:
+        _check(checks, "WORK_ORDER_SIZE", "FAIL", f"Work order exceeds {MAX_WORK_ORDER_BYTES} bytes.")
+    if session_capsule_path.is_file() and session_capsule_path.stat().st_size > MAX_JSON_BYTES:
+        _check(checks, "SESSION_CAPSULE_SIZE", "FAIL", f"Session capsule exceeds {MAX_JSON_BYTES} bytes.")
 
     if work_order_sha == request["task"]["task_body_sha256"]:
         _check(checks, "WORK_ORDER_SHA", "PASS", "Work-order bytes match task_body_sha256.", sha256=work_order_sha)

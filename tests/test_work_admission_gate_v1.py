@@ -17,8 +17,6 @@ from continuityos.gate.work_admission import (
     VALIDATION_SCHEMA,
     canonical_json_text,
     sha256_bytes,
-    canonical_json_text,
-    sha256_bytes,
     sha256_file,
     verify_work_admission,
     verify_work_delta,
@@ -511,6 +509,73 @@ class WorkspaceAndGitStateTests(unittest.TestCase):
                 expected_admission_receipt_sha256=sha256_file(fx.admission),
             )
             self.assertEqual(receipt["status"], DELTA_REVISE)
+
+
+class CrossPlatformAndCommandHardeningTests(unittest.TestCase):
+    def test_windows_reserved_path_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = WorkFixture(Path(td))
+            fx._write_inputs(mutate_request=lambda r: r["scope"].__setitem__("allowed_paths", ["src/NUL.txt"]))
+            self.assertEqual(fx.admit()["status"], ADMISSION_REVISE)
+
+    def test_colon_path_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = WorkFixture(Path(td))
+            fx._write_inputs(mutate_request=lambda r: r["scope"].__setitem__("allowed_paths", ["src/bad:name.py"]))
+            self.assertEqual(fx.admit()["status"], ADMISSION_REVISE)
+
+    def test_env_variant_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = WorkFixture(Path(td))
+            fx._write_inputs(mutate_request=lambda r: r["scope"].__setitem__("allowed_paths", ["config/.env.local"]))
+            self.assertEqual(fx.admit()["status"], ADMISSION_REVISE)
+
+    def test_shell_carrier_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = WorkFixture(Path(td))
+            fx._write_inputs(mutate_request=lambda r: r["validation"]["required_commands"][0].__setitem__(
+                "argv", ["bash", "-c", "pytest -q"]
+            ))
+            self.assertEqual(fx.admit()["status"], ADMISSION_REVISE)
+
+    def test_inline_shell_syntax_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = WorkFixture(Path(td))
+            fx._write_inputs(mutate_request=lambda r: r["validation"]["required_commands"][0].__setitem__(
+                "argv", ["python", "-c", "print(1); print(2)"]
+            ))
+            self.assertEqual(fx.admit()["status"], ADMISSION_REVISE)
+
+    def test_powershell_command_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = WorkFixture(Path(td))
+            fx._write_inputs(mutate_request=lambda r: r["validation"]["required_commands"][0].__setitem__(
+                "argv", ["powershell.exe", "-NoProfile", "-Command", "Get-ChildItem"]
+            ))
+            self.assertEqual(fx.admit()["status"], ADMISSION_REVISE)
+
+    def test_powershell_file_is_admissible(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = WorkFixture(Path(td))
+            fx._write_inputs(mutate_request=lambda r: r["validation"]["required_commands"][0].__setitem__(
+                "argv", ["powershell.exe", "-NoProfile", "-File", "tests/check.ps1"]
+            ))
+            self.assertEqual(fx.admit()["status"], ADMISSION_PASS)
+
+    def test_relative_workspace_root_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = WorkFixture(Path(td))
+            fx._write_inputs(mutate_request=lambda r: r["workspace"].update({
+                "mode": "DISPOSABLE_CLONE_REQUIRED",
+                "allowed_root_prefixes": ["relative/workspace"],
+            }))
+            self.assertEqual(fx.admit()["status"], ADMISSION_REVISE)
+
+    def test_oversize_request_rejected_without_parse(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = WorkFixture(Path(td))
+            fx.request.write_bytes(b"{" + b" " * (4 * 1024 * 1024 + 1) + b"}")
+            self.assertEqual(fx.admit()["status"], ADMISSION_REVISE)
 
 
 if __name__ == "__main__":

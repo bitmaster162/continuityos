@@ -25,10 +25,19 @@ A pass proves:
 - optional disposable-workspace allow/deny roots are enforced;
 - local and remote candidate-branch state match the admission request;
 - the candidate branch is separate from base/default branches;
-- allowed paths and resource limits are explicit;
+- allowed paths and resource limits are explicit; path components are checked for
+  POSIX traversal plus Windows-reserved/invalid names;
 - force push, merge, deployment, R63/current-state/registry apply, trading,
   wallet/order access and self-application are denied;
-- the remote base and candidate-branch state are exact when required.
+- the remote base and candidate-branch state are exact when required;
+- JSON/work-order inputs and validation command vectors are bounded; shell
+  carriers and embedded shell syntax are rejected, while PowerShell is allowed
+  only through `-File`.
+
+The request's `PRIVATE`/`PUBLIC` value is a policy assertion bound into the
+receipt. Local Git and `git ls-remote` cannot independently prove GitHub
+visibility; actual visibility must be supplied by the later authenticated GitHub
+transition/readback receipt.
 
 The receipt is effect-free and returns one status:
 

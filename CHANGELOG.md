@@ -4,6 +4,11 @@
 - Add effect-free pre-work admission binding for exact task, session capsule, Git baseline, candidate branch, path scope and effect ceiling.
 - Add post-work delta verification for linear ancestry, changed paths, resource budgets and exact test receipts.
 - Add four bundled JSON schemas, examples, documentation and adversarial tests.
+- Harden cross-platform path handling, bounded input sizes and validation-command
+  execution: Windows-reserved names, shell carriers, inline shell syntax and
+  PowerShell `-Command`/`-EncodedCommand` are rejected.
+- Clarify that repository visibility is policy-bound at admission and physically
+  proven only by the authenticated GitHub transition receipt.
 
 # Changelog
 
