@@ -33,6 +33,7 @@ INIT_PASS = "WORK_LEDGER_INIT_PASS"
 EXTEND_PASS = "WORK_LEDGER_EXTEND_PASS"
 FINALIZE_PASS = "WORK_LEDGER_FINALIZE_PASS"
 PROJECT_PASS = "WORK_LEDGER_PROJECT_PASS"
+EXTENSION_PASS = "WORK_LEDGER_EXTENSION_PASS"
 LEDGER_HOLD = "WORK_LEDGER_HOLD"
 LEDGER_REVISE = "WORK_LEDGER_REVISE"
 
@@ -593,6 +594,7 @@ def _initial_projection() -> dict[str, Any]:
         "conditions": [],
         "receipt_sha256s": [],
         "integration_candidate_eligible": False,
+        "integration_candidate_conditional": False,
         "apply_status": "NOT_APPLIED",
         "can_trade": False,
         "capital_permission": "DENY",
@@ -668,7 +670,12 @@ def _validate_event(event: Any, index: int, previous: dict[str, Any] | None, pro
     projection["event_count"] = index + 1
     projection["latest_sequence"] = index
     projection["latest_event_sha256"] = event_hash
-    projection["integration_candidate_eligible"] = state == STATE_CLOSED
+    projection["integration_candidate_eligible"] = (
+        state == STATE_CLOSED and projection.get("semantic_verdict") == "ACCEPT"
+    )
+    projection["integration_candidate_conditional"] = (
+        state == STATE_CLOSED and projection.get("semantic_verdict") == "PASS_WITH_CONDITIONS"
+    )
 
 
 def _read_ledger(path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -766,7 +773,19 @@ def project_work_ledger(path: Path) -> dict[str, Any]:
         )
 
 
+def _reject_symlink_parent_chain(path: Path, label: str) -> None:
+    candidate = path.expanduser().absolute()
+    current = candidate.parent
+    while True:
+        if current.exists() and current.is_symlink():
+            raise ValueError(f"{label} parent chain contains a symlink: {current}")
+        if current == current.parent:
+            break
+        current = current.parent
+
+
 def _prepare_output(output_path: Path, *, input_path: Path | None = None) -> None:
+    _reject_symlink_parent_chain(output_path, "output")
     if output_path.exists() or output_path.is_symlink():
         raise ValueError("output path already exists")
     if not output_path.parent.is_dir():
@@ -1151,9 +1170,69 @@ def finalize_work_ledger(ledger_path: Path, output_path: Path) -> dict[str, Any]
         )
 
 
+def verify_work_ledger_extension(before_path: Path, after_path: Path) -> dict[str, Any]:
+    try:
+        before_events, before_projection = _read_ledger(before_path)
+        after_events, after_projection = _read_ledger(after_path)
+        before_bytes = before_path.read_bytes()
+        after_bytes = after_path.read_bytes()
+        if len(after_events) != len(before_events) + 1:
+            raise ValueError("successor ledger must add exactly one event")
+        if not after_bytes.startswith(before_bytes):
+            raise ValueError("successor ledger does not preserve the exact input byte prefix")
+        if after_events[:-1] != before_events:
+            raise ValueError("successor ledger rewrote a prior event")
+        if before_projection["ledger_id"] != after_projection["ledger_id"]:
+            raise ValueError("successor ledger_id changed")
+        appended = after_events[-1]
+        return {
+            "schema": OPERATION_SCHEMA,
+            "generated_at_utc": _now(),
+            "status": EXTENSION_PASS,
+            "outcome": "EXACT_ONE_EVENT_EXTENSION",
+            "operation": "verify-extension",
+            "before_path": str(before_path),
+            "after_path": str(after_path),
+            "before_sha256": sha256_file(before_path),
+            "after_sha256": sha256_file(after_path),
+            "appended_event": {
+                "sequence": appended["sequence"],
+                "event_type": appended["event_type"],
+                "event_sha256": appended["event_sha256"],
+            },
+            "before_projection": before_projection,
+            "projection": after_projection,
+            "effect": "VERIFY_ONLY_NO_WRITE",
+            "live_state_modified": False,
+            "writes_performed": [],
+            "can_trade": False,
+            "capital_permission": "DENY",
+            "deploy_permission": "DENY",
+            "self_application": False,
+        }
+    except Exception as exc:
+        return {
+            "schema": OPERATION_SCHEMA,
+            "generated_at_utc": _now(),
+            "status": LEDGER_REVISE,
+            "outcome": "WOULD_HOLD",
+            "operation": "verify-extension",
+            "before_path": str(before_path),
+            "after_path": str(after_path),
+            "detail": f"{type(exc).__name__}: {exc}",
+            "effect": "VERIFY_ONLY_NO_WRITE",
+            "live_state_modified": False,
+            "writes_performed": [],
+            "can_trade": False,
+            "capital_permission": "DENY",
+            "deploy_permission": "DENY",
+            "self_application": False,
+        }
+
+
 def exit_code_for_work_ledger(receipt: dict[str, Any]) -> int:
     status = receipt.get("status")
-    if status in {VERIFY_PASS, INIT_PASS, EXTEND_PASS, FINALIZE_PASS, PROJECT_PASS}:
+    if status in {VERIFY_PASS, INIT_PASS, EXTEND_PASS, FINALIZE_PASS, PROJECT_PASS, EXTENSION_PASS}:
         return 0
     if status == LEDGER_HOLD:
         return 1

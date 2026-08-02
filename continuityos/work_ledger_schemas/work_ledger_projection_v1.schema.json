@@ -4,30 +4,90 @@
   "title": "ContinuityOS Work Ledger Projection v1",
   "type": "object",
   "required": [
-    "schema", "ledger_id", "authority_generation", "identity", "state",
-    "event_count", "latest_sequence", "latest_event_sha256",
-    "integration_candidate_eligible", "apply_status", "can_trade",
-    "capital_permission", "deploy_permission", "self_application"
+    "schema",
+    "ledger_id",
+    "authority_generation",
+    "identity",
+    "state",
+    "event_count",
+    "latest_sequence",
+    "latest_event_sha256",
+    "integration_candidate_eligible",
+    "integration_candidate_conditional",
+    "apply_status",
+    "can_trade",
+    "capital_permission",
+    "deploy_permission",
+    "self_application"
   ],
   "properties": {
-    "schema": {"const": "continuityos.work_ledger.projection/v1"},
-    "ledger_id": {"type": ["string", "null"]},
-    "authority_generation": {"const": "R63"},
-    "identity": {"type": ["object", "null"]},
-    "state": {
-      "enum": [
-        "ADMITTED", "DELTA_VERIFIED", "TRANSPORT_VERIFIED",
-        "SEMANTIC_ACCEPTED", "HELD", "SEMANTIC_REJECTED", "CLOSED", "REJECTED", null
+    "schema": {
+      "const": "continuityos.work_ledger.projection/v1"
+    },
+    "ledger_id": {
+      "type": [
+        "string",
+        "null"
       ]
     },
-    "event_count": {"type": "integer", "minimum": 0},
-    "latest_sequence": {"type": ["integer", "null"]},
-    "latest_event_sha256": {"type": ["string", "null"]},
-    "integration_candidate_eligible": {"type": "boolean"},
-    "apply_status": {"const": "NOT_APPLIED"},
-    "can_trade": {"const": false},
-    "capital_permission": {"const": "DENY"},
-    "deploy_permission": {"const": "DENY"},
-    "self_application": {"const": false}
+    "authority_generation": {
+      "const": "R63"
+    },
+    "identity": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "state": {
+      "enum": [
+        "ADMITTED",
+        "DELTA_VERIFIED",
+        "TRANSPORT_VERIFIED",
+        "SEMANTIC_ACCEPTED",
+        "HELD",
+        "SEMANTIC_REJECTED",
+        "CLOSED",
+        "REJECTED",
+        null
+      ]
+    },
+    "event_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "latest_sequence": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "latest_event_sha256": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "integration_candidate_eligible": {
+      "type": "boolean"
+    },
+    "apply_status": {
+      "const": "NOT_APPLIED"
+    },
+    "can_trade": {
+      "const": false
+    },
+    "capital_permission": {
+      "const": "DENY"
+    },
+    "deploy_permission": {
+      "const": "DENY"
+    },
+    "self_application": {
+      "const": false
+    },
+    "integration_candidate_conditional": {
+      "type": "boolean"
+    }
   }
 }

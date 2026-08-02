@@ -22,6 +22,10 @@
 - Reject duplicate receipt replay, terminal extension, self-acceptance,
   transport/Actions drift, non-canonical JSONL and hidden extra receipt fields.
 - Add four bundled JSON schemas, documentation and adversarial lifecycle tests.
+- Harden successor provenance with `verify-extension`, symlink-parent rejection
+  and separate unconditional versus conditional integration eligibility.
+- Document that actor-role fields are content bindings; external receipt hashes
+  and Git commits remain the identity/provenance anchors.
 
 
 ## Unreleased — GitHub Work Admission Gate v1

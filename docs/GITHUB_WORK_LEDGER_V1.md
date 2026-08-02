@@ -155,8 +155,22 @@ Verification rejects:
 - semantic self-apply or candidate mismatch.
 
 Projection emits the current state, exact receipt chain, candidate and remote
-HEAD/tree, semantic verdict, conditions and whether the closed work is an
-**integration candidate**. Integration itself remains a separate future gate.
+HEAD/tree, semantic verdict and conditions. `ACCEPT` produces an unconditional
+`integration_candidate_eligible=true`; `PASS_WITH_CONDITIONS` produces only
+`integration_candidate_conditional=true`. Integration itself remains a separate
+future gate.
+
+Prove that one stored successor did not rewrite prior events:
+
+```bash
+continuity work-ledger verify-extension \
+  --before work-02-transport.jsonl \
+  --after work-03-reviewed.jsonl
+```
+
+The verifier requires the exact input byte prefix plus exactly one canonical,
+valid event. This provides an append-only relation even when two standalone
+ledger files are copied outside Git.
 
 ## State machine
 
@@ -170,3 +184,14 @@ ADMITTED
 ```
 
 No event may be appended after `WORK_CLOSED` or `WORK_REJECTED`.
+
+## Provenance boundary
+
+Actor roles and receipt fields are deterministic content bindings, not digital
+signatures. A fabricated file can claim an actor role. Trust therefore comes
+from the exact external receipt SHA, authenticated GitHub readback, and the Git
+commit that anchors the ledger bytes. The ledger detects drift and illegal
+transitions; it does not replace host or controller identity attestation.
+
+Output files are refused when any existing parent component is a symlink, which
+prevents an apparently local successor path from silently redirecting elsewhere.

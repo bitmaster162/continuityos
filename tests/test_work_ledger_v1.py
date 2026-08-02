@@ -10,6 +10,7 @@ from unittest import mock
 from continuityos.gate.work_ledger import (
     EVENT_SCHEMA,
     EXTEND_PASS,
+    EXTENSION_PASS,
     FINALIZE_PASS,
     INIT_PASS,
     LEDGER_HOLD,
@@ -28,6 +29,7 @@ from continuityos.gate.work_ledger import (
     project_work_ledger,
     sha256_file,
     verify_work_ledger,
+    verify_work_ledger_extension,
 )
 
 
@@ -393,6 +395,16 @@ class WorkLedgerTests(unittest.TestCase):
             self.assertEqual(final["status"], FINALIZE_PASS)
             self.assertEqual(final["projection"]["state"], "CLOSED")
             self.assertTrue(final["projection"]["integration_candidate_eligible"])
+            self.assertFalse(final["projection"]["integration_candidate_conditional"])
+
+    def test_pass_with_conditions_is_conditional_not_unconditional(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = Fixture(Path(td)); fx.full_to_transport()
+            fx.append_semantic("PASS_WITH_CONDITIONS", ["human review required"])
+            final = finalize_work_ledger(fx.l3, fx.l4)
+            self.assertEqual(final["status"], FINALIZE_PASS)
+            self.assertFalse(final["projection"]["integration_candidate_eligible"])
+            self.assertTrue(final["projection"]["integration_candidate_conditional"])
 
     def test_fable_cannot_semantically_accept(self):
         with tempfile.TemporaryDirectory() as td:
@@ -485,6 +497,46 @@ class WorkLedgerTests(unittest.TestCase):
             event["event_sha256"] = _event_digest(event)
             fx.l0.write_text(canonical_json_text(event), encoding="utf-8")
             self.assertEqual(verify_work_ledger(fx.l0)["status"], LEDGER_REVISE)
+
+    def test_exact_extension_passes(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = Fixture(Path(td)); fx.init(); fx.append_delta()
+            receipt = verify_work_ledger_extension(fx.l0, fx.l1)
+            self.assertEqual(receipt["status"], EXTENSION_PASS)
+            self.assertEqual(receipt["appended_event"]["event_type"], "DELTA_VERIFIED")
+
+    def test_extension_rejects_two_events(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = Fixture(Path(td)); fx.init(); fx.append_delta(); fx.append_transport()
+            receipt = verify_work_ledger_extension(fx.l0, fx.l2)
+            self.assertEqual(receipt["status"], LEDGER_REVISE)
+
+    def test_extension_rejects_valid_rewritten_prefix(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = Fixture(Path(td)); fx.init(); fx.append_delta()
+            lines = [json.loads(line) for line in fx.l1.read_text().splitlines()]
+            lines[0]["recorded_at_utc"] = "2020-01-01T00:00:00+00:00"
+            lines[0]["event_sha256"] = _event_digest(lines[0])
+            lines[1]["recorded_at_utc"] = "2020-01-01T00:00:01+00:00"
+            lines[1]["prev_event_sha256"] = lines[0]["event_sha256"]
+            lines[1]["event_sha256"] = _event_digest(lines[1])
+            rewritten = fx.root / "rewritten.jsonl"
+            rewritten.write_text("".join(canonical_json_text(event) for event in lines), encoding="utf-8")
+            self.assertEqual(verify_work_ledger(rewritten)["status"], VERIFY_PASS)
+            self.assertEqual(verify_work_ledger_extension(fx.l0, rewritten)["status"], LEDGER_REVISE)
+
+    def test_output_parent_symlink_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = Fixture(Path(td))
+            real = fx.root / "real"; real.mkdir()
+            link = fx.root / "link"
+            try:
+                link.symlink_to(real, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink creation is unavailable")
+            receipt = initialize_work_ledger(fx.admission, link / "ledger.jsonl")
+            self.assertEqual(receipt["status"], LEDGER_REVISE)
+            self.assertFalse((real / "ledger.jsonl").exists())
 
 
 if __name__ == "__main__":

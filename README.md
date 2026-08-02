@@ -475,6 +475,7 @@ continuity work-ledger append-transport --ledger work-01.jsonl --transport-recei
 continuity work-ledger append-semantic --ledger work-02.jsonl --semantic-decision GPT_DECISION.json --out work-03.jsonl
 continuity work-ledger finalize --ledger work-03.jsonl --out work-04.jsonl
 continuity work-ledger verify --ledger work-04.jsonl
+continuity work-ledger verify-extension --before work-03.jsonl --after work-04.jsonl
 ```
 
 Each command creates a new successor ledger instead of mutating the input.

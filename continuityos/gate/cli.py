@@ -25,6 +25,7 @@
   continuity work-ledger append-semantic ...  # append GPT-only semantic decision
   continuity work-ledger finalize ...      # close accepted/rejected work without apply
   continuity work-ledger verify ...        # verify hash chain and legal transitions
+  continuity work-ledger verify-extension ... # prove exact one-event append relation
   continuity audit                        # show + verify the audit ledger
 """
 from __future__ import annotations
@@ -79,6 +80,7 @@ from .work_ledger import (
     initialize_work_ledger,
     project_work_ledger,
     verify_work_ledger,
+    verify_work_ledger_extension,
 )
 )
 
@@ -807,6 +809,11 @@ def main(argv=None):
         "verify", help="verify canonical JSONL, hash chain and state transitions"
     )
     work_ledger_verify.add_argument("--ledger", required=True)
+    work_ledger_extension = work_ledger_sub.add_parser(
+        "verify-extension", help="prove a successor is the exact input prefix plus one event"
+    )
+    work_ledger_extension.add_argument("--before", required=True)
+    work_ledger_extension.add_argument("--after", required=True)
     work_ledger_project = work_ledger_sub.add_parser(
         "project", help="project one verified ledger into compact current state"
     )
@@ -928,6 +935,11 @@ def main(argv=None):
                 )
             elif a.work_ledger_cmd == "verify":
                 receipt = verify_work_ledger(Path(a.ledger).expanduser())
+            elif a.work_ledger_cmd == "verify-extension":
+                receipt = verify_work_ledger_extension(
+                    Path(a.before).expanduser(),
+                    Path(a.after).expanduser(),
+                )
             else:
                 receipt = project_work_ledger(Path(a.ledger).expanduser())
             print(work_ledger_json_text(receipt), end="")
