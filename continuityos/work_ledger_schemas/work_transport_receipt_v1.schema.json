@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "continuityos.work_transport.receipt/v1",
+  "title": "ContinuityOS Work Transport Receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "authority_generation", "task_id", "admission_binding_sha256",
+    "delta_receipt_sha256", "repository", "candidate", "remote", "actions",
+    "executor", "terminal", "effects"
+  ],
+  "properties": {
+    "schema": {"const": "continuityos.work_transport.receipt/v1"},
+    "authority_generation": {"const": "R63"},
+    "task_id": {"type": "string", "minLength": 3, "maxLength": 128},
+    "admission_binding_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "delta_receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner", "name", "remote_url", "visibility", "candidate_branch"],
+      "properties": {
+        "owner": {"type": "string"},
+        "name": {"type": "string"},
+        "remote_url": {"type": "string"},
+        "visibility": {"enum": ["PRIVATE", "PUBLIC"]},
+        "candidate_branch": {"type": "string"}
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["head", "tree"],
+      "properties": {
+        "head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    "remote": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["head", "tree", "visibility"],
+      "properties": {
+        "head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "visibility": {"enum": ["PRIVATE", "PUBLIC"]}
+      }
+    },
+    "actions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "run_id", "head_sha", "conclusion"],
+      "properties": {
+        "status": {"enum": ["SUCCESS", "NOT_CONFIGURED"]},
+        "run_id": {"type": ["integer", "null"]},
+        "head_sha": {"type": ["string", "null"]},
+        "conclusion": {"enum": ["success", "not_configured"]}
+      }
+    },
+    "executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "id"],
+      "properties": {
+        "role": {"const": "HOST_EXECUTOR"},
+        "id": {"type": "string", "minLength": 1, "maxLength": 128}
+      }
+    },
+    "terminal": {"const": "WORK_TRANSPORT_PASS"},
+    "effects": {"type": "object"}
+  }
+}

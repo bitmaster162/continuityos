@@ -19,6 +19,12 @@
   continuity work-admission run-validation ... # execute exact admitted argv and capture raw bytes
   continuity work-admission verify-validation ... # rehash validation evidence independently
   continuity work-admission verify-delta ... # verify committed candidate before transport
+  continuity work-ledger init ...          # create immutable ledger from admission receipt
+  continuity work-ledger append-delta ...  # append exact WORK_DELTA_PASS to successor ledger
+  continuity work-ledger append-transport ... # append exact GitHub transport receipt
+  continuity work-ledger append-semantic ...  # append GPT-only semantic decision
+  continuity work-ledger finalize ...      # close accepted/rejected work without apply
+  continuity work-ledger verify ...        # verify hash chain and legal transitions
   continuity audit                        # show + verify the audit ledger
 """
 from __future__ import annotations
@@ -62,6 +68,18 @@ from .work_validation import (
     exit_code_for_work_validation_evidence,
     exit_code_for_work_validation_execution,
     verify_work_validation_evidence,
+)
+from .work_ledger import (
+    append_work_delta,
+    append_work_semantic_review,
+    append_work_transport,
+    canonical_json_text as work_ledger_json_text,
+    exit_code_for_work_ledger,
+    finalize_work_ledger,
+    initialize_work_ledger,
+    project_work_ledger,
+    verify_work_ledger,
+)
 )
 
 LEGACY_GATE_AVAILABLE = None
@@ -752,6 +770,48 @@ def main(argv=None):
     work_admission_delta.add_argument("--remote-name", dest="remote_name", default="origin")
     work_admission_delta.add_argument("--check-remote", dest="check_remote", action="store_true")
 
+    work_ledger = sub.add_parser(
+        "work-ledger",
+        help="maintain an immutable hash-chained GitHub work lifecycle without apply",
+    )
+    work_ledger_sub = work_ledger.add_subparsers(dest="work_ledger_cmd", required=True)
+    work_ledger_init = work_ledger_sub.add_parser(
+        "init", help="create a new ledger from one exact WORK_ADMISSION_PASS receipt"
+    )
+    work_ledger_init.add_argument("--admission-receipt", required=True)
+    work_ledger_init.add_argument("--out", required=True)
+    work_ledger_delta = work_ledger_sub.add_parser(
+        "append-delta", help="append one exact WORK_DELTA_PASS to a successor ledger"
+    )
+    work_ledger_delta.add_argument("--ledger", required=True)
+    work_ledger_delta.add_argument("--delta-receipt", required=True)
+    work_ledger_delta.add_argument("--out", required=True)
+    work_ledger_transport = work_ledger_sub.add_parser(
+        "append-transport", help="append one exact GitHub transport receipt"
+    )
+    work_ledger_transport.add_argument("--ledger", required=True)
+    work_ledger_transport.add_argument("--transport-receipt", required=True)
+    work_ledger_transport.add_argument("--out", required=True)
+    work_ledger_semantic = work_ledger_sub.add_parser(
+        "append-semantic", help="append one GPT_CONTROLLER semantic decision"
+    )
+    work_ledger_semantic.add_argument("--ledger", required=True)
+    work_ledger_semantic.add_argument("--semantic-decision", required=True)
+    work_ledger_semantic.add_argument("--out", required=True)
+    work_ledger_finalize = work_ledger_sub.add_parser(
+        "finalize", help="create a terminal CLOSED/REJECTED successor ledger"
+    )
+    work_ledger_finalize.add_argument("--ledger", required=True)
+    work_ledger_finalize.add_argument("--out", required=True)
+    work_ledger_verify = work_ledger_sub.add_parser(
+        "verify", help="verify canonical JSONL, hash chain and state transitions"
+    )
+    work_ledger_verify.add_argument("--ledger", required=True)
+    work_ledger_project = work_ledger_sub.add_parser(
+        "project", help="project one verified ledger into compact current state"
+    )
+    work_ledger_project.add_argument("--ledger", required=True)
+
     memory_promotion = sub.add_parser(
         "memory-promotion",
         help="evaluate a proposal-only memory promotion candidate",
@@ -823,6 +883,59 @@ def main(argv=None):
             print(work_admission_json_text({
                 "schema": "continuityos.work_admission.internal_error/v1",
                 "status": "WORK_ADMISSION_REVISE",
+                "outcome": "WOULD_HOLD",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "effect": "VERIFY_ONLY_NO_WRITE",
+                "live_state_modified": False,
+                "writes_performed": [],
+                "can_trade": False,
+                "capital_permission": "DENY",
+                "deploy_permission": "DENY",
+                "self_application": False,
+            }), end="")
+            return 2
+
+    if a.cmd == "work-ledger":
+        try:
+            if a.work_ledger_cmd == "init":
+                receipt = initialize_work_ledger(
+                    Path(a.admission_receipt).expanduser(),
+                    Path(a.out).expanduser(),
+                )
+            elif a.work_ledger_cmd == "append-delta":
+                receipt = append_work_delta(
+                    Path(a.ledger).expanduser(),
+                    Path(a.delta_receipt).expanduser(),
+                    Path(a.out).expanduser(),
+                )
+            elif a.work_ledger_cmd == "append-transport":
+                receipt = append_work_transport(
+                    Path(a.ledger).expanduser(),
+                    Path(a.transport_receipt).expanduser(),
+                    Path(a.out).expanduser(),
+                )
+            elif a.work_ledger_cmd == "append-semantic":
+                receipt = append_work_semantic_review(
+                    Path(a.ledger).expanduser(),
+                    Path(a.semantic_decision).expanduser(),
+                    Path(a.out).expanduser(),
+                )
+            elif a.work_ledger_cmd == "finalize":
+                receipt = finalize_work_ledger(
+                    Path(a.ledger).expanduser(),
+                    Path(a.out).expanduser(),
+                )
+            elif a.work_ledger_cmd == "verify":
+                receipt = verify_work_ledger(Path(a.ledger).expanduser())
+            else:
+                receipt = project_work_ledger(Path(a.ledger).expanduser())
+            print(work_ledger_json_text(receipt), end="")
+            return exit_code_for_work_ledger(receipt)
+        except Exception as exc:
+            print(work_ledger_json_text({
+                "schema": "continuityos.work_ledger.internal_error/v1",
+                "status": "WORK_LEDGER_REVISE",
                 "outcome": "WOULD_HOLD",
                 "error_type": type(exc).__name__,
                 "error": str(exc),

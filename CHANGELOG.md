@@ -8,6 +8,22 @@
 - Reject direct network/install command vectors when the admitted policy denies those effects.
 - Add four packaged schemas, examples, documentation and adversarial tests.
 
+## Unreleased — GitHub Work Ledger v1
+
+- Add a canonical JSONL, SHA-256-chained lifecycle for admitted GitHub work:
+  admission, verified delta, authenticated transport, GPT semantic review and
+  terminal close/reject.
+- Add immutable successor-file operations (`init`, `append-delta`,
+  `append-transport`, `append-semantic`, `finalize`) plus effect-free `verify`
+  and `project` commands.
+- Bind exact admission/delta/transport/semantic receipt bytes, candidate and
+  remote HEAD/tree, GitHub Actions, actor roles, R63 and the full DENY effect
+  ceiling.
+- Reject duplicate receipt replay, terminal extension, self-acceptance,
+  transport/Actions drift, non-canonical JSONL and hidden extra receipt fields.
+- Add four bundled JSON schemas, documentation and adversarial lifecycle tests.
+
+
 ## Unreleased — GitHub Work Admission Gate v1
 
 - Add effect-free pre-work admission binding for exact task, session capsule, Git baseline, candidate branch, path scope and effect ceiling.

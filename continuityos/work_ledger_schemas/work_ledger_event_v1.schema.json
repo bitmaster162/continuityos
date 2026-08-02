@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "continuityos.work_ledger.event/v1",
+  "title": "ContinuityOS Work Ledger Event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "ledger_id", "sequence", "event_type", "recorded_at_utc",
+    "actor", "prev_event_sha256", "payload", "effects", "event_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "continuityos.work_ledger.event/v1"},
+    "ledger_id": {"type": "string", "pattern": "^wl-[0-9a-f]{32}$"},
+    "sequence": {"type": "integer", "minimum": 0, "maximum": 999},
+    "event_type": {
+      "enum": [
+        "ADMISSION_VERIFIED", "DELTA_VERIFIED", "TRANSPORT_VERIFIED",
+        "SEMANTIC_REVIEWED", "WORK_CLOSED", "WORK_REJECTED"
+      ]
+    },
+    "recorded_at_utc": {"type": "string", "format": "date-time"},
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "id"],
+      "properties": {
+        "role": {"enum": ["CONTINUITY_GATE", "HOST_EXECUTOR", "GPT_CONTROLLER"]},
+        "id": {"type": "string", "minLength": 1, "maxLength": 128}
+      }
+    },
+    "prev_event_sha256": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      ]
+    },
+    "payload": {"type": "object"},
+    "effects": {
+      "type": "object",
+      "required": [
+        "force_push", "merge", "pull_request_merge", "deployment",
+        "registry_apply", "current_state_apply", "r63_apply", "trading",
+        "wallet_access", "order_execution", "external_message",
+        "self_application", "can_trade", "capital_permission", "deploy_permission"
+      ]
+    },
+    "event_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

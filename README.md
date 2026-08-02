@@ -464,6 +464,25 @@ branch, push, merge, deploy, apply R63/current state, trade or use capital. See
 `docs/GITHUB_WORK_ADMISSION_GATE_V1.md` and
 `docs/GITHUB_WORK_VALIDATION_EVIDENCE_V1.md`.
 
+## GitHub Work Ledger v1
+
+Persist one admitted GitHub work run as an immutable receipt chain:
+
+```bash
+continuity work-ledger init --admission-receipt ADMISSION.json --out work-00.jsonl
+continuity work-ledger append-delta --ledger work-00.jsonl --delta-receipt DELTA.json --out work-01.jsonl
+continuity work-ledger append-transport --ledger work-01.jsonl --transport-receipt TRANSPORT.json --out work-02.jsonl
+continuity work-ledger append-semantic --ledger work-02.jsonl --semantic-decision GPT_DECISION.json --out work-03.jsonl
+continuity work-ledger finalize --ledger work-03.jsonl --out work-04.jsonl
+continuity work-ledger verify --ledger work-04.jsonl
+```
+
+Each command creates a new successor ledger instead of mutating the input.
+Receipt hashes, candidate/remote HEAD and tree, GitHub Actions, GPT-only semantic
+review, R63 and all DENY effect ceilings are hash-chained. A closed ledger is
+only an integration candidate; it does not merge, deploy or apply state. See
+`docs/GITHUB_WORK_LEDGER_V1.md`.
+
 ## Common Operational Context v1
 
 Create a bounded, evidence-bound context pack from a quiescent local Common
