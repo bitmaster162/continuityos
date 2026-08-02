@@ -49,5 +49,14 @@
   "can_trade": false,
   "capital_permission": "DENY",
   "deploy_permission": "DENY",
-  "self_application": false
+  "self_application": false,
+  "workspace": {
+    "mode": "DISPOSABLE_CLONE_REQUIRED",
+    "allowed_root_prefixes": [
+      "D:/GITHUB_WORKSPACE"
+    ],
+    "forbidden_root_prefixes": [
+      "C:/PROJECTS"
+    ]
+  }
 }

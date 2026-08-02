@@ -80,6 +80,11 @@ GLOBAL_BLOCKED_SUFFIXES = (
     ".shm",
 )
 SHELL_OPERATOR_TOKENS = {"&&", "||", "|", ">", ">>", "<", "<<", ";", "`"}
+WORKSPACE_MODES = {"ANY_CLEAN_GIT_ROOT", "DISPOSABLE_CLONE_REQUIRED"}
+GIT_OPERATION_MARKERS = (
+    "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG",
+    "rebase-apply", "rebase-merge",
+)
 
 
 def canonical_json_text(value: Any) -> str:
@@ -153,6 +158,30 @@ def _safe_rel_path(value: Any, label: str) -> str:
     if re.match(r"^[A-Za-z]:", text):
         raise ValueError(f"{label} must not be a Windows drive path")
     return str(p)
+
+
+def _normalize_host_path(path: Path) -> str:
+    return os.path.normcase(str(path.expanduser().resolve())).replace("\\", "/").rstrip("/")
+
+
+def _under_host_prefix(path: Path, prefix: str) -> bool:
+    normalized = _normalize_host_path(path)
+    prefix_norm = _normalize_host_path(Path(prefix))
+    return normalized == prefix_norm or normalized.startswith(prefix_norm + "/")
+
+
+def _normalize_host_roots(value: Any, label: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise ValueError(f"{label} must be a list of non-empty strings")
+    out: list[str] = []
+    for item in value:
+        if "\x00" in item:
+            raise ValueError(f"{label} contains a NUL byte")
+        if item not in out:
+            out.append(item)
+    return out
 
 
 def _normalize_paths(value: Any, label: str, *, minimum: int = 0) -> list[str]:
@@ -329,6 +358,15 @@ def normalize_work_admission_request(value: dict[str, Any]) -> dict[str, Any]:
     allow_deletions = _require_bool(scope.get("allow_deletions"), "scope.allow_deletions")
     allow_binary_files = _require_bool(scope.get("allow_binary_files", False), "scope.allow_binary_files")
 
+    workspace = _require_dict(value.get("workspace", {}), "workspace")
+    workspace_mode = workspace.get("mode", "ANY_CLEAN_GIT_ROOT")
+    if workspace_mode not in WORKSPACE_MODES:
+        raise ValueError("workspace.mode is invalid")
+    allowed_root_prefixes = _normalize_host_roots(workspace.get("allowed_root_prefixes", []), "workspace.allowed_root_prefixes")
+    forbidden_root_prefixes = _normalize_host_roots(workspace.get("forbidden_root_prefixes", []), "workspace.forbidden_root_prefixes")
+    if workspace_mode == "DISPOSABLE_CLONE_REQUIRED" and not allowed_root_prefixes:
+        raise ValueError("DISPOSABLE_CLONE_REQUIRED needs allowed_root_prefixes")
+
     effects = _require_dict(value.get("effects"), "effects")
     normalized_effects: dict[str, Any] = {}
     for key in ("worktree_write", "test_execution", "local_commit", "candidate_push", "workflow_changes"):
@@ -409,6 +447,11 @@ def normalize_work_admission_request(value: dict[str, Any]) -> dict[str, Any]:
             "allow_binary_files": allow_binary_files,
             "allow_archive_files": allow_archive_files,
         },
+        "workspace": {
+            "mode": workspace_mode,
+            "allowed_root_prefixes": allowed_root_prefixes,
+            "forbidden_root_prefixes": forbidden_root_prefixes,
+        },
         "effects": normalized_effects,
         "session": {
             "required_role": required_role,
@@ -466,6 +509,8 @@ def _verify_capsule(capsule: dict[str, Any], request: dict[str, Any]) -> list[st
     capsule_allowed = capsule.get("allowed_paths")
     if capsule_allowed != scope["allowed_paths"]:
         errors.append("session capsule allowed_paths mismatch")
+    if capsule.get("workspace") != request["workspace"]:
+        errors.append("session capsule workspace binding mismatch")
     for key in DANGEROUS_EFFECTS:
         if capsule.get(key, False) is not False:
             errors.append(f"session capsule {key} must be false")
@@ -488,6 +533,8 @@ def _verify_capsule(capsule: dict[str, Any], request: dict[str, Any]) -> list[st
 
 
 def _observed_repository(repo_path: Path, remote_name: str) -> dict[str, Any]:
+    if repo_path.expanduser().is_symlink():
+        raise ValueError("repo path may not be a symlink")
     resolved = repo_path.expanduser().resolve(strict=True)
     top = Path(_git(resolved, "rev-parse", "--show-toplevel")).resolve(strict=True)
     if top != resolved:
@@ -497,6 +544,12 @@ def _observed_repository(repo_path: Path, remote_name: str) -> dict[str, Any]:
     tree = _git(resolved, "rev-parse", "HEAD^{tree}")
     status = _git(resolved, "status", "--porcelain=v1", "-uall")
     remote_url = _git(resolved, "remote", "get-url", remote_name)
+    git_dir_raw = _git(resolved, "rev-parse", "--git-dir")
+    git_dir = Path(git_dir_raw)
+    if not git_dir.is_absolute():
+        git_dir = (resolved / git_dir).resolve()
+    active_operations = [name for name in GIT_OPERATION_MARKERS if (git_dir / name).exists()]
+    fsck = _run(["git", "fsck", "--full", "--strict"], cwd=resolved, check=False)
     return {
         "path": str(resolved),
         "branch": branch,
@@ -506,6 +559,10 @@ def _observed_repository(repo_path: Path, remote_name: str) -> dict[str, Any]:
         "porcelain": status.splitlines() if status else [],
         "remote_name": remote_name,
         "remote_url": remote_url,
+        "git_dir": str(git_dir),
+        "active_operations": active_operations,
+        "git_fsck": "PASS" if fsck.returncode == 0 else "FAIL",
+        "git_fsck_stderr": fsck.stderr.strip(),
     }
 
 
@@ -526,6 +583,7 @@ def _binding_payload(request_sha: str, work_order_sha: str, capsule_sha: str, re
             "candidate_branch": request["repository"]["candidate_branch"],
         },
         "scope": request["scope"],
+        "workspace": request["workspace"],
         "effects": request["effects"],
         "validation": request["validation"],
         "terminal_condition": request["task"]["terminal_condition"],
@@ -590,6 +648,26 @@ def verify_work_admission(
             errors.append("tree mismatch")
         if not observed["worktree_clean"]:
             errors.append("worktree is dirty")
+        if observed.get("active_operations"):
+            errors.append("Git operation in progress: " + ", ".join(observed["active_operations"]))
+        if observed.get("git_fsck") != "PASS":
+            errors.append("git fsck --full --strict failed")
+        workspace = request["workspace"]
+        if any(_under_host_prefix(Path(observed["path"]), prefix) for prefix in workspace["forbidden_root_prefixes"]):
+            errors.append("repository is under a forbidden workspace root")
+        if workspace["mode"] == "DISPOSABLE_CLONE_REQUIRED" and not any(
+            _under_host_prefix(Path(observed["path"]), prefix) for prefix in workspace["allowed_root_prefixes"]
+        ):
+            errors.append("repository is outside every allowed disposable workspace root")
+        candidate_proc = _run(
+            ["git", "show-ref", "--verify", f"refs/heads/{expected_repo['candidate_branch']}"],
+            cwd=Path(observed["path"]), check=False,
+        )
+        local_candidate = candidate_proc.stdout.split()[0] if candidate_proc.returncode == 0 and candidate_proc.stdout.strip() else None
+        observed["local_candidate_head"] = local_candidate
+        expected_local_candidate = expected_repo["existing_candidate_head"]
+        if local_candidate != expected_local_candidate:
+            errors.append("local candidate branch state differs from admission request")
         try:
             observed_remote = _canonical_github_repo(observed["remote_url"])
             expected_remote = _canonical_github_repo(expected_repo["remote_url"])
@@ -696,8 +774,12 @@ def _validate_admission_binding(receipt: dict[str, Any]) -> tuple[dict[str, Any]
     request = normalize_work_admission_request(_require_dict(receipt.get("request"), "admission request"))
     if binding.get("task_id") != request["task"]["task_id"]:
         raise ValueError("admission binding task mismatch")
-    if binding.get("scope") != request["scope"] or binding.get("effects") != request["effects"]:
-        raise ValueError("admission binding scope/effects mismatch")
+    if (
+        binding.get("scope") != request["scope"]
+        or binding.get("workspace") != request["workspace"]
+        or binding.get("effects") != request["effects"]
+    ):
+        raise ValueError("admission binding scope/workspace/effects mismatch")
     return request, digest
 
 
@@ -838,6 +920,16 @@ def verify_work_delta(
             errors.append("current branch is not the admitted candidate branch")
         if not observed["worktree_clean"]:
             errors.append("candidate worktree is dirty")
+        if observed.get("active_operations"):
+            errors.append("candidate has an active Git operation")
+        if observed.get("git_fsck") != "PASS":
+            errors.append("candidate git fsck failed")
+        diff_check = _run(
+            ["git", "diff", "--check", request["repository"]["base_head"], observed["head"]],
+            cwd=Path(observed["path"]), check=False,
+        )
+        if diff_check.returncode != 0:
+            errors.append("git diff --check failed")
         base = request["repository"]["base_head"]
         merge_base = _git(Path(observed["path"]), "merge-base", base, head)
         if merge_base != base:

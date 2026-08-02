@@ -99,5 +99,14 @@
   "evidence": {
     "accepted_parent_terminal": "WINDOWS_SEMANTIC_CLOSE_V1_2_R9_3_PASS",
     "accepted_parent_receipt_sha256": "b66302d25b6b74fabdd4c0e8962773f909ffbac868f3caedc6a8c2d110a136e1"
+  },
+  "workspace": {
+    "mode": "DISPOSABLE_CLONE_REQUIRED",
+    "allowed_root_prefixes": [
+      "D:/GITHUB_WORKSPACE"
+    ],
+    "forbidden_root_prefixes": [
+      "C:/PROJECTS"
+    ]
   }
 }

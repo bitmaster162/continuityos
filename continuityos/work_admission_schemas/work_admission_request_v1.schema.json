@@ -39,6 +39,9 @@
     },
     "evidence": {
       "type": "object"
+    },
+    "workspace": {
+      "type": "object"
     }
   },
   "additionalProperties": false

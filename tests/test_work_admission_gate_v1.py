@@ -86,6 +86,11 @@ class WorkFixture:
                 "allow_binary_files": False,
                 "allow_archive_files": False,
             },
+            "workspace": {
+                "mode": "ANY_CLEAN_GIT_ROOT",
+                "allowed_root_prefixes": [],
+                "forbidden_root_prefixes": [],
+            },
             "effects": {
                 "worktree_write": True,
                 "test_execution": True,
@@ -139,6 +144,7 @@ class WorkFixture:
                 "candidate_branch": request["repository"]["candidate_branch"],
             },
             "allowed_paths": request["scope"]["allowed_paths"],
+            "workspace": request["workspace"],
             "terminal_condition": request["task"]["terminal_condition"],
             "effects": request["effects"],
             "can_trade": False,
@@ -456,6 +462,22 @@ class HardeningRegressionTests(unittest.TestCase):
                 self.skipTest("symlink unavailable")
             run(["git", "add", "."], fx.repo); run(["git", "commit", "-m", "symlink"], fx.repo); fx.write_validation(admission)
             self.assertEqual(verify_work_delta(fx.admission, fx.validation, fx.repo, expected_admission_receipt_sha256=sha256_file(fx.admission))["status"], DELTA_REVISE)
+
+
+class WorkspaceAndGitStateTests(unittest.TestCase):
+    def test_forbidden_workspace_root_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = WorkFixture(Path(td))
+            fx._write_inputs(mutate_request=lambda r: r["workspace"].update({
+                "forbidden_root_prefixes": [str(fx.root)]
+            }))
+            self.assertEqual(fx.admit()["status"], ADMISSION_REVISE)
+
+    def test_existing_local_candidate_conflict_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = WorkFixture(Path(td))
+            run(["git", "branch", "gpt/candidate"], fx.repo)
+            self.assertEqual(fx.admit()["status"], ADMISSION_REVISE)
 
 
 if __name__ == "__main__":
