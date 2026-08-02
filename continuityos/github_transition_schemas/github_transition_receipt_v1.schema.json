@@ -1,0 +1,67 @@
+{
+  "$id": "continuityos.github_transition.receipt/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "can_trade": {
+      "const": false
+    },
+    "capital_permission": {
+      "const": "DENY"
+    },
+    "checks": {
+      "type": "array"
+    },
+    "deploy_permission": {
+      "const": "DENY"
+    },
+    "physical_status": {
+      "enum": [
+        "BYTE_VERIFIED",
+        "TRIPLET_INCOMPLETE",
+        "TASK_BINDING_INCOMPLETE",
+        "INVALID_RETURN",
+        "NOT_FOUND"
+      ]
+    },
+    "r63_apply": {
+      "const": false
+    },
+    "registry_apply": {
+      "const": false
+    },
+    "repositories": {
+      "type": "array"
+    },
+    "schema": {
+      "const": "continuityos.github_transition.receipt/v1"
+    },
+    "self_application": {
+      "const": false
+    },
+    "slots": {
+      "type": "array"
+    },
+    "terminal": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "physical_status",
+    "terminal",
+    "checks",
+    "slots",
+    "repositories",
+    "registry_apply",
+    "r63_apply",
+    "can_trade",
+    "capital_permission",
+    "deploy_permission",
+    "self_application"
+  ],
+  "type": "object"
+}

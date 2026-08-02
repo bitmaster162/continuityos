@@ -1,0 +1,35 @@
+{
+  "$id": "continuityos.github_transition.ready/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "artifact_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "artifact_zip": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema": {
+      "const": "READY_FOR_SYNC_V1"
+    },
+    "terminal_status": {
+      "enum": [
+        "FINAL_HOST_CLOSURE_AND_GITHUB_TRANSITION_COMPLETE",
+        "FINAL_HOST_CLOSURE_AND_GITHUB_TRANSITION_REVISE"
+      ]
+    },
+    "written_last": {
+      "const": true
+    }
+  },
+  "required": [
+    "schema",
+    "artifact_zip",
+    "artifact_sha256",
+    "terminal_status",
+    "written_last"
+  ],
+  "type": "object"
+}

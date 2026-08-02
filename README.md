@@ -386,6 +386,34 @@ Package version: **v0.9.0**. Current test and governance-corpus results are reco
 [BUILD_GATE_STATUS.md](BUILD_GATE_STATUS.md); the CI workflow is the authoritative moving signal.
 
 
+## GitHub Transition Gate v1
+
+Verify a strict host-closure/GitHub-transport return without applying it:
+
+```bash
+continuity github-transition verify \
+  --zip RETURN.zip \
+  --sidecar RETURN.zip.sha256 \
+  --ready RETURN.zip.READY_FOR_SYNC.json \
+  --task-body-sha256 <controller-pinned-sha256>
+```
+
+The gate preserves exact producer terminals (including `REVISE`), verifies all
+nine CODEX/WORK slots, repository visibility and remote HEAD/tree readbacks, and
+rejects force-push, existing-default merge, secret/raw-evidence leakage and any
+state/deployment/trading effect.
+
+After GPT records semantic verdicts, evaluate a proposal-only memory candidate:
+
+```bash
+continuity memory-promotion evaluate \
+  --closure-receipt GITHUB_TRANSITION_RECEIPT.json \
+  --semantic-decisions SEMANTIC_DECISIONS.json
+```
+
+Even a successful result is only `PROMOTION_CANDIDATE_ELIGIBLE`; R63 and live
+state are not changed. See `docs/GITHUB_TRANSITION_GATE_V1.md`.
+
 ## Common Operational Context v1
 
 Create a bounded, evidence-bound context pack from a quiescent local Common

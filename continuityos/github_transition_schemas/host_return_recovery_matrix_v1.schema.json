@@ -1,0 +1,61 @@
+{
+  "$id": "continuityos.github_transition.host_return_recovery_matrix/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "schema": {
+      "const": "continuityos.github_transition.host_return_recovery_matrix/v1"
+    },
+    "slots": {
+      "items": {
+        "additionalProperties": true,
+        "properties": {
+          "apply_status": {
+            "const": "NOT_APPLIED"
+          },
+          "content_status": {
+            "const": "UNREVIEWED"
+          },
+          "physical_status": {
+            "enum": [
+              "BYTE_VERIFIED",
+              "TRIPLET_INCOMPLETE",
+              "REPORTED_ONLY",
+              "TASK_BINDING_INCOMPLETE",
+              "INVALID_RETURN",
+              "NOT_FOUND"
+            ]
+          },
+          "slot": {
+            "enum": [
+              "CODEX-01",
+              "CODEX-02",
+              "CODEX-03",
+              "CODEX-04",
+              "CODEX-05",
+              "CODEX-06",
+              "CODEX-07",
+              "CODEX-08",
+              "WORK"
+            ]
+          }
+        },
+        "required": [
+          "slot",
+          "physical_status",
+          "content_status",
+          "apply_status"
+        ],
+        "type": "object"
+      },
+      "maxItems": 9,
+      "minItems": 9,
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema",
+    "slots"
+  ],
+  "type": "object"
+}

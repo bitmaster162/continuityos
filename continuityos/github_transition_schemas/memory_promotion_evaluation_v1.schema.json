@@ -1,0 +1,73 @@
+{
+  "$id": "continuityos.memory_promotion.evaluation/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "authority_generation": {
+      "const": "R63"
+    },
+    "can_trade": {
+      "const": false
+    },
+    "capital_permission": {
+      "const": "DENY"
+    },
+    "closure_receipt_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "deploy_permission": {
+      "const": "DENY"
+    },
+    "effect": {
+      "const": "PROPOSAL_ONLY_NO_APPLY"
+    },
+    "human_irreversible_approval": {
+      "const": false
+    },
+    "memory_candidate_authority": {
+      "const": "NON_AUTHORITATIVE_CANDIDATE"
+    },
+    "r63_apply": {
+      "const": false
+    },
+    "reasons": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "registry_apply": {
+      "const": false
+    },
+    "schema": {
+      "const": "continuityos.memory_promotion.evaluation/v1"
+    },
+    "self_application": {
+      "const": false
+    },
+    "status": {
+      "enum": [
+        "PROMOTION_CANDIDATE_ELIGIBLE",
+        "PROMOTION_HOLD"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "status",
+    "closure_receipt_sha256",
+    "reasons",
+    "effect",
+    "authority_generation",
+    "memory_candidate_authority",
+    "human_irreversible_approval",
+    "registry_apply",
+    "r63_apply",
+    "can_trade",
+    "capital_permission",
+    "deploy_permission",
+    "self_application"
+  ],
+  "type": "object"
+}

@@ -36,6 +36,16 @@ from .session_context import (
     prepare_session_context_binding,
     verify_session_context_ack,
 )
+from .github_transition import (
+    DEFAULT_TASK_ID as GITHUB_TRANSITION_DEFAULT_TASK_ID,
+    canonical_json_text as github_transition_json_text,
+    exit_code_for_github_transition,
+    verify_github_transition_return,
+)
+from .memory_promotion import (
+    evaluate_memory_promotion,
+    exit_code_for_memory_promotion,
+)
 
 LEGACY_GATE_AVAILABLE = None
 LEGACY_GATE_IMPORT_ERROR = ""
@@ -644,7 +654,94 @@ def main(argv=None):
     cold_verify_context.add_argument("--challenge", required=True)
     cold_verify_context.add_argument("--challenge-sha256", required=True)
     cold_verify_context.add_argument("--ack", required=True)
+
+    github_transition = sub.add_parser(
+        "github-transition",
+        help="verify a strict host-closure/GitHub transition return without apply",
+    )
+    github_transition_sub = github_transition.add_subparsers(
+        dest="github_transition_cmd", required=True
+    )
+    github_transition_verify = github_transition_sub.add_parser(
+        "verify", help="verify ZIP/SHA/READY, task, slots and GitHub readbacks"
+    )
+    github_transition_verify.add_argument("--zip", dest="zip_path", required=True)
+    github_transition_verify.add_argument("--sidecar", dest="sidecar_path", required=True)
+    github_transition_verify.add_argument("--ready", dest="ready_path", required=True)
+    github_transition_verify.add_argument(
+        "--task-body-sha256", dest="task_body_sha256", required=True
+    )
+    github_transition_verify.add_argument(
+        "--task-id", dest="task_id", default=GITHUB_TRANSITION_DEFAULT_TASK_ID
+    )
+
+    memory_promotion = sub.add_parser(
+        "memory-promotion",
+        help="evaluate a proposal-only memory promotion candidate",
+    )
+    memory_promotion_sub = memory_promotion.add_subparsers(
+        dest="memory_promotion_cmd", required=True
+    )
+    memory_promotion_evaluate = memory_promotion_sub.add_parser(
+        "evaluate", help="bind GPT semantic decisions to exact closure bytes"
+    )
+    memory_promotion_evaluate.add_argument(
+        "--closure-receipt", dest="closure_receipt_path", required=True
+    )
+    memory_promotion_evaluate.add_argument(
+        "--semantic-decisions", dest="semantic_decisions_path", required=True
+    )
+
     a = ap.parse_args(argv)
+
+    if a.cmd == "github-transition":
+        try:
+            receipt = verify_github_transition_return(
+                Path(a.zip_path).expanduser(),
+                Path(a.sidecar_path).expanduser(),
+                Path(a.ready_path).expanduser(),
+                expected_task_body_sha256=a.task_body_sha256,
+                expected_task_id=a.task_id,
+            )
+            print(github_transition_json_text(receipt), end="")
+            return exit_code_for_github_transition(receipt)
+        except Exception as exc:
+            print(github_transition_json_text({
+                "schema": "continuityos.github_transition.internal_error/v1",
+                "physical_status": "INVALID_RETURN",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "effect": "VERIFY_ONLY_NO_APPLY",
+                "live_state_modified": False,
+                "can_trade": False,
+                "capital_permission": "DENY",
+                "deploy_permission": "DENY",
+                "self_application": False,
+            }), end="")
+            return 2
+
+    if a.cmd == "memory-promotion":
+        try:
+            receipt = evaluate_memory_promotion(
+                Path(a.closure_receipt_path).expanduser(),
+                Path(a.semantic_decisions_path).expanduser(),
+            )
+            print(github_transition_json_text(receipt), end="")
+            return exit_code_for_memory_promotion(receipt)
+        except Exception as exc:
+            print(github_transition_json_text({
+                "schema": "continuityos.memory_promotion.internal_error/v1",
+                "status": "PROMOTION_HOLD",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "effect": "PROPOSAL_ONLY_NO_APPLY",
+                "live_state_modified": False,
+                "can_trade": False,
+                "capital_permission": "DENY",
+                "deploy_permission": "DENY",
+                "self_application": False,
+            }), end="")
+            return 3
 
     if a.cmd == "cold-start":
         try:

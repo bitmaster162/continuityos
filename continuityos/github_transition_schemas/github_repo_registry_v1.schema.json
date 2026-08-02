@@ -1,0 +1,85 @@
+{
+  "$id": "continuityos.github_transition.repo_registry/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "repositories": {
+      "items": {
+        "additionalProperties": true,
+        "properties": {
+          "default_branch_modified": {
+            "const": false
+          },
+          "force_push": {
+            "const": false
+          },
+          "local_head": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "local_tree": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "merged_into_existing_default": {
+            "const": false
+          },
+          "name": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "preexisting": {
+            "type": "boolean"
+          },
+          "remote_head": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "remote_tree": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "secret_scan": {
+            "const": "PASS"
+          },
+          "visibility_after": {
+            "enum": [
+              "PUBLIC",
+              "PRIVATE"
+            ]
+          },
+          "visibility_before": {
+            "enum": [
+              "PUBLIC",
+              "PRIVATE",
+              null
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "preexisting",
+          "visibility_after",
+          "default_branch_modified",
+          "local_head",
+          "remote_head",
+          "local_tree",
+          "remote_tree",
+          "force_push",
+          "merged_into_existing_default",
+          "secret_scan"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema": {
+      "const": "continuityos.github_transition.repo_registry/v1"
+    }
+  },
+  "required": [
+    "schema",
+    "repositories"
+  ],
+  "type": "object"
+}
