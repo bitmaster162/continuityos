@@ -1,0 +1,99 @@
+{
+  "$id": "continuityos.completion_claim.evaluation/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "binding": {
+      "type": "object"
+    },
+    "can_trade": {
+      "const": false
+    },
+    "capital_permission": {
+      "const": "DENY"
+    },
+    "checks": {
+      "type": "array"
+    },
+    "claim": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "deploy_permission": {
+      "const": "DENY"
+    },
+    "effect": {
+      "const": "VERIFY_ONLY_NO_WRITE"
+    },
+    "evidence_state_vector": {
+      "type": "object"
+    },
+    "generated_at_utc": {
+      "type": "string"
+    },
+    "holds": {
+      "type": "array"
+    },
+    "live_state_modified": {
+      "const": false
+    },
+    "outcome": {
+      "enum": [
+        "CLAIM_PROVEN",
+        "WOULD_HOLD"
+      ]
+    },
+    "proven_state": {
+      "type": "object"
+    },
+    "reasons": {
+      "type": "array"
+    },
+    "schema": {
+      "const": "continuityos.completion_claim.evaluation/v1"
+    },
+    "self_application": {
+      "const": false
+    },
+    "status": {
+      "enum": [
+        "COMPLETION_CLAIM_PASS",
+        "COMPLETION_CLAIM_HOLD",
+        "COMPLETION_CLAIM_REVISE"
+      ]
+    },
+    "unsupported_claims": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "writes_performed": {
+      "const": []
+    }
+  },
+  "required": [
+    "schema",
+    "generated_at_utc",
+    "status",
+    "outcome",
+    "binding",
+    "claim",
+    "proven_state",
+    "evidence_state_vector",
+    "unsupported_claims",
+    "checks",
+    "reasons",
+    "holds",
+    "effect",
+    "live_state_modified",
+    "writes_performed",
+    "can_trade",
+    "capital_permission",
+    "deploy_permission",
+    "self_application"
+  ],
+  "type": "object"
+}

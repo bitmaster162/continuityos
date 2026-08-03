@@ -62,6 +62,9 @@ exclude = ["demo*", "bench*", "tests*", "docs*", "examples*", "dist*"]
 "continuityos.work_ledger_schemas" = ["*.json"]
 "continuityos.github_candidate_review_schemas" = ["*.json"]
 "continuityos.control_plane_integration" = ["*.json"]
+"continuityos.completion_claim_schemas" = ["*.json"]
+"continuityos.control_plane_binding_schemas" = ["*.json"]
+"continuityos.merge_authorization_schemas" = ["*.json"]
 
 [tool.setuptools.dynamic]
 version = {attr = "continuityos._version.__version__"}

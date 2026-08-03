@@ -1,0 +1,85 @@
+{
+  "$id": "continuityos.completion_claim.request/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "authority_generation": {
+      "const": "R63"
+    },
+    "claim": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
+        "artifact_state": {
+          "enum": [
+            "NONE",
+            "BUNDLE_VERIFIED",
+            "FRESH_CLONE_VERIFIED",
+            "PACKAGED",
+            "READY_LAST_VERIFIED"
+          ]
+        },
+        "drive_readback_verified": {
+          "type": "boolean"
+        },
+        "git_state": {
+          "enum": [
+            "UNPUBLISHED",
+            "GITHUB_REMOTE_VERIFIED",
+            "CI_VERIFIED"
+          ]
+        },
+        "user_download_exposed": {
+          "type": "boolean"
+        },
+        "work_state": {
+          "enum": [
+            "DESIGNED",
+            "MATERIALIZED",
+            "COMMITTED",
+            "TESTED_FOCUSED",
+            "TESTED_FULL"
+          ]
+        }
+      },
+      "required": [
+        "work_state",
+        "artifact_state",
+        "git_state",
+        "user_download_exposed",
+        "drive_readback_verified",
+        "accepted"
+      ],
+      "type": "object"
+    },
+    "claim_id": {
+      "maxLength": 128,
+      "minLength": 3,
+      "type": "string"
+    },
+    "effects": {
+      "type": "object"
+    },
+    "evidence": {
+      "type": "object"
+    },
+    "schema": {
+      "const": "continuityos.completion_claim.request/v1"
+    },
+    "subject": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema",
+    "authority_generation",
+    "claim_id",
+    "claim",
+    "subject",
+    "evidence",
+    "effects"
+  ],
+  "type": "object"
+}

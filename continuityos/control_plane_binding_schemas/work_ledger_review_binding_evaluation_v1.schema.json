@@ -1,0 +1,85 @@
+{
+  "$id": "continuityos.work_ledger_review_binding.evaluation/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "binding": {
+      "type": "object"
+    },
+    "can_trade": {
+      "const": false
+    },
+    "capital_permission": {
+      "const": "DENY"
+    },
+    "checks": {
+      "type": "array"
+    },
+    "deploy_permission": {
+      "const": "DENY"
+    },
+    "effect": {
+      "const": "VERIFY_ONLY_NO_WRITE"
+    },
+    "generated_at_utc": {
+      "type": "string"
+    },
+    "holds": {
+      "type": "array"
+    },
+    "ledger_head": {
+      "type": "object"
+    },
+    "live_state_modified": {
+      "const": false
+    },
+    "merge_executed": {
+      "const": false
+    },
+    "outcome": {
+      "enum": [
+        "CONTROL_PLANE_BINDING_PASS",
+        "WOULD_HOLD"
+      ]
+    },
+    "reasons": {
+      "type": "array"
+    },
+    "schema": {
+      "const": "continuityos.work_ledger_review_binding.evaluation/v1"
+    },
+    "self_application": {
+      "const": false
+    },
+    "status": {
+      "enum": [
+        "WORK_LEDGER_REVIEW_BINDING_PASS",
+        "WORK_LEDGER_REVIEW_BINDING_HOLD",
+        "WORK_LEDGER_REVIEW_BINDING_REVISE"
+      ]
+    },
+    "writes_performed": {
+      "const": []
+    }
+  },
+  "required": [
+    "schema",
+    "generated_at_utc",
+    "status",
+    "outcome",
+    "binding",
+    "ledger_head",
+    "checks",
+    "reasons",
+    "holds",
+    "effect",
+    "merge_executed",
+    "live_state_modified",
+    "writes_performed",
+    "can_trade",
+    "capital_permission",
+    "deploy_permission",
+    "self_application"
+  ],
+  "type": "object"
+}

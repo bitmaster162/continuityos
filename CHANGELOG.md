@@ -1,3 +1,10 @@
+## Unreleased — Completion Truth, Ledger/Review Binding and Merge Authorization v1
+
+- Add a physical evidence-state vector from design through acceptance.
+- Add exact immutable Work Ledger ↔ Candidate Review binding with review recomputation.
+- Add proposal-only one-time merge authorization bound to GitHub protection, PR checks/approvals, rollback evidence and one exact Robert decision.
+- Preserve R63 and all no-trade/no-deploy/no-apply ceilings.
+
 ## Unreleased — Windows Focused Validation Fix R13.2
 
 - Inspect raw ZIP central-directory names before Windows separator normalization.

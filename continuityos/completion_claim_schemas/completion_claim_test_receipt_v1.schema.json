@@ -1,0 +1,46 @@
+{
+  "$id": "continuityos.completion_claim.test_receipt/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "authority_generation": {
+      "const": "R63"
+    },
+    "candidate": {
+      "type": "object"
+    },
+    "commands": {
+      "minItems": 1,
+      "type": "array"
+    },
+    "effects": {
+      "type": "object"
+    },
+    "evidence_files": {
+      "type": "array"
+    },
+    "kind": {
+      "enum": [
+        "FOCUSED",
+        "FULL"
+      ]
+    },
+    "schema": {
+      "const": "continuityos.completion_claim.test_receipt/v1"
+    },
+    "terminal": {
+      "const": "TESTS_PASS"
+    }
+  },
+  "required": [
+    "schema",
+    "authority_generation",
+    "kind",
+    "candidate",
+    "terminal",
+    "commands",
+    "evidence_files",
+    "effects"
+  ],
+  "type": "object"
+}

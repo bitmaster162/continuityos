@@ -27,6 +27,9 @@
   continuity work-ledger verify ...        # verify hash chain and legal transitions
   continuity work-ledger verify-extension ... # prove exact one-event append relation
   continuity github-review evaluate ...     # verify transport/CI/review before merge eligibility
+  continuity completion-claim verify ...   # prove exact completion lifecycle state
+  continuity control-plane-binding evaluate ... # bind immutable ledger to candidate review
+  continuity merge-authorization evaluate ... # proposal-only one-time merge authorization
 
   continuity audit                        # show + verify the audit ledger
 """
@@ -88,6 +91,21 @@ from .github_candidate_review import (
     canonical_json_text as github_candidate_review_json_text,
     evaluate_github_candidate_review,
     exit_code_for_github_candidate_review,
+)
+from .completion_claim import (
+    canonical_json_text as completion_claim_json_text,
+    evaluate_completion_claim,
+    exit_code_for_completion_claim,
+)
+from .work_ledger_review_binding import (
+    canonical_json_text as control_plane_binding_json_text,
+    evaluate_work_ledger_review_binding,
+    exit_code_for_work_ledger_review_binding,
+)
+from .merge_authorization import (
+    canonical_json_text as merge_authorization_json_text,
+    evaluate_merge_authorization,
+    exit_code_for_merge_authorization,
 )
 
 LEGACY_GATE_AVAILABLE = None
@@ -849,6 +867,72 @@ def main(argv=None):
         "--semantic-decision", dest="review_semantic_decision_path", required=True
     )
 
+    completion_claim = sub.add_parser(
+        "completion-claim",
+        help="prove the highest physically supported completion lifecycle state",
+    )
+    completion_claim_sub = completion_claim.add_subparsers(
+        dest="completion_claim_cmd", required=True
+    )
+    completion_claim_verify = completion_claim_sub.add_parser(
+        "verify", help="evaluate one evidence-bound completion claim"
+    )
+    completion_claim_verify.add_argument(
+        "--request", dest="completion_claim_request_path", required=True
+    )
+
+    control_plane_binding = sub.add_parser(
+        "control-plane-binding",
+        help="bind immutable work-ledger bytes to candidate-review bytes",
+    )
+    control_plane_binding_sub = control_plane_binding.add_subparsers(
+        dest="control_plane_binding_cmd", required=True
+    )
+    cpb = control_plane_binding_sub.add_parser(
+        "evaluate", help="prove ledger/projection/review continuity for one candidate"
+    )
+    cpb.add_argument("--request", dest="cpb_request", required=True)
+    cpb.add_argument("--ledger", dest="cpb_ledger", required=True)
+    cpb.add_argument("--projection", dest="cpb_projection", required=True)
+    cpb.add_argument("--admission-receipt", dest="cpb_admission", required=True)
+    cpb.add_argument("--delta-receipt", dest="cpb_delta", required=True)
+    cpb.add_argument(
+        "--ledger-transport-receipt", dest="cpb_ledger_transport", required=True
+    )
+    cpb.add_argument(
+        "--ledger-semantic-decision", dest="cpb_ledger_semantic", required=True
+    )
+    cpb.add_argument("--review-request", dest="cpb_review_request", required=True)
+    cpb.add_argument(
+        "--review-transport-receipt", dest="cpb_review_transport", required=True
+    )
+    cpb.add_argument(
+        "--review-semantic-decision", dest="cpb_review_semantic", required=True
+    )
+    cpb.add_argument(
+        "--review-evaluation", dest="cpb_review_evaluation", required=True
+    )
+
+    merge_authorization = sub.add_parser(
+        "merge-authorization",
+        help="evaluate proposal-only one-time merge authorization",
+    )
+    merge_authorization_sub = merge_authorization.add_subparsers(
+        dest="merge_authorization_cmd", required=True
+    )
+    ma = merge_authorization_sub.add_parser(
+        "evaluate", help="bind review, protection, PR, rollback and Robert decision"
+    )
+    ma.add_argument("--request", dest="ma_request", required=True)
+    ma.add_argument(
+        "--ledger-review-binding", dest="ma_ledger_binding", required=True
+    )
+    ma.add_argument("--candidate-review", dest="ma_candidate_review", required=True)
+    ma.add_argument("--branch-protection", dest="ma_branch_protection", required=True)
+    ma.add_argument("--pull-request", dest="ma_pull_request", required=True)
+    ma.add_argument("--human-decision", dest="ma_human_decision", required=True)
+    ma.add_argument("--rollback-receipt", dest="ma_rollback", required=True)
+
     memory_promotion = sub.add_parser(
         "memory-promotion",
         help="evaluate a proposal-only memory promotion candidate",
@@ -1021,6 +1105,96 @@ def main(argv=None):
             }), end="")
             return 2
 
+
+    if a.cmd == "completion-claim":
+        try:
+            receipt = evaluate_completion_claim(
+                Path(a.completion_claim_request_path).expanduser()
+            )
+            print(completion_claim_json_text(receipt), end="")
+            return exit_code_for_completion_claim(receipt)
+        except Exception as exc:
+            print(completion_claim_json_text({
+                "schema": "continuityos.completion_claim.internal_error/v1",
+                "status": "COMPLETION_CLAIM_REVISE",
+                "outcome": "WOULD_HOLD",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "effect": "VERIFY_ONLY_NO_WRITE",
+                "live_state_modified": False,
+                "writes_performed": [],
+                "can_trade": False,
+                "capital_permission": "DENY",
+                "deploy_permission": "DENY",
+                "self_application": False,
+            }), end="")
+            return 2
+
+    if a.cmd == "control-plane-binding":
+        try:
+            receipt = evaluate_work_ledger_review_binding(
+                Path(a.cpb_request).expanduser(),
+                Path(a.cpb_ledger).expanduser(),
+                Path(a.cpb_projection).expanduser(),
+                Path(a.cpb_admission).expanduser(),
+                Path(a.cpb_delta).expanduser(),
+                Path(a.cpb_ledger_transport).expanduser(),
+                Path(a.cpb_ledger_semantic).expanduser(),
+                Path(a.cpb_review_request).expanduser(),
+                Path(a.cpb_review_transport).expanduser(),
+                Path(a.cpb_review_semantic).expanduser(),
+                Path(a.cpb_review_evaluation).expanduser(),
+            )
+            print(control_plane_binding_json_text(receipt), end="")
+            return exit_code_for_work_ledger_review_binding(receipt)
+        except Exception as exc:
+            print(control_plane_binding_json_text({
+                "schema": "continuityos.work_ledger_review_binding.internal_error/v1",
+                "status": "WORK_LEDGER_REVIEW_BINDING_REVISE",
+                "outcome": "WOULD_HOLD",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "effect": "VERIFY_ONLY_NO_WRITE",
+                "merge_executed": False,
+                "live_state_modified": False,
+                "writes_performed": [],
+                "can_trade": False,
+                "capital_permission": "DENY",
+                "deploy_permission": "DENY",
+                "self_application": False,
+            }), end="")
+            return 2
+
+    if a.cmd == "merge-authorization":
+        try:
+            receipt = evaluate_merge_authorization(
+                Path(a.ma_request).expanduser(),
+                Path(a.ma_ledger_binding).expanduser(),
+                Path(a.ma_candidate_review).expanduser(),
+                Path(a.ma_branch_protection).expanduser(),
+                Path(a.ma_pull_request).expanduser(),
+                Path(a.ma_human_decision).expanduser(),
+                Path(a.ma_rollback).expanduser(),
+            )
+            print(merge_authorization_json_text(receipt), end="")
+            return exit_code_for_merge_authorization(receipt)
+        except Exception as exc:
+            print(merge_authorization_json_text({
+                "schema": "continuityos.merge_authorization.internal_error/v1",
+                "status": "MERGE_AUTHORIZATION_REVISE",
+                "outcome": "WOULD_HOLD",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "effect": "PROPOSAL_ONLY_NO_MERGE",
+                "merge_executed": False,
+                "live_state_modified": False,
+                "writes_performed": [],
+                "can_trade": False,
+                "capital_permission": "DENY",
+                "deploy_permission": "DENY",
+                "self_application": False,
+            }), end="")
+            return 2
 
     if a.cmd == "github-transition":
         try:

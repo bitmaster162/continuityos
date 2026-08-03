@@ -1,0 +1,35 @@
+{
+  "$id": "continuityos.merge_authorization.pull_request_receipt/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "provider": {
+      "const": "GITHUB"
+    },
+    "schema": {
+      "const": "continuityos.merge_authorization.pull_request_receipt/v1"
+    }
+  },
+  "required": [
+    "schema",
+    "provider",
+    "repository",
+    "number",
+    "state",
+    "draft",
+    "merged",
+    "auto_merge_enabled",
+    "merge_method",
+    "base_branch",
+    "base_head",
+    "base_tree",
+    "head_branch",
+    "head_sha",
+    "head_tree",
+    "mergeable",
+    "author_actor_id",
+    "checks",
+    "approvals"
+  ],
+  "type": "object"
+}
