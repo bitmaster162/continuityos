@@ -64,3 +64,12 @@ The three features were created as sibling branches from one accepted parent.
 Building the next gate on any single sibling would silently omit the other two.
 This branch establishes one tested, linear foundation. A later merge-authorization
 candidate must use this integration HEAD/tree as its exact parent.
+
+## Packaged effect ceiling
+
+The normative runtime-facing effect ceiling is also shipped as the
+machine-readable package resource
+`continuityos.control_plane_integration/effect_ceiling_v1.json`.  Source tests
+verify that this document remains consistent with that manifest, while
+wheel-isolated tests verify the manifest directly without relying on source-only
+`docs/` or `pyproject.toml` files.
