@@ -1,0 +1,32 @@
+{
+  "schema": "continuityos.merge_authorization.policy/v1",
+  "authority_generation": "R63",
+  "purpose": "authorize one exact external merge request without executing the merge",
+  "required_upstream": {
+    "ledger_review_binding": "WORK_LEDGER_REVIEW_BINDING_PASS",
+    "candidate_review": "GITHUB_CANDIDATE_REVIEW_PASS",
+    "candidate_outcome": "MERGE_CANDIDATE_ELIGIBLE"
+  },
+  "supported_merge_method": "MERGE_COMMIT",
+  "pass_terminal": "MERGE_AUTHORIZATION_PASS",
+  "pass_outcome": "MERGE_EXECUTION_MAY_BE_REQUESTED_ONCE",
+  "effect": "PROPOSAL_ONLY_NO_MERGE",
+  "effects": {
+    "force_push": false,
+    "merge": false,
+    "pull_request_merge": false,
+    "auto_merge": false,
+    "deployment": false,
+    "registry_apply": false,
+    "current_state_apply": false,
+    "r63_apply": false,
+    "trading": false,
+    "wallet_access": false,
+    "order_execution": false,
+    "external_message": false,
+    "self_application": false,
+    "can_trade": false,
+    "capital_permission": "DENY",
+    "deploy_permission": "DENY"
+  }
+}

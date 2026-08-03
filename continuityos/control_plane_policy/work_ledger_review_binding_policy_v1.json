@@ -1,0 +1,38 @@
+{
+  "schema": "continuityos.work_ledger_review_binding.policy/v1",
+  "authority_generation": "R63",
+  "purpose": "bind immutable work-ledger state and candidate review to one exact task, repository, branch, HEAD, tree and receipt set",
+  "required_bindings": [
+    "ledger_sha256",
+    "projection_sha256",
+    "admission_receipt_sha256",
+    "delta_receipt_sha256",
+    "ledger_transport_receipt_sha256",
+    "ledger_semantic_decision_sha256",
+    "review_request_sha256",
+    "review_transport_receipt_sha256",
+    "review_semantic_decision_sha256",
+    "review_evaluation_sha256"
+  ],
+  "pass_terminal": "WORK_LEDGER_REVIEW_BINDING_PASS",
+  "pass_outcome": "CONTROL_PLANE_BINDING_PASS",
+  "effect": "VERIFY_ONLY_NO_WRITE",
+  "effects": {
+    "force_push": false,
+    "merge": false,
+    "pull_request_merge": false,
+    "auto_merge": false,
+    "deployment": false,
+    "registry_apply": false,
+    "current_state_apply": false,
+    "r63_apply": false,
+    "trading": false,
+    "wallet_access": false,
+    "order_execution": false,
+    "external_message": false,
+    "self_application": false,
+    "can_trade": false,
+    "capital_permission": "DENY",
+    "deploy_permission": "DENY"
+  }
+}

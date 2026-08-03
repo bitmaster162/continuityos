@@ -10,3 +10,11 @@ candidate-review evaluation is recomputed from its raw five inputs; a supplied
 PASS JSON is not trusted by itself.
 
 A PASS is still proposal-only and does not merge or apply state.
+
+## Installed-wheel policy
+
+The machine-readable binding contract is shipped as
+`continuityos.control_plane_policy/work_ledger_review_binding_policy_v1.json`.
+Its positive terminal is `WORK_LEDGER_REVIEW_BINDING_PASS` with outcome
+`CONTROL_PLANE_BINDING_PASS`; wheel-only validation does not depend on this
+source document.

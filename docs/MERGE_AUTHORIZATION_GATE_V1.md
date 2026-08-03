@@ -15,3 +15,10 @@ It requires:
 
 Only transparent `MERGE_COMMIT` is supported in v1. A PASS emits
 `MERGE_EXECUTION_MAY_BE_REQUESTED_ONCE`; the gate cannot execute the merge.
+
+## Installed-wheel policy
+
+The machine-readable authorization ceiling is shipped as
+`continuityos.control_plane_policy/merge_authorization_policy_v1.json`.  The
+packaged resource and source document are cross-checked without weakening the
+rule that the gate cannot execute the merge.

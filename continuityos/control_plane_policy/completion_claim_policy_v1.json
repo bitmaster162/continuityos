@@ -1,0 +1,57 @@
+{
+  "schema": "continuityos.completion_claim.policy/v1",
+  "authority_generation": "R63",
+  "purpose": "prove independent completion dimensions without collapsing them into one narrative status",
+  "dimensions": {
+    "work": [
+      "DESIGNED",
+      "MATERIALIZED",
+      "COMMITTED",
+      "TESTED_FOCUSED",
+      "TESTED_FULL"
+    ],
+    "artifacts": [
+      "NONE",
+      "BUNDLE_VERIFIED",
+      "FRESH_CLONE_VERIFIED",
+      "PACKAGED",
+      "READY_LAST_VERIFIED"
+    ],
+    "git_provider": [
+      "UNPUBLISHED",
+      "GITHUB_REMOTE_VERIFIED",
+      "CI_VERIFIED"
+    ],
+    "delivery_flags": [
+      "USER_DOWNLOAD_EXPOSED",
+      "DRIVE_READBACK_VERIFIED"
+    ],
+    "semantic": [
+      "ACCEPTED"
+    ]
+  },
+  "terminals": [
+    "COMPLETION_CLAIM_PASS",
+    "COMPLETION_CLAIM_HOLD",
+    "COMPLETION_CLAIM_REVISE"
+  ],
+  "effect": "VERIFY_ONLY_NO_WRITE",
+  "effects": {
+    "force_push": false,
+    "merge": false,
+    "pull_request_merge": false,
+    "auto_merge": false,
+    "deployment": false,
+    "registry_apply": false,
+    "current_state_apply": false,
+    "r63_apply": false,
+    "trading": false,
+    "wallet_access": false,
+    "order_execution": false,
+    "external_message": false,
+    "self_application": false,
+    "can_trade": false,
+    "capital_permission": "DENY",
+    "deploy_permission": "DENY"
+  }
+}

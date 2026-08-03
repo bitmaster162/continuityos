@@ -36,3 +36,12 @@ The evaluator reports the maximum proven state on each axis and lists every
 unsupported claim. It is verify-only and cannot write Git, publish, merge,
 deploy, apply R63/current state/registry, access wallets, execute orders or
 trade.
+
+## Installed-wheel policy
+
+The machine-readable policy is shipped as
+`continuityos.control_plane_policy/completion_claim_policy_v1.json`.  Wheel-only
+verification reads that resource; this document is additionally checked for
+consistency in source checkouts.  Terminal states are
+`COMPLETION_CLAIM_PASS`, `COMPLETION_CLAIM_HOLD` and
+`COMPLETION_CLAIM_REVISE`.
