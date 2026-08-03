@@ -327,6 +327,12 @@ def _bounded_command(
 
     stdout_thread.join(timeout=5)
     stderr_thread.join(timeout=5)
+    # A short-lived process can exit before the polling loop observes
+    # ``limit_event``.  Reader threads may then discover truncation only while
+    # they drain the remaining pipe bytes.  Re-read the event after both joins
+    # so an exceeded cap can never be reported as PASS.
+    if limit_event.is_set():
+        output_limit_exceeded = True
     if stdout_thread.is_alive() or stderr_thread.is_alive():  # pragma: no cover - defensive
         output_limit_exceeded = True
         reader_errors.append("reader thread did not terminate")

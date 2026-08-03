@@ -173,13 +173,18 @@ class TripletBuilder:
                 for name, data in payload.items():
                     zf.writestr(name, data)
                 for name, data, mode in extras or []:
-                    if mode is None:
-                        zf.writestr(name, data)
-                    else:
-                        info = zipfile.ZipInfo(name)
+                    # ``ZipInfo(name)`` normalizes ``\`` to ``/`` on Windows.
+                    # Construct the raw central-directory name explicitly so
+                    # the security regression exercises the same attacker
+                    # bytes on every platform.
+                    info = zipfile.ZipInfo(name.replace("\\", "/"))
+                    info.filename = name
+                    info.orig_filename = name
+                    info.compress_type = zipfile.ZIP_DEFLATED
+                    if mode is not None:
                         info.create_system = 3
                         info.external_attr = mode << 16
-                        zf.writestr(info, data)
+                    zf.writestr(info, data)
                 if duplicate:
                     zf.writestr(duplicate[0], duplicate[1])
         digest = hashlib.sha256(self.zip_path.read_bytes()).hexdigest()

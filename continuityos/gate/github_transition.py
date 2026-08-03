@@ -435,19 +435,33 @@ def verify_github_transition_return(
             folded: dict[str, str] = {}
             total = 0
             for info in infos:
-                if info.is_dir():
-                    continue
+                # ``zipfile.ZipInfo`` normalizes backslashes to forward slashes
+                # in ``filename`` on Windows, but preserves the archive's raw
+                # central-directory name in ``orig_filename``.  Security checks
+                # must inspect the raw name or a crafted ``bad\\path`` member
+                # is silently normalized and admitted on Windows.  Inspect
+                # directory entries too, before deciding whether payload-size
+                # checks apply.
+                raw_name = getattr(info, "orig_filename", info.filename)
+                if not _safe_member_name(raw_name):
+                    zip_errors.append(f"unsafe member path: {raw_name}")
                 if not _safe_member_name(info.filename):
-                    zip_errors.append(f"unsafe member path: {info.filename}")
-                if info.filename in seen:
-                    zip_errors.append(f"duplicate member: {info.filename}")
-                seen.add(info.filename)
-                key = info.filename.casefold()
-                if key in folded and folded[key] != info.filename:
-                    zip_errors.append(f"case-fold collision: {folded[key]} vs {info.filename}")
-                folded[key] = info.filename
+                    zip_errors.append(f"unsafe normalized member path: {info.filename}")
+                if raw_name != info.filename:
+                    zip_errors.append(
+                        f"member name changed during platform normalization: {raw_name} -> {info.filename}"
+                    )
+                if raw_name in seen:
+                    zip_errors.append(f"duplicate member: {raw_name}")
+                seen.add(raw_name)
+                key = raw_name.casefold()
+                if key in folded and folded[key] != raw_name:
+                    zip_errors.append(f"case-fold collision: {folded[key]} vs {raw_name}")
+                folded[key] = raw_name
                 if _is_symlink(info):
                     zip_errors.append(f"symlink member denied: {info.filename}")
+                if info.is_dir():
+                    continue
                 if info.file_size > MAX_MEMBER_BYTES:
                     zip_errors.append(f"member too large: {info.filename}")
                 total += info.file_size

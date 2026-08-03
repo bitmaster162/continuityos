@@ -1,3 +1,11 @@
+## Unreleased — Windows Focused Validation Fix R13.2
+
+- Inspect raw ZIP central-directory names before Windows separator normalization.
+- Construct the backslash-path security fixture byte-identically on Windows and POSIX.
+- Reconcile output-limit events after fast subprocess exit so truncation cannot report PASS.
+- Write canonical Work Ledger rewrite fixtures as exact LF bytes on every platform.
+- No GitHub push, merge, deployment, R63/current-state/registry apply, wallet, order or trading path added.
+
 ## Unreleased — GitHub Control-Plane Integration v1
 
 - Reconcile the sibling Work Validation Evidence, Work Ledger and GitHub Candidate Review branches into one linear candidate history.

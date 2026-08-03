@@ -521,7 +521,9 @@ class WorkLedgerTests(unittest.TestCase):
             lines[1]["prev_event_sha256"] = lines[0]["event_sha256"]
             lines[1]["event_sha256"] = _event_digest(lines[1])
             rewritten = fx.root / "rewritten.jsonl"
-            rewritten.write_text("".join(canonical_json_text(event) for event in lines), encoding="utf-8")
+            rewritten.write_bytes(
+                "".join(canonical_json_text(event) for event in lines).encode("utf-8")
+            )
             self.assertEqual(verify_work_ledger(rewritten)["status"], VERIFY_PASS)
             self.assertEqual(verify_work_ledger_extension(fx.l0, rewritten)["status"], LEDGER_REVISE)
 
