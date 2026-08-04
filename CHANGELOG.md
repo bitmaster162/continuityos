@@ -1,3 +1,13 @@
+## Unreleased — Merge Execution Receipt Gate v1
+
+- Add a verify-only gate for one exact externally executed GitHub merge.
+- Bind the result to exact authorization bytes, subject SHA, nonce, PR, merge commit,
+  base branch, branch protection, visibility and one-time authorization consumption.
+- Require a transparent two-parent merge commit and reject force-push, auto-merge,
+  authorization reuse, effect widening and provider contradictions.
+- Preserve `R63`, `can_trade=false`, `capital_permission=DENY`, and
+  `deploy_permission=DENY`; the gate never executes the merge.
+
 ## Unreleased — Completion Truth, Ledger/Review Binding and Merge Authorization v1
 
 - Add a physical evidence-state vector from design through acceptance.

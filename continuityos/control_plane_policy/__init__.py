@@ -16,6 +16,7 @@ _POLICY_RESOURCES = {
     "completion_claim": "completion_claim_policy_v1.json",
     "work_ledger_review_binding": "work_ledger_review_binding_policy_v1.json",
     "merge_authorization": "merge_authorization_policy_v1.json",
+    "merge_execution": "merge_execution_policy_v1.json",
 }
 
 

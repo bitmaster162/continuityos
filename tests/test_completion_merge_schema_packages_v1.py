@@ -7,7 +7,12 @@ import sys
 from pathlib import Path
 
 from continuityos.control_plane_policy import load_policy, policy_names
-from continuityos.gate import completion_claim, merge_authorization, work_ledger_review_binding
+from continuityos.gate import (
+    completion_claim,
+    merge_authorization,
+    merge_execution,
+    work_ledger_review_binding,
+)
 from continuityos.gate.evidence_common import fixed_effects
 
 
@@ -31,11 +36,22 @@ SCHEMA_PACKAGES = {
         "merge_authorization_request_v1.schema.json",
         "merge_authorization_rollback_receipt_v1.schema.json",
     },
+    "continuityos.merge_execution_schemas": {
+        "merge_execution_authorization_consumption_v1.schema.json",
+        "merge_execution_base_branch_readback_v1.schema.json",
+        "merge_execution_branch_protection_readback_v1.schema.json",
+        "merge_execution_evaluation_v1.schema.json",
+        "merge_execution_host_receipt_v1.schema.json",
+        "merge_execution_merge_commit_readback_v1.schema.json",
+        "merge_execution_pull_request_readback_v1.schema.json",
+        "merge_execution_request_v1.schema.json",
+    },
 }
 
 POLICY_RESOURCES = {
     "completion_claim_policy_v1.json",
     "merge_authorization_policy_v1.json",
+    "merge_execution_policy_v1.json",
     "work_ledger_review_binding_policy_v1.json",
 }
 
@@ -61,7 +77,7 @@ def test_new_schema_packages_are_shipped_parseable_and_strict() -> None:
             assert value["type"] == "object"
             assert value.get("additionalProperties") in {False, True}
             assert isinstance(value.get("required"), list) and value["required"]
-    assert observed_count == 11
+    assert observed_count == 19
 
 
 def test_machine_readable_gate_policies_are_shipped_and_match_code() -> None:
@@ -75,6 +91,7 @@ def test_machine_readable_gate_policies_are_shipped_and_match_code() -> None:
     assert policy_names() == (
         "completion_claim",
         "merge_authorization",
+        "merge_execution",
         "work_ledger_review_binding",
     )
 
@@ -116,6 +133,17 @@ def test_machine_readable_gate_policies_are_shipped_and_match_code() -> None:
     assert authorization["pass_outcome"] == merge_authorization.PASS_OUTCOME
     assert authorization["effects"] == fixed_effects()
 
+    execution = load_policy("merge_execution")
+    assert execution["schema"] == "continuityos.merge_execution.policy/v1"
+    assert execution["required_upstream"] == {
+        "merge_authorization": merge_authorization.PASS,
+        "authorization_outcome": merge_authorization.PASS_OUTCOME,
+    }
+    assert execution["supported_merge_method"] == merge_execution.MERGE_METHOD
+    assert execution["verified_terminal"] == merge_execution.VERIFIED
+    assert execution["verified_outcome"] == merge_execution.VERIFIED_OUTCOME
+    assert execution["effects"] == fixed_effects()
+
 
 def test_source_packaging_policy_matches_installed_resource_contract() -> None:
     """In a checkout, verify pyproject. In a wheel, resource tests above suffice."""
@@ -133,6 +161,7 @@ def test_new_cli_surfaces_are_importable_and_help_only() -> None:
         ["completion-claim", "verify", "--help"],
         ["control-plane-binding", "evaluate", "--help"],
         ["merge-authorization", "evaluate", "--help"],
+        ["merge-execution", "evaluate", "--help"],
     )
     for args in commands:
         result = subprocess.run(
@@ -152,16 +181,22 @@ def test_source_docs_match_packaged_policy_when_docs_are_present() -> None:
     completion_path = ROOT / "docs" / "COMPLETION_CLAIM_GATE_V1.md"
     binding_path = ROOT / "docs" / "WORK_LEDGER_REVIEW_BINDING_GATE_V1.md"
     authorization_path = ROOT / "docs" / "MERGE_AUTHORIZATION_GATE_V1.md"
-    if not all(path.is_file() for path in (completion_path, binding_path, authorization_path)):
+    execution_path = ROOT / "docs" / "MERGE_EXECUTION_RECEIPT_GATE_V1.md"
+    if not all(
+        path.is_file()
+        for path in (completion_path, binding_path, authorization_path, execution_path)
+    ):
         return
 
     completion_doc = completion_path.read_text(encoding="utf-8")
     binding_doc = binding_path.read_text(encoding="utf-8")
     authorization_doc = authorization_path.read_text(encoding="utf-8")
+    execution_doc = execution_path.read_text(encoding="utf-8")
 
     completion_policy = load_policy("completion_claim")
     binding_policy = load_policy("work_ledger_review_binding")
     authorization_policy = load_policy("merge_authorization")
+    execution_policy = load_policy("merge_execution")
 
     assert "independent dimensions" in completion_doc
     assert "GitHub remote verification does not require Google Drive" in completion_doc
@@ -171,3 +206,6 @@ def test_source_docs_match_packaged_policy_when_docs_are_present() -> None:
     assert binding_policy["pass_outcome"] in binding_doc
     assert authorization_policy["pass_outcome"] in authorization_doc
     assert "cannot execute the merge" in authorization_doc
+    assert execution_policy["verified_terminal"] in execution_doc
+    assert execution_policy["verified_outcome"] in execution_doc
+    assert "never calls GitHub" in execution_doc

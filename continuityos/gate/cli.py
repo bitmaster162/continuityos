@@ -30,6 +30,7 @@
   continuity completion-claim verify ...   # prove exact completion lifecycle state
   continuity control-plane-binding evaluate ... # bind immutable ledger to candidate review
   continuity merge-authorization evaluate ... # proposal-only one-time merge authorization
+  continuity merge-execution evaluate ... # verify one external merge result and authorization consumption
 
   continuity audit                        # show + verify the audit ledger
 """
@@ -106,6 +107,11 @@ from .merge_authorization import (
     canonical_json_text as merge_authorization_json_text,
     evaluate_merge_authorization,
     exit_code_for_merge_authorization,
+)
+from .merge_execution import (
+    canonical_json_text as merge_execution_json_text,
+    evaluate_merge_execution,
+    exit_code_for_merge_execution,
 )
 
 LEGACY_GATE_AVAILABLE = None
@@ -933,6 +939,39 @@ def main(argv=None):
     ma.add_argument("--human-decision", dest="ma_human_decision", required=True)
     ma.add_argument("--rollback-receipt", dest="ma_rollback", required=True)
 
+    merge_execution = sub.add_parser(
+        "merge-execution",
+        help="verify one externally executed GitHub merge and authorization consumption",
+    )
+    merge_execution_sub = merge_execution.add_subparsers(
+        dest="merge_execution_cmd", required=True
+    )
+    me = merge_execution_sub.add_parser(
+        "evaluate", help="verify exact external merge, provider readbacks and one-time use"
+    )
+    me.add_argument("--request", dest="me_request", required=True)
+    me.add_argument(
+        "--authorization-receipt", dest="me_authorization", required=True
+    )
+    me.add_argument(
+        "--host-execution-receipt", dest="me_host_execution", required=True
+    )
+    me.add_argument(
+        "--pull-request-readback", dest="me_pr_readback", required=True
+    )
+    me.add_argument(
+        "--merge-commit-readback", dest="me_commit_readback", required=True
+    )
+    me.add_argument(
+        "--base-branch-readback", dest="me_base_readback", required=True
+    )
+    me.add_argument(
+        "--branch-protection-readback", dest="me_protection_readback", required=True
+    )
+    me.add_argument(
+        "--authorization-consumption", dest="me_consumption", required=True
+    )
+
     memory_promotion = sub.add_parser(
         "memory-promotion",
         help="evaluate a proposal-only memory promotion candidate",
@@ -1187,6 +1226,43 @@ def main(argv=None):
                 "error": str(exc),
                 "effect": "PROPOSAL_ONLY_NO_MERGE",
                 "merge_executed": False,
+                "live_state_modified": False,
+                "writes_performed": [],
+                "can_trade": False,
+                "capital_permission": "DENY",
+                "deploy_permission": "DENY",
+                "self_application": False,
+            }), end="")
+            return 2
+
+    if a.cmd == "merge-execution":
+        try:
+            receipt = evaluate_merge_execution(
+                Path(a.me_request).expanduser(),
+                Path(a.me_authorization).expanduser(),
+                Path(a.me_host_execution).expanduser(),
+                Path(a.me_pr_readback).expanduser(),
+                Path(a.me_commit_readback).expanduser(),
+                Path(a.me_base_readback).expanduser(),
+                Path(a.me_protection_readback).expanduser(),
+                Path(a.me_consumption).expanduser(),
+            )
+            print(merge_execution_json_text(receipt), end="")
+            return exit_code_for_merge_execution(receipt)
+        except Exception as exc:
+            print(merge_execution_json_text({
+                "schema": "continuityos.merge_execution.internal_error/v1",
+                "status": "MERGE_EXECUTION_REVISE",
+                "outcome": "WOULD_HOLD",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "effect": "VERIFY_ONLY_EXTERNAL_MERGE_OBSERVED",
+                "gate_merge_executed": False,
+                "external_merge_verified": False,
+                "deployment": False,
+                "registry_apply": False,
+                "current_state_apply": False,
+                "r63_apply": False,
                 "live_state_modified": False,
                 "writes_performed": [],
                 "can_trade": False,

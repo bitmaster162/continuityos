@@ -1,0 +1,206 @@
+{
+  "$id": "continuityos.merge_execution.host_receipt/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "authorization_nonce": {
+      "type": "string"
+    },
+    "authorization_receipt_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "authorization_subject_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "auto_merge": {
+      "const": false
+    },
+    "base_branch": {
+      "type": "string"
+    },
+    "base_head_before": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "base_tree_before": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "candidate_branch": {
+      "type": "string"
+    },
+    "candidate_head": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "candidate_tree": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "effects": {
+      "additionalProperties": false,
+      "properties": {
+        "auto_merge": {
+          "type": "boolean"
+        },
+        "can_trade": {
+          "const": false
+        },
+        "capital_permission": {
+          "const": "DENY"
+        },
+        "current_state_apply": {
+          "type": "boolean"
+        },
+        "deploy_permission": {
+          "const": "DENY"
+        },
+        "deployment": {
+          "type": "boolean"
+        },
+        "external_message": {
+          "type": "boolean"
+        },
+        "force_push": {
+          "type": "boolean"
+        },
+        "merge": {
+          "type": "boolean"
+        },
+        "order_execution": {
+          "type": "boolean"
+        },
+        "pull_request_merge": {
+          "type": "boolean"
+        },
+        "r63_apply": {
+          "type": "boolean"
+        },
+        "registry_apply": {
+          "type": "boolean"
+        },
+        "self_application": {
+          "type": "boolean"
+        },
+        "trading": {
+          "type": "boolean"
+        },
+        "wallet_access": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "force_push",
+        "merge",
+        "pull_request_merge",
+        "auto_merge",
+        "deployment",
+        "registry_apply",
+        "current_state_apply",
+        "r63_apply",
+        "trading",
+        "wallet_access",
+        "order_execution",
+        "external_message",
+        "self_application",
+        "can_trade",
+        "capital_permission",
+        "deploy_permission"
+      ],
+      "type": "object"
+    },
+    "executed_at_utc": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "executor_actor_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "force_push": {
+      "const": false
+    },
+    "merge_commit": {
+      "additionalProperties": false,
+      "properties": {
+        "parents": {
+          "items": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        },
+        "tree": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha",
+        "tree",
+        "parents"
+      ],
+      "type": "object"
+    },
+    "merge_method": {
+      "const": "MERGE_COMMIT"
+    },
+    "provider": {
+      "const": "GITHUB"
+    },
+    "pull_request_number": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "repository": {
+      "type": "string"
+    },
+    "schema": {
+      "const": "continuityos.merge_execution.host_receipt/v1"
+    },
+    "visibility_after": {
+      "enum": [
+        "PRIVATE",
+        "PUBLIC"
+      ]
+    },
+    "visibility_before": {
+      "enum": [
+        "PRIVATE",
+        "PUBLIC"
+      ]
+    }
+  },
+  "required": [
+    "provider",
+    "repository",
+    "pull_request_number",
+    "authorization_receipt_sha256",
+    "authorization_subject_sha256",
+    "authorization_nonce",
+    "merge_method",
+    "base_branch",
+    "base_head_before",
+    "base_tree_before",
+    "candidate_branch",
+    "candidate_head",
+    "candidate_tree",
+    "merge_commit",
+    "executor_actor_id",
+    "force_push",
+    "auto_merge",
+    "visibility_before",
+    "visibility_after",
+    "executed_at_utc",
+    "effects"
+  ],
+  "type": "object"
+}

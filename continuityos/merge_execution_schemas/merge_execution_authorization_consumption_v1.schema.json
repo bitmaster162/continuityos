@@ -1,0 +1,131 @@
+{
+  "$id": "continuityos.merge_execution.authorization_consumption/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "authorization_nonce": {
+      "type": "string"
+    },
+    "authorization_receipt_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "authorization_subject_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "consumed": {
+      "type": "boolean"
+    },
+    "consumed_at_utc": {
+      "type": "string"
+    },
+    "effects": {
+      "additionalProperties": false,
+      "properties": {
+        "auto_merge": {
+          "type": "boolean"
+        },
+        "can_trade": {
+          "const": false
+        },
+        "capital_permission": {
+          "const": "DENY"
+        },
+        "current_state_apply": {
+          "type": "boolean"
+        },
+        "deploy_permission": {
+          "const": "DENY"
+        },
+        "deployment": {
+          "type": "boolean"
+        },
+        "external_message": {
+          "type": "boolean"
+        },
+        "force_push": {
+          "type": "boolean"
+        },
+        "merge": {
+          "type": "boolean"
+        },
+        "order_execution": {
+          "type": "boolean"
+        },
+        "pull_request_merge": {
+          "type": "boolean"
+        },
+        "r63_apply": {
+          "type": "boolean"
+        },
+        "registry_apply": {
+          "type": "boolean"
+        },
+        "self_application": {
+          "type": "boolean"
+        },
+        "trading": {
+          "type": "boolean"
+        },
+        "wallet_access": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "force_push",
+        "merge",
+        "pull_request_merge",
+        "auto_merge",
+        "deployment",
+        "registry_apply",
+        "current_state_apply",
+        "r63_apply",
+        "trading",
+        "wallet_access",
+        "order_execution",
+        "external_message",
+        "self_application",
+        "can_trade",
+        "capital_permission",
+        "deploy_permission"
+      ],
+      "type": "object"
+    },
+    "executor_actor_id": {
+      "type": "string"
+    },
+    "merge_commit_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "reused": {
+      "type": "boolean"
+    },
+    "schema": {
+      "const": "continuityos.merge_execution.authorization_consumption/v1"
+    },
+    "store_readback": {
+      "type": "boolean"
+    },
+    "use_count": {
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema",
+    "store_readback",
+    "authorization_receipt_sha256",
+    "authorization_subject_sha256",
+    "authorization_nonce",
+    "consumed",
+    "use_count",
+    "reused",
+    "merge_commit_sha",
+    "executor_actor_id",
+    "consumed_at_utc",
+    "effects"
+  ],
+  "type": "object"
+}
