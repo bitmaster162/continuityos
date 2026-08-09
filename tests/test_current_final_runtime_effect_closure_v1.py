@@ -74,7 +74,7 @@ def test_metering_existing_legacy_object_loses_write_after_current_binding(monke
     meter.db.close()
 
 
-def test_metering_current_mode_opens_existing_db_read_only(monkeypatch, tmp_path):
+def test_metering_current_mode_opens_existing_quiescent_db_read_only(monkeypatch, tmp_path):
     clear_binding(monkeypatch)
     path = tmp_path / "usage.db"
     seed = metering.Meter(str(path))
@@ -96,6 +96,20 @@ def test_metering_current_mode_opens_existing_db_read_only(monkeypatch, tmp_path
     with pytest.raises(boundary.CurrentEffectBoundaryError):
         meter.charge("alice", "gate.decision")
     meter.db.close()
+
+
+def test_metering_current_mode_refuses_nonquiescent_wal(monkeypatch, tmp_path):
+    clear_binding(monkeypatch)
+    path = tmp_path / "usage.db"
+    seed = metering.Meter(str(path))
+    seed.db.close()
+    wal = tmp_path / "usage.db-wal"
+    wal.write_bytes(b"pending")
+
+    set_current(monkeypatch)
+    with pytest.raises(RuntimeError, match="not quiescent"):
+        metering.Meter(str(path))
+    assert wal.read_bytes() == b"pending"
 
 
 def test_metering_current_mode_does_not_create_missing_db_or_directory(monkeypatch, tmp_path):
