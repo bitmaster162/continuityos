@@ -8,9 +8,9 @@ import continuityos.project_memory_bootstrap as boot
 
 
 def _write_json(path, value):
-    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
-    path.write_text(payload, encoding="utf-8")
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    payload = (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    path.write_bytes(payload)
+    return hashlib.sha256(payload).hexdigest()
 
 
 def test_minimal_valid_bootstrap_is_portable(monkeypatch, tmp_path):
