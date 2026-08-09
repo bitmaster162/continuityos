@@ -25,6 +25,8 @@ At one point in time, R41 reuses the R38 validators to verify:
 
 A successful absent-target result is `CURRENT_BOOTSTRAP_CHECK_READY`. An exact existing bootstrap returns `CURRENT_BOOTSTRAP_CHECK_ALREADY_CREATED`. Any mismatch is `CURRENT_BOOTSTRAP_CHECK_REVISE`.
 
+Existing targets are inspected with SQLite `immutable=1`, not ordinary `mode=ro`, so the preflight cannot create `-shm` or `-wal` sidecars while claiming `filesystem_write=false`. A target with pending non-empty WAL frames is deliberately not inspected immutably and therefore revises fail-closed; the separate R38 effectful gate must make the final decision after its own fresh validation.
+
 ## Authority and effect boundary
 
 `READY` is not an execution grant. R41 always reports `execution_decision=HOLD` and `execution_authorized=false`. It performs no OperationalMemory write, filesystem write, canonical-state mutation, deployment, agent dispatch, external message, wallet/trading action, or capital operation.
