@@ -54,6 +54,17 @@ Current runtime:
   preflight <tool> <command>  read-only assessment; bound current sessions never grant execution
   run <tool> -- <command...>  execution is held when a current session is bound
 
+Project memory (separate console scripts):
+  Verified current READ_ONLY:
+    continuity-work                    inspect one project and deterministic next action
+    continuity-memory-delta            compile a base-bound NOT_APPLIED update proposal
+    continuity-memory-bootstrap-plan   compile a fresh-db manifest from exact evidence
+    continuity-memory-bootstrap-check  validate manifest/auth/evidence/target; no apply
+  Separate effectful gates (current session must not be bound):
+    continuity-memory-apply            apply an exactly authorized existing-db proposal
+    continuity-memory-bootstrap        publish an exactly authorized fresh shadow DB
+  READY / proposal results never grant execution; effectful gates revalidate before write.
+
 Current-session binding environment:
   CONTINUITYOS_CURRENT_CHALLENGE
   CONTINUITYOS_CURRENT_CHALLENGE_SHA256
