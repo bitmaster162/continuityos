@@ -91,22 +91,35 @@ def test_ready_preflight_reuses_r38_validation_without_writes(monkeypatch, tmp_p
     assert after == before
 
 
-def test_preflight_detects_exact_already_created_without_mutation(monkeypatch, tmp_path):
+def test_preflight_detects_exact_already_created_without_sqlite_sidecars(monkeypatch, tmp_path):
     _clear_current(monkeypatch)
     target = tmp_path / "project.db"
     _, manifest_path, authorization_path, _, _ = _artifacts(tmp_path, target)
     created = boot.bootstrap_project_memory(target, manifest_path, authorization_path)
     assert created["terminal"] == "PROJECT_MEMORY_BOOTSTRAP_PASS"
-    before = target.read_bytes()
+
+    # R38's final read-only verification may leave zero-WAL/SHM sidecars. Remove
+    # them to prove R41 does not recreate either file while claiming no write.
+    for suffix in ("-shm", "-wal"):
+        sidecar = Path(str(target) + suffix)
+        if sidecar.exists():
+            sidecar.unlink()
+    before = {path.name: path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
+    assert Path(str(target) + "-shm").exists() is False
+    assert Path(str(target) + "-wal").exists() is False
 
     result = check_project_memory_bootstrap(target, manifest_path, authorization_path)
 
+    after = {path.name: path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
     assert result["terminal"] == "CURRENT_BOOTSTRAP_CHECK_ALREADY_CREATED"
     assert result["bootstrap_status"] == "ALREADY_CREATED"
     assert result["effectful_gate_required"] is False
     assert result["r38_revalidation_required"] is False
     assert result["execution_authorized"] is False
-    assert target.read_bytes() == before
+    assert result["effects"]["filesystem_write"] is False
+    assert after == before
+    assert Path(str(target) + "-shm").exists() is False
+    assert Path(str(target) + "-wal").exists() is False
 
 
 def test_preflight_rejects_authorization_target_mismatch(monkeypatch, tmp_path):
