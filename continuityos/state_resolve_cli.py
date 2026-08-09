@@ -81,22 +81,31 @@ def _state_bound_error(exc: Exception) -> dict[str, Any]:
     }
 
 
-def load_bundle(path: Path) -> list[dict[str, Any]]:
+def _load_bundle_with_sha(path: Path) -> tuple[list[dict[str, Any]], str]:
+    """Read and hash one exact bundle payload, then parse that same payload."""
     path = Path(path)
     if path.is_symlink():
         raise ValueError("input path may not be a symlink")
     if not path.is_file():
         raise FileNotFoundError("input file is missing")
-    if path.stat().st_size > MAX_INPUT_BYTES:
+    before = path.stat()
+    if before.st_size > MAX_INPUT_BYTES:
         raise ValueError(f"input exceeds {MAX_INPUT_BYTES} bytes")
 
+    payload = path.read_bytes()
+    after = path.stat()
+    if len(payload) > MAX_INPUT_BYTES:
+        raise ValueError(f"input exceeds {MAX_INPUT_BYTES} bytes")
+    if (
+        before.st_size != after.st_size
+        or before.st_mtime_ns != after.st_mtime_ns
+        or before.st_ctime_ns != after.st_ctime_ns
+    ):
+        raise ValueError("input changed during read")
+
     try:
-        value = json.loads(
-            path.read_text(encoding="utf-8-sig"),
-            object_pairs_hook=_reject_duplicate_keys,
-        )
-    except FileNotFoundError:
-        raise
+        text = payload.decode("utf-8-sig")
+        value = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
     except Exception as exc:
         raise ValueError(
             f"input is not strict UTF-8 JSON: {type(exc).__name__}: {exc}"
@@ -114,12 +123,12 @@ def load_bundle(path: Path) -> list[dict[str, Any]]:
         raise ValueError("candidates must be a list")
     if len(candidates) > MAX_CANDIDATES:
         raise ValueError(f"candidates exceeds {MAX_CANDIDATES} entries")
+    return candidates, hashlib.sha256(payload).hexdigest()
+
+
+def load_bundle(path: Path) -> list[dict[str, Any]]:
+    candidates, _ = _load_bundle_with_sha(path)
     return candidates
-
-
-def _sha256_path(path: Path) -> str:
-    payload = Path(path).read_bytes()
-    return hashlib.sha256(payload).hexdigest()
 
 
 def exit_code_for_result(result: dict[str, Any]) -> int:
@@ -144,8 +153,7 @@ def prepare_state_bound_cold_start(
     exactly PASS or PASS_WITH_CONDITIONS. OPEN/PARTIAL/HOLD/REJECT/REVISE all block
     cold-start creation and therefore perform no writes.
     """
-    state_bundle = Path(state_bundle)
-    candidates = load_bundle(state_bundle)
+    candidates, bundle_sha = _load_bundle_with_sha(Path(state_bundle))
     resolution = resolve_state(candidates)
     resolution_sha = hashlib.sha256(
         canonical_json_text(resolution).encode("utf-8")
@@ -156,7 +164,7 @@ def prepare_state_bound_cold_start(
             "schema": STATE_BOUND_COLD_START_SCHEMA,
             "terminal": "STATE_BOUND_COLD_START_HOLD",
             "reason": "STATE_RESOLUTION_NOT_PASS",
-            "state_bundle_sha256": _sha256_path(state_bundle),
+            "state_bundle_sha256": bundle_sha,
             "state_resolution_sha256": resolution_sha,
             "state_resolution": resolution,
             "cold_start": None,
@@ -170,7 +178,7 @@ def prepare_state_bound_cold_start(
             "schema": STATE_BOUND_COLD_START_SCHEMA,
             "terminal": "STATE_BOUND_COLD_START_HOLD",
             "reason": "STATE_NOT_OPERATIONALLY_ACCEPTED",
-            "state_bundle_sha256": _sha256_path(state_bundle),
+            "state_bundle_sha256": bundle_sha,
             "state_resolution_sha256": resolution_sha,
             "state_resolution": resolution,
             "cold_start": None,
@@ -185,7 +193,7 @@ def prepare_state_bound_cold_start(
         "schema": STATE_BOUND_COLD_START_SCHEMA,
         "terminal": "STATE_BOUND_COLD_START_PASS",
         "reason": "OPERATIONAL_STATE_ACCEPTED",
-        "state_bundle_sha256": _sha256_path(state_bundle),
+        "state_bundle_sha256": bundle_sha,
         "state_resolution_sha256": resolution_sha,
         "selected_artifact_id": resolution["selected"]["artifact_id"],
         "selected_artifact_sha256": resolution["selected"]["artifact_sha256"],
