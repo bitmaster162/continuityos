@@ -1,21 +1,27 @@
-"""Read-only CLI for ContinuityOS state/evidence reconciliation.
+"""CLI for ContinuityOS state/evidence reconciliation and state-bound cold-start.
 
-This command exposes the fail-closed state-resolution guard without importing the
-legacy execution plane. It reads one bounded JSON bundle, resolves current truth,
-prints canonical JSON, and performs no writes or external effects.
+``evaluate`` is pure/read-only. ``prepare-cold-start`` first resolves one bounded
+state bundle and refuses to create a cold-start challenge unless the resolved
+operational state is accepted. Only then does it delegate to the existing
+ANTI_AMNESIA cold-start preparer. It never deploys, applies current state, trades,
+changes capital permissions, or activates memory.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
+from .gate.cold_start import prepare_cold_start_challenge
 from .gate.state_resolution import canonical_json_text, resolve_state
 
 BUNDLE_SCHEMA = "continuityos.state_resolution.bundle/v1"
+STATE_BOUND_COLD_START_SCHEMA = "continuityos.state_bound_cold_start.receipt/v1"
 MAX_INPUT_BYTES = 4 * 1024 * 1024
 MAX_CANDIDATES = 4096
+OPERATIONALLY_ACCEPTED = {"PASS", "PASS_WITH_CONDITIONS"}
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -61,22 +67,45 @@ def _error_result(exc: Exception) -> dict[str, Any]:
     }
 
 
-def load_bundle(path: Path) -> list[dict[str, Any]]:
+def _state_bound_error(exc: Exception) -> dict[str, Any]:
+    return {
+        "schema": STATE_BOUND_COLD_START_SCHEMA,
+        "terminal": "STATE_BOUND_COLD_START_REVISE",
+        "reason": "INPUT_OR_COLD_START_INVALID",
+        "error_type": type(exc).__name__,
+        "error": str(exc),
+        "state_resolution": None,
+        "cold_start": None,
+        "writes_performed": [],
+        "effects": _effects(),
+    }
+
+
+def _load_bundle_with_sha(path: Path) -> tuple[list[dict[str, Any]], str]:
+    """Read and hash one exact bundle payload, then parse that same payload."""
     path = Path(path)
     if path.is_symlink():
         raise ValueError("input path may not be a symlink")
     if not path.is_file():
         raise FileNotFoundError("input file is missing")
-    if path.stat().st_size > MAX_INPUT_BYTES:
+    before = path.stat()
+    if before.st_size > MAX_INPUT_BYTES:
         raise ValueError(f"input exceeds {MAX_INPUT_BYTES} bytes")
 
+    payload = path.read_bytes()
+    after = path.stat()
+    if len(payload) > MAX_INPUT_BYTES:
+        raise ValueError(f"input exceeds {MAX_INPUT_BYTES} bytes")
+    if (
+        before.st_size != after.st_size
+        or before.st_mtime_ns != after.st_mtime_ns
+        or before.st_ctime_ns != after.st_ctime_ns
+    ):
+        raise ValueError("input changed during read")
+
     try:
-        value = json.loads(
-            path.read_text(encoding="utf-8-sig"),
-            object_pairs_hook=_reject_duplicate_keys,
-        )
-    except FileNotFoundError:
-        raise
+        text = payload.decode("utf-8-sig")
+        value = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
     except Exception as exc:
         raise ValueError(
             f"input is not strict UTF-8 JSON: {type(exc).__name__}: {exc}"
@@ -94,33 +123,128 @@ def load_bundle(path: Path) -> list[dict[str, Any]]:
         raise ValueError("candidates must be a list")
     if len(candidates) > MAX_CANDIDATES:
         raise ValueError(f"candidates exceeds {MAX_CANDIDATES} entries")
+    return candidates, hashlib.sha256(payload).hexdigest()
+
+
+def load_bundle(path: Path) -> list[dict[str, Any]]:
+    candidates, _ = _load_bundle_with_sha(path)
     return candidates
 
 
 def exit_code_for_result(result: dict[str, Any]) -> int:
     terminal = result.get("terminal")
-    if terminal == "STATE_RESOLUTION_PASS":
+    if terminal in {"STATE_RESOLUTION_PASS", "STATE_BOUND_COLD_START_PASS"}:
         return 0
-    if terminal == "STATE_RESOLUTION_HOLD":
+    if terminal in {"STATE_RESOLUTION_HOLD", "STATE_BOUND_COLD_START_HOLD"}:
         return 3
     return 2
+
+
+def prepare_state_bound_cold_start(
+    state_bundle: Path,
+    boot_receipt: Path,
+    spec: Path,
+    output: Path,
+) -> dict[str, Any]:
+    """Prepare a cold-start challenge only after accepted state resolution.
+
+    The state bundle is immutable input evidence for this invocation. A successful
+    resolver terminal is not enough by itself: the selected current status must be
+    exactly PASS or PASS_WITH_CONDITIONS. OPEN/PARTIAL/HOLD/REJECT/REVISE all block
+    cold-start creation and therefore perform no writes.
+    """
+    candidates, bundle_sha = _load_bundle_with_sha(Path(state_bundle))
+    resolution = resolve_state(candidates)
+    resolution_sha = hashlib.sha256(
+        canonical_json_text(resolution).encode("utf-8")
+    ).hexdigest()
+
+    if resolution.get("terminal") != "STATE_RESOLUTION_PASS":
+        return {
+            "schema": STATE_BOUND_COLD_START_SCHEMA,
+            "terminal": "STATE_BOUND_COLD_START_HOLD",
+            "reason": "STATE_RESOLUTION_NOT_PASS",
+            "state_bundle_sha256": bundle_sha,
+            "state_resolution_sha256": resolution_sha,
+            "state_resolution": resolution,
+            "cold_start": None,
+            "writes_performed": [],
+            "effects": _effects(),
+        }
+
+    current_status = resolution.get("current_status")
+    if current_status not in OPERATIONALLY_ACCEPTED:
+        return {
+            "schema": STATE_BOUND_COLD_START_SCHEMA,
+            "terminal": "STATE_BOUND_COLD_START_HOLD",
+            "reason": "STATE_NOT_OPERATIONALLY_ACCEPTED",
+            "state_bundle_sha256": bundle_sha,
+            "state_resolution_sha256": resolution_sha,
+            "state_resolution": resolution,
+            "cold_start": None,
+            "writes_performed": [],
+            "effects": _effects(),
+        }
+
+    cold_start = prepare_cold_start_challenge(
+        Path(boot_receipt), Path(spec), Path(output)
+    )
+    return {
+        "schema": STATE_BOUND_COLD_START_SCHEMA,
+        "terminal": "STATE_BOUND_COLD_START_PASS",
+        "reason": "OPERATIONAL_STATE_ACCEPTED",
+        "state_bundle_sha256": bundle_sha,
+        "state_resolution_sha256": resolution_sha,
+        "selected_artifact_id": resolution["selected"]["artifact_id"],
+        "selected_artifact_sha256": resolution["selected"]["artifact_sha256"],
+        "current_status": current_status,
+        "operational_state": resolution.get("operational_state"),
+        "production_qualified": resolution.get("production_qualified", False),
+        "evidence_debt": resolution.get("evidence_debt", False),
+        "state_resolution": resolution,
+        "cold_start": cold_start,
+        "writes_performed": list(cold_start.get("writes_performed") or []),
+        "effects": _effects(),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="continuity-state",
-        description="Resolve competing ContinuityOS state/evidence without applying anything.",
+        description="Resolve state evidence and gate cold-start without applying live state.",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
+
     evaluate = sub.add_parser("evaluate", help="resolve one bounded evidence bundle")
     evaluate.add_argument("--input", required=True, help="state-resolution bundle JSON")
+
+    prepare = sub.add_parser(
+        "prepare-cold-start",
+        help="prepare cold-start only when resolved state is operationally accepted",
+    )
+    prepare.add_argument("--input", required=True, help="state-resolution bundle JSON")
+    prepare.add_argument("--boot-receipt", required=True)
+    prepare.add_argument("--spec", required=True)
+    prepare.add_argument("--output", required=True)
+
     args = parser.parse_args(argv)
 
-    try:
-        candidates = load_bundle(Path(args.input).expanduser())
-        result = resolve_state(candidates)
-    except Exception as exc:
-        result = _error_result(exc)
+    if args.cmd == "evaluate":
+        try:
+            candidates = load_bundle(Path(args.input).expanduser())
+            result = resolve_state(candidates)
+        except Exception as exc:
+            result = _error_result(exc)
+    else:
+        try:
+            result = prepare_state_bound_cold_start(
+                Path(args.input).expanduser(),
+                Path(args.boot_receipt).expanduser(),
+                Path(args.spec).expanduser(),
+                Path(args.output).expanduser(),
+            )
+        except Exception as exc:
+            result = _state_bound_error(exc)
 
     print(canonical_json_text(result), end="")
     return exit_code_for_result(result)
