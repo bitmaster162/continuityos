@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from importlib import metadata
 import json
 import os
 from pathlib import Path
@@ -226,6 +227,19 @@ def test_current_binding_does_not_intercept_non_runtime_commands(monkeypatch):
 
 
 def test_packaged_continuity_entrypoint_points_at_runtime_dispatcher():
-    root = Path(__file__).resolve().parents[1]
-    data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-    assert data["project"]["scripts"]["continuity"] == "continuityos.current_runtime_cli:main"
+    try:
+        dist = metadata.distribution("continuityos")
+    except metadata.PackageNotFoundError:
+        root = Path(__file__).resolve().parents[1]
+        pyproject = root / "pyproject.toml"
+        assert pyproject.is_file()
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        assert data["project"]["scripts"]["continuity"] == "continuityos.current_runtime_cli:main"
+    else:
+        matches = [
+            ep
+            for ep in dist.entry_points
+            if ep.group == "console_scripts" and ep.name == "continuity"
+        ]
+        assert len(matches) == 1
+        assert matches[0].value == "continuityos.current_runtime_cli:main"
