@@ -58,7 +58,8 @@ def _revise(reason: str, *, project_id: str | None = None, errors: list[str] | N
         "project_id": project_id,
         "errors": list(errors or []),
         "manifest": None,
-        "manifest_sha256": None,
+        "manifest_canonical_json": None,
+        "manifest_file_sha256": None,
         "authorization_required": True,
         "authorization_schema": AUTH_SCHEMA,
         "authorization_decision": AUTH_DECISION,
@@ -150,8 +151,10 @@ def build_bootstrap_plan(request: Mapping[str, Any]) -> dict[str, Any]:
             manifest["rationale"] = normalized["rationale"]
         # Revalidate the exact emitted shape, not merely the pre-normalized request.
         _validate_manifest(manifest)
-        manifest_sha = hashlib.sha256(_canonical_json(manifest).encode("utf-8")).hexdigest()
-        plan_id = "pbp-" + manifest_sha[:32]
+        manifest_canonical_json = _canonical_json(manifest)
+        manifest_file_bytes = manifest_canonical_json.encode("utf-8")
+        manifest_file_sha = hashlib.sha256(manifest_file_bytes).hexdigest()
+        plan_id = "pbp-" + manifest_file_sha[:32]
         verified_evidence.sort(key=lambda item: item["evidence_id"])
         return {
             "schema": PLAN_SCHEMA,
@@ -160,13 +163,15 @@ def build_bootstrap_plan(request: Mapping[str, Any]) -> dict[str, Any]:
             "plan_id": plan_id,
             "project_id": project_id,
             "manifest": manifest,
-            "manifest_sha256": manifest_sha,
+            "manifest_canonical_json": manifest_canonical_json,
+            "manifest_file_sha256": manifest_file_sha,
+            "manifest_file_size_bytes": len(manifest_file_bytes),
             "evidence": verified_evidence,
             "authorization_required": True,
             "authorization_schema": AUTH_SCHEMA,
             "authorization_decision": AUTH_DECISION,
             "authorization_requirements": {
-                "must_bind_exact_manifest_sha256": manifest_sha,
+                "must_bind_exact_manifest_file_sha256": manifest_file_sha,
                 "must_bind_target_db": True,
                 "must_bind_claim_count": len(manifest["claims"]),
                 "must_bind_proposed_decision_count": len(manifest["proposed_decisions"]),
