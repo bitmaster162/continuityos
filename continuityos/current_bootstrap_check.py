@@ -115,7 +115,11 @@ def check_project_memory_bootstrap(
         try:
             if target.is_symlink() or boot._is_reparse(target) or not target.is_file():
                 raise ValueError("existing target is unsafe")
-            with boot.OperationalMemory(str(target), read_only=True) as memory:
+            # Strict read-only means no SQLite sidecar creation either. immutable=1
+            # guarantees that property but deliberately refuses a non-quiescent DB
+            # with pending WAL frames. In that case the effectful R38 gate must make
+            # the final decision after its own fresh validation.
+            with boot.OperationalMemory(str(target), read_only=True, immutable=True) as memory:
                 verification = memory.verify()
                 if verification.get("ok") is not True:
                     raise ValueError("existing target is not a valid OperationalMemory database")
