@@ -1,19 +1,19 @@
 """Lazy direct-import containment for verified current ContinuityOS sessions.
 
-R27 closed the direct Python/module bypasses explicitly left by R26.  R28
-extends the same stdlib-only lazy import boundary to residual *public library*
-APIs that can create files, open sockets, perform outbound network calls, run
-subprocesses, issue write capabilities, or execute simulation work without going
-through the already-contained CLI/Store surfaces.
+R27 closed direct Python/module bypasses left by R26. R28 extended the same
+stdlib-only boundary to residual public-library filesystem/network/subprocess/
+server/simulation effects. R29 closes the last confirmed raw product effects from
+the residual audit: local metering SQLite mutation and optional model-loader
+construction that may download/cache model assets.
 
-The guarded implementation modules themselves remain byte-compatible.  Importing
-``continuityos`` installs only a meta-path watcher; target modules are still
-loaded lazily.  Legacy/no-binding behavior delegates unchanged.  In a declared
-current session, exact R23/R64 binding verification from
-``current_effect_boundary`` is authoritative and effectful calls fail closed.
+Guarded implementation modules remain byte-compatible. Importing ``continuityos``
+installs only a meta-path watcher; target modules are still loaded lazily.
+Legacy/no-binding behavior delegates unchanged. In a declared current session,
+exact R23/R64 binding verification from ``current_effect_boundary`` is
+authoritative and effectful calls fail closed.
 
-Read-only builders, validators, renderers and verifiers remain usable.  This is an
-effect boundary, not a blanket import ban.
+Read-only builders, validators, renderers, verifiers and already-loaded local
+inference remain usable. This is an effect boundary, not a blanket import ban.
 """
 from __future__ import annotations
 
@@ -42,6 +42,8 @@ _WIZARD = "continuityos.wizard"
 _SIM_LOOP = "continuityos.sim.loop"
 _FORK = "continuityos.fork"
 _LEDGER_SERVER = "continuityos.ledger_server"
+_METERING = "continuityos.metering"
+_EMBEDDERS = "continuityos.embedders"
 
 _TARGETS = {
     _OPERATIONAL_MEMORY,
@@ -56,6 +58,8 @@ _TARGETS = {
     _SIM_LOOP,
     _FORK,
     _LEDGER_SERVER,
+    _METERING,
+    _EMBEDDERS,
 }
 
 # These modules have no current-safe command when executed with ``python -m``.
@@ -66,7 +70,7 @@ _EXECUTION_BLOCK_EFFECTS = {
 }
 
 # These historical modules have a pure verifier plus an effectful ``prepare``
-# command.  ``python -m ... verify`` stays available; ``prepare`` is held.
+# command. ``python -m ... verify`` stays available; ``prepare`` is held.
 _SELECTIVE_EXECUTION_EFFECTS = {
     _OPERATIONAL_CONTEXT: {"prepare": "operational_context.prepare"},
     _SESSION_INPUT: {"prepare": "session_input.prepare"},
@@ -348,6 +352,98 @@ def _patch_ledger_server(module: ModuleType) -> None:
         setattr(sink, name, guarded)
 
 
+def _patch_metering(module: ModuleType) -> None:
+    original = module.Meter
+    if getattr(original, "__continuityos_r29_guarded__", False):
+        return
+
+    class GuardedMeter(original):
+        __continuityos_r29_guarded__ = True
+
+        def __init__(self, path: str = "usage.db", window: float = module.DAY):
+            boundary = _boundary()
+            state = boundary.inspect_current_session()
+            if state["mode"] == boundary.MODE_LEGACY:
+                super().__init__(path, window=window)
+                self.path = path
+                self.read_only = False
+                return
+            if state["mode"] != boundary.MODE_CURRENT:
+                raise boundary.CurrentEffectBoundaryError("metering.open", state)
+            if path == ":memory:":
+                raise boundary.CurrentEffectBoundaryError("metering.open", state)
+
+            normalized = os.path.normcase(
+                os.path.realpath(
+                    os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
+                )
+            )
+            if not os.path.isfile(normalized):
+                raise FileNotFoundError(normalized)
+            wal = normalized + "-wal"
+            if os.path.isfile(wal) and os.path.getsize(wal) > 0:
+                raise RuntimeError("metering database is not quiescent")
+            self.window = window
+            self.path = normalized
+            self.read_only = True
+            self.db = sqlite3.connect(
+                Path(normalized).as_uri() + "?mode=ro&immutable=1",
+                uri=True,
+            )
+            self.db.execute("PRAGMA query_only=ON")
+
+        def _assert_meter_write(self, effect: str) -> None:
+            boundary = _boundary()
+            state = boundary.inspect_current_session()
+            if state["mode"] != boundary.MODE_LEGACY:
+                raise boundary.CurrentEffectBoundaryError(effect, state)
+            if getattr(self, "read_only", False):
+                raise RuntimeError("meter instance was opened read-only")
+
+        def set_plan(self, key: str, plan: str) -> None:
+            self._assert_meter_write("metering.set_plan")
+            return super().set_plan(key, plan)
+
+        def record(self, key: str, event: str, units: int = 1) -> None:
+            self._assert_meter_write("metering.record")
+            return super().record(key, event, units=units)
+
+        def charge(self, key: str, event: str, billing=None) -> dict:
+            # Charge is effectful even when a particular branch might be over
+            # quota, because its API contract includes an atomic count mutation.
+            self._assert_meter_write("metering.charge")
+            return super().charge(key, event, billing=billing)
+
+    GuardedMeter.__name__ = original.__name__
+    GuardedMeter.__qualname__ = original.__qualname__
+    GuardedMeter.__module__ = module.__name__
+    GuardedMeter.__doc__ = original.__doc__
+    module.Meter = GuardedMeter
+
+
+def _patch_embedders(module: ModuleType) -> None:
+    # Optional model constructors may download/cache model assets through their
+    # third-party loaders. Existing already-loaded instances remain usable for
+    # local read-only inference after a current binding appears.
+    for name, effect in (
+        ("FastEmbedEmbedder", "embedder.fastembed.model_load"),
+        ("Model2VecEmbedder", "embedder.model2vec.model_load"),
+        ("SentenceTransformerEmbedder", "embedder.sentence_transformer.model_load"),
+    ):
+        cls = getattr(module, name)
+        original_init = cls.__init__
+        if getattr(original_init, "__continuityos_direct_effect_guarded__", False):
+            continue
+
+        @wraps(original_init)
+        def guarded_init(self, *args, __original=original_init, __effect=effect, **kwargs):
+            _assert_effect(__effect)
+            return __original(self, *args, **kwargs)
+
+        guarded_init.__continuityos_direct_effect_guarded__ = True
+        cls.__init__ = guarded_init
+
+
 def _patch_module(fullname: str, module: ModuleType) -> None:
     if fullname == _OPERATIONAL_MEMORY:
         _patch_operational_memory(module)
@@ -373,6 +469,10 @@ def _patch_module(fullname: str, module: ModuleType) -> None:
         _patch_fork(module)
     elif fullname == _LEDGER_SERVER:
         _patch_ledger_server(module)
+    elif fullname == _METERING:
+        _patch_metering(module)
+    elif fullname == _EMBEDDERS:
+        _patch_embedders(module)
 
 
 class _GuardLoader(Loader):
