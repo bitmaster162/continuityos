@@ -15,6 +15,10 @@ no longer fall back silently to the legacy policy/memory/ledger execution plane.
 ``current-status`` is a pure read-only operator surface that reports whether that
 binding is absent, incomplete, invalid, or exactly verified and exposes the
 resulting runtime ceilings without evaluating legacy policy or executing work.
+
+Top-level ``continuity --help`` preserves the historical help output and appends a
+small current-runtime discovery section. Nested command help continues to delegate
+unchanged to the historical/safe CLI layers.
 """
 from __future__ import annotations
 
@@ -39,6 +43,18 @@ ENV_REQUIRED = "CONTINUITYOS_CURRENT_SESSION_REQUIRED"
 SCHEMA = "continuityos.current_runtime.dispatch/v1"
 STATUS_SCHEMA = "continuityos.current_runtime.status/v1"
 _TRUE = {"1", "true", "yes", "on"}
+_CURRENT_RUNTIME_HELP = """
+Current runtime:
+  current-status              show current-session binding and effective ceilings
+  preflight <tool> <command>  read-only assessment; bound current sessions never grant execution
+  run <tool> -- <command...>  execution is held when a current session is bound
+
+Current-session binding environment:
+  CONTINUITYOS_CURRENT_CHALLENGE
+  CONTINUITYOS_CURRENT_CHALLENGE_SHA256
+  CONTINUITYOS_CURRENT_ACK
+  CONTINUITYOS_CURRENT_SESSION_REQUIRED
+""".strip()
 
 
 def _effects() -> dict[str, object]:
@@ -69,6 +85,31 @@ def _command_index(argv: Sequence[str]) -> int | None:
     if argv[0].startswith("--db="):
         return 1 if len(argv) >= 2 else None
     return 0
+
+
+def _top_level_help_requested(argv: Sequence[str], command_index: int | None) -> bool:
+    if command_index is None or command_index >= len(argv):
+        return False
+    return argv[command_index] in {"-h", "--help"} and len(argv) == command_index + 1
+
+
+def _route_top_level_help(argv: list[str]) -> int:
+    """Preserve legacy help, then expose the current-runtime overlay.
+
+    argparse normally raises ``SystemExit(0)`` for ``--help``. The historical
+    dispatcher owns that formatting, so catch only that normal exit long enough to
+    append our discovery block and return the same status. Any non-help failure is
+    re-raised.
+    """
+    try:
+        code = int(r23_safe_main(argv) or 0)
+    except SystemExit as exc:
+        code = int(exc.code or 0)
+        if code != 0:
+            raise
+    print()
+    print(_CURRENT_RUNTIME_HELP)
+    return code
 
 
 def _required(env: Mapping[str, str]) -> bool:
@@ -305,6 +346,8 @@ def _route_current_run(
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     command_index = _command_index(args)
+    if _top_level_help_requested(args, command_index):
+        return _route_top_level_help(args)
     if command_index is None or command_index >= len(args):
         return int(r23_safe_main(args) or 0)
 
