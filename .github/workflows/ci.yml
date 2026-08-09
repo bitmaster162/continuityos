@@ -168,3 +168,12 @@ jobs:
           path: ${{ runner.temp }}/continuityos-review-receipts/
           if-no-files-found: error
           retention-days: 14
+
+      - name: Upload exact built wheel
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-wheel-${{ matrix.label }}-py311-${{ github.run_id }}
+          path: ${{ runner.temp }}/continuityos-wheelhouse/*.whl
+          if-no-files-found: error
+          retention-days: 14
