@@ -10,6 +10,12 @@ from importlib import import_module
 from typing import Dict, Tuple
 
 from ._version import __version__
+from .current_direct_surface_guard import install_direct_surface_guards
+
+# Install only a stdlib meta-path watcher here.  It does not import any guarded
+# target module and therefore preserves the package's historical lazy-loading
+# property.  Guards are applied only when a target is later imported.
+install_direct_surface_guards()
 
 
 __all__ = [
