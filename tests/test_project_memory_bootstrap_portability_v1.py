@@ -65,5 +65,6 @@ def test_minimal_valid_bootstrap_is_portable(monkeypatch, tmp_path):
 
     result = boot.bootstrap_project_memory(target, manifest_path, authorization_path)
 
-    assert result["terminal"] == "PROJECT_MEMORY_BOOTSTRAP_PASS", result
-    assert target.is_file(), result
+    diagnostic = "DIAG=" + " | ".join(str(item) for item in result.get("errors", []))
+    assert result["terminal"] == "PROJECT_MEMORY_BOOTSTRAP_PASS", diagnostic
+    assert target.is_file(), diagnostic
