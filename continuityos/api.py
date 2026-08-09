@@ -6,6 +6,7 @@ import json, os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 from .memory import Memory
+from .current_effect_boundary import CurrentEffectBoundaryError, assert_current_effect_allowed
 
 TOKEN_ENV = "CONTINUITYOS_TOKEN"
 ALLOW_REMOTE_ENV = "CONTINUITYOS_ALLOW_REMOTE"
@@ -112,6 +113,10 @@ def make_handler(mem: Memory, token: str | None = None):
         def do_POST(self):
             if not self._ensure_auth():
                 return
+            try:
+                assert_current_effect_allowed("http_api.write")
+            except CurrentEffectBoundaryError as exc:
+                return self._j(423, {"error": "current_session_hold", "receipt": exc.to_dict()})
             u = urlparse(self.path)
             body, err = self._json_body()
             if err:
@@ -157,6 +162,7 @@ def make_handler(mem: Memory, token: str | None = None):
 
 
 def run(db: str, host: str = "127.0.0.1", port: int = 8077):
+    assert_current_effect_allowed("http_api.server_start")
     _assert_bind_allowed(host)
     mem = Memory(db)
     token = os.environ.get(TOKEN_ENV)
