@@ -1,13 +1,17 @@
 """Safe installed dispatcher for the ``continuity`` command.
 
-All commands except current cold-start preparation/verification delegate unchanged
-to the historical ``continuityos.gate.cli`` implementation.
+All commands except current cold-start preparation/verification/root inspection
+delegate unchanged to the historical ``continuityos.gate.cli`` implementation.
 
 Current preparation is fail-closed and requires:
 - one state-resolution bundle,
 - one exact ACTIVE current authority pointer plus controller-pinned SHA-256,
 - the three stable roots hash-bound by that pointer,
 - one read-only current session spec.
+
+The four authority/root paths may be supplied individually or through one
+``--authority-root`` containing the exact canonical filenames.  Root mode never
+globs, guesses a generation, or selects a "latest" file.
 
 Historical R63 preparation remains available only through an explicit compatibility
 override. Current challenge verification is auto-detected by schema and is read-only.
@@ -20,6 +24,10 @@ from pathlib import Path
 import sys
 from typing import Sequence
 
+from .current_authority_root import (
+    inspect_current_authority_root,
+    resolve_current_authority_root,
+)
 from .current_cold_start import (
     SCHEMA_CHALLENGE as CURRENT_CHALLENGE_SCHEMA,
     json_text as current_json_text,
@@ -30,6 +38,7 @@ from .current_cold_start import (
 from .gate.cli import main as legacy_main
 
 GUARD_SCHEMA = "continuityos.safe_cli.cold_start_guard/v2"
+ROOT_GUARD_SCHEMA = "continuityos.safe_cli.current_authority_root_guard/v1"
 
 
 def _effects() -> dict[str, object]:
@@ -107,6 +116,13 @@ def _prepare_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="explicitly use the historical R63-bound preparer without current authority binding",
     )
+    parser.add_argument(
+        "--authority-root",
+        help=(
+            "directory containing exact CURRENT_POINTER.json, CURRENT_STATE.json, "
+            "ROLE_INDEX.json and ROLE_VIEWS.json; no glob/latest selection"
+        ),
+    )
     parser.add_argument("--authority-pointer")
     parser.add_argument("--authority-pointer-sha256")
     parser.add_argument("--current-state")
@@ -118,11 +134,23 @@ def _prepare_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _individual_root_inputs(args: argparse.Namespace) -> tuple[object, ...]:
+    return (
+        args.authority_pointer,
+        args.current_state,
+        args.role_index,
+        args.role_views,
+    )
+
+
 def _require_current(args: argparse.Namespace) -> list[str]:
     missing: list[str] = []
+    if not args.authority_pointer_sha256:
+        missing.append("--authority-pointer-sha256")
+    if args.authority_root:
+        return missing
     for attr, label in (
         ("authority_pointer", "--authority-pointer"),
-        ("authority_pointer_sha256", "--authority-pointer-sha256"),
         ("current_state", "--current-state"),
         ("role_index", "--role-index"),
         ("role_views", "--role-views"),
@@ -130,6 +158,17 @@ def _require_current(args: argparse.Namespace) -> list[str]:
         if not getattr(args, attr):
             missing.append(label)
     return missing
+
+
+def _current_paths(args: argparse.Namespace) -> dict[str, Path]:
+    if args.authority_root:
+        return resolve_current_authority_root(Path(args.authority_root).expanduser())
+    return {
+        "authority_pointer": Path(args.authority_pointer).expanduser(),
+        "current_state": Path(args.current_state).expanduser(),
+        "role_index": Path(args.role_index).expanduser(),
+        "role_views": Path(args.role_views).expanduser(),
+    }
 
 
 def _route_prepare(argv: list[str], command_index: int) -> int:
@@ -142,6 +181,17 @@ def _route_prepare(argv: list[str], command_index: int) -> int:
         return int(exc.code or 0)
 
     if args.state_bundle:
+        if args.authority_root and any(_individual_root_inputs(args)):
+            _emit(
+                _guard_result(
+                    "AUTHORITY_ROOT_INPUTS_MIXED",
+                    detail=(
+                        "Use either --authority-root or the four individual current root "
+                        "paths, never both."
+                    ),
+                )
+            )
+            return 3
         missing = _require_current(args)
         if missing:
             _emit(
@@ -163,12 +213,13 @@ def _route_prepare(argv: list[str], command_index: int) -> int:
             )
             return 3
         try:
+            paths = _current_paths(args)
             result = prepare_current_cold_start(
-                authority_pointer_path=Path(args.authority_pointer).expanduser(),
+                authority_pointer_path=paths["authority_pointer"],
                 expected_authority_pointer_sha256=args.authority_pointer_sha256,
-                current_state_path=Path(args.current_state).expanduser(),
-                role_index_path=Path(args.role_index).expanduser(),
-                role_views_path=Path(args.role_views).expanduser(),
+                current_state_path=paths["current_state"],
+                role_index_path=paths["role_index"],
+                role_views_path=paths["role_views"],
                 state_bundle_path=Path(args.state_bundle).expanduser(),
                 spec_path=Path(args.spec).expanduser(),
                 output_dir=Path(args.output).expanduser(),
@@ -192,15 +243,7 @@ def _route_prepare(argv: list[str], command_index: int) -> int:
         return 0 if result.get("terminal") == "CURRENT_COLD_START_PASS" else 3
 
     if args.legacy_r63_unbound:
-        if any(
-            (
-                args.authority_pointer,
-                args.authority_pointer_sha256,
-                args.current_state,
-                args.role_index,
-                args.role_views,
-            )
-        ):
+        if args.authority_root or args.authority_pointer_sha256 or any(_individual_root_inputs(args)):
             _emit(
                 _guard_result(
                     "LEGACY_AND_CURRENT_INPUTS_MIXED",
@@ -245,6 +288,41 @@ def _route_prepare(argv: list[str], command_index: int) -> int:
         )
     )
     return 3
+
+
+def _inspect_root_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="continuity cold-start inspect-root")
+    parser.add_argument("--authority-root", required=True)
+    parser.add_argument("--authority-pointer-sha256", required=True)
+    return parser
+
+
+def _route_inspect_root(argv: list[str], command_index: int) -> int:
+    parser = _inspect_root_parser()
+    try:
+        args = parser.parse_args(argv[command_index + 2 :])
+    except SystemExit as exc:
+        return int(exc.code or 0)
+    try:
+        result = inspect_current_authority_root(
+            Path(args.authority_root).expanduser(),
+            expected_authority_pointer_sha256=args.authority_pointer_sha256,
+        )
+    except Exception as exc:
+        _emit(
+            {
+                "schema": ROOT_GUARD_SCHEMA,
+                "terminal": "CURRENT_AUTHORITY_ROOT_INSPECT_REVISE",
+                "reason": "CURRENT_AUTHORITY_ROOT_INVALID",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "writes_performed": [],
+                "effects": _effects(),
+            }
+        )
+        return 2
+    print(current_json_text(result), end="")
+    return 0 if result.get("terminal") == "CURRENT_AUTHORITY_ROOT_INSPECT_PASS" else 2
 
 
 def _verify_parser() -> argparse.ArgumentParser:
@@ -326,6 +404,8 @@ def main(argv: list[str] | None = None) -> int:
     subcommand = args[command_index + 1]
     if subcommand == "prepare":
         return _route_prepare(args, command_index)
+    if subcommand == "inspect-root":
+        return _route_inspect_root(args, command_index)
     if subcommand == "verify":
         return _route_verify(args, command_index)
     return int(legacy_main(args) or 0)
