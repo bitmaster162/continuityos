@@ -481,6 +481,7 @@ def bootstrap_project_memory(
     os.close(fd)
     temp = Path(temp_name)
     temp.unlink()  # OperationalMemory requires ownership of fresh SQLite creation.
+    published_identity: tuple[int, int] | None = None
     try:
         with OperationalMemory(str(temp)) as memory:
             for row in manifest["claims"]:
@@ -551,7 +552,12 @@ def bootstrap_project_memory(
         if target.exists() or target.is_symlink():
             raise FileExistsError("target appeared before atomic publish")
         # Atomic no-clobber publication on the same filesystem. os.link fails if target exists.
+        source_stat = temp.stat()
         os.link(temp, target, follow_symlinks=False)
+        target_stat = target.stat()
+        if (source_stat.st_dev, source_stat.st_ino) != (target_stat.st_dev, target_stat.st_ino):
+            raise RuntimeError("published target identity does not match temporary database")
+        published_identity = (target_stat.st_dev, target_stat.st_ino)
         temp.unlink()
         for sidecar in (Path(str(temp) + "-wal"), Path(str(temp) + "-shm")):
             if sidecar.exists():
@@ -591,13 +597,13 @@ def bootstrap_project_memory(
         )
     except Exception as exc:
         _cleanup_temp(temp)
-        # If the target was linked but post-publication verification failed, remove only
-        # the target we just created. It could not have existed before os.link.
+        # Roll back only the exact filesystem object published by this call. A competing
+        # target that won the no-clobber race must never be removed, even if its bytes
+        # contain the same bootstrap event.
         try:
-            if target.exists() and target.is_file():
-                with OperationalMemory(str(target), read_only=True) as memory:
-                    prior = _bootstrap_event(memory, project_id=project_id, manifest_sha=manifest_sha, auth_sha=auth_sha)
-                if prior is not None:
+            if published_identity is not None and target.exists() and target.is_file():
+                current_stat = target.stat()
+                if (current_stat.st_dev, current_stat.st_ino) == published_identity:
                     target.unlink()
         except Exception:
             pass
