@@ -9,6 +9,8 @@ import sqlite3, json, time, struct, os, threading
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
+from .current_effect_boundary import assert_current_effect_allowed, effective_read_only
+
 def _now() -> float:
     return time.time()
 
@@ -21,6 +23,8 @@ def unpack_vec(b: bytes) -> List[float]:
 class Store:
     def __init__(self, path: str = "continuityos.db", *, read_only: bool = False):
         self._lock = threading.RLock()
+        read_only = effective_read_only(read_only)
+        self.read_only = bool(read_only)
         if read_only:
             if path == ":memory:":
                 raise ValueError("read-only Store requires an existing file")
@@ -35,6 +39,7 @@ class Store:
                 check_same_thread=False,
             )
             self.con.row_factory = sqlite3.Row
+            self.con.execute("PRAGMA query_only=ON")
             self.fts = self.con.execute(
                 "SELECT 1 FROM sqlite_master "
                 "WHERE type='table' AND name='items_fts'"
@@ -88,12 +93,14 @@ class Store:
     def add(self, text: str, namespace: str = "default",
             tags: Optional[List[str]] = None, meta: Optional[Dict[str, Any]] = None,
             vec: Optional[List[float]] = None, key: Optional[str] = None) -> int:
+        assert_current_effect_allowed("memory.store.add")
         tags = tags or []; meta = meta or {}
         ts = _now()
         with self._lock:
             return self._add_locked(text, namespace, tags, meta, vec, ts, key)
 
     def _add_locked(self, text, namespace, tags, meta, vec, ts, key=None):
+        assert_current_effect_allowed("memory.store.add")
         version = 0
         if key is not None:
             row = self.con.execute("SELECT MAX(version) v FROM items WHERE namespace=? AND key=?", (namespace, key)).fetchone()
@@ -126,12 +133,14 @@ class Store:
 
     def update_meta(self, rid: int, meta: Dict[str, Any]) -> None:
         """Rewrite an item's meta JSON (used by bi-temporal supersede; text stays immutable)."""
+        assert_current_effect_allowed("memory.store.update_meta")
         with self._lock:
             self.con.execute("UPDATE items SET meta=?, updated_at=? WHERE id=?",
                              (json.dumps(meta, ensure_ascii=False), _now(), rid))
             self.con.commit()
 
     def delete(self, rid: int) -> bool:
+        assert_current_effect_allowed("memory.store.delete")
         with self._lock:
             self.con.execute("DELETE FROM items WHERE id=?", (rid,))
             if self.fts:
