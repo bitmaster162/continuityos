@@ -101,6 +101,28 @@ physical broker custody and replay checkpoints in a **local SQLite WAL database 
 returns are forced to `content_status=UNREVIEWED` and `apply_status=NOT_APPLIED`. See
 [`docs/COMMON_OPERATIONAL_MEMORY_V1.md`](docs/COMMON_OPERATIONAL_MEMORY_V1.md).
 
+For evidence-bound project memory, the operator workflow is split deliberately between verified
+current-session READ_ONLY surfaces and separate effectful gates:
+
+```text
+Existing project DB:
+  continuity-work
+    -> continuity-memory-delta             # NOT_APPLIED proposal
+    -> continuity-memory-apply             # separate exact authorization; current session unbound
+
+Fresh project DB:
+  continuity-memory-bootstrap-plan         # NOT_APPLIED manifest proposal
+    -> continuity-memory-bootstrap-check   # point-in-time READ_ONLY validation
+    -> continuity-memory-bootstrap         # separate exact authorization; current session unbound
+```
+
+`continuity-work`, `continuity-memory-delta`, `continuity-memory-bootstrap-plan`, and
+`continuity-memory-bootstrap-check` require a verified current session and never grant execution.
+`READY` and proposal terminals are not write permission. `continuity-memory-apply` and
+`continuity-memory-bootstrap` are separate effectful gates; they revalidate their exact inputs and
+remain shadow-only. None of these commands applies accepted Control Center truth, mutates canonical
+state, deploys, dispatches an agent, trades, accesses a wallet, or grants capital permission.
+
 ### Import your AI history (6 vendors)
 
 Bring your existing history into ContinuityOS from **ChatGPT, Claude, Gemini, Grok, Mistral,

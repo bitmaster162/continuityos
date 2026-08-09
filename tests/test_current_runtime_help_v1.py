@@ -5,6 +5,16 @@ import pytest
 import continuityos.current_runtime_cli as cli
 
 
+PROJECT_MEMORY_COMMANDS = (
+    "continuity-work",
+    "continuity-memory-delta",
+    "continuity-memory-apply",
+    "continuity-memory-bootstrap-plan",
+    "continuity-memory-bootstrap-check",
+    "continuity-memory-bootstrap",
+)
+
+
 def clear_binding(monkeypatch):
     for name in (cli.ENV_CHALLENGE, cli.ENV_CHALLENGE_SHA, cli.ENV_ACK, cli.ENV_REQUIRED):
         monkeypatch.delenv(name, raising=False)
@@ -27,6 +37,12 @@ def test_top_level_help_preserves_legacy_output_and_appends_current_runtime(monk
     assert "Current runtime:" in out
     assert "current-status" in out
     assert "current-env" in out
+    assert "Project memory (separate console scripts):" in out
+    assert "Verified current READ_ONLY:" in out
+    assert "Separate effectful gates (current session must not be bound):" in out
+    assert "READY / proposal results never grant execution" in out
+    for command in PROJECT_MEMORY_COMMANDS:
+        assert command in out
     assert "CONTINUITYOS_CURRENT_CHALLENGE_SHA256" in out
 
 
@@ -43,6 +59,8 @@ def test_short_top_level_help_is_discoverable(monkeypatch, capsys):
     assert "legacy -h" in out
     assert "current-status" in out
     assert "current-env" in out
+    for command in PROJECT_MEMORY_COMMANDS:
+        assert command in out
 
 
 def test_db_prefix_top_level_help_keeps_exact_legacy_argv(monkeypatch, capsys):
@@ -61,6 +79,8 @@ def test_db_prefix_top_level_help_keeps_exact_legacy_argv(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "current-status" in out
     assert "current-env" in out
+    for command in PROJECT_MEMORY_COMMANDS:
+        assert command in out
 
 
 def test_nested_help_remains_owned_by_safe_legacy_dispatch(monkeypatch, capsys):
@@ -79,6 +99,7 @@ def test_nested_help_remains_owned_by_safe_legacy_dispatch(monkeypatch, capsys):
     assert calls == [argv]
     assert out.strip() == "NESTED HELP"
     assert "Current runtime:" not in out
+    assert "Project memory" not in out
 
 
 def test_bound_session_help_is_pure_and_does_not_verify_binding(monkeypatch, capsys):
@@ -103,6 +124,8 @@ def test_bound_session_help_is_pure_and_does_not_verify_binding(monkeypatch, cap
     assert "Current runtime:" in out
     assert "current-status" in out
     assert "current-env" in out
+    for command in PROJECT_MEMORY_COMMANDS:
+        assert command in out
 
 
 def test_nonzero_legacy_help_exit_is_not_swallowed(monkeypatch):
