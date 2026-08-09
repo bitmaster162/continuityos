@@ -26,6 +26,7 @@ def test_top_level_help_preserves_legacy_output_and_appends_current_runtime(monk
     assert "LEGACY HELP" in out
     assert "Current runtime:" in out
     assert "current-status" in out
+    assert "current-env" in out
     assert "CONTINUITYOS_CURRENT_CHALLENGE_SHA256" in out
 
 
@@ -41,6 +42,7 @@ def test_short_top_level_help_is_discoverable(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "legacy -h" in out
     assert "current-status" in out
+    assert "current-env" in out
 
 
 def test_db_prefix_top_level_help_keeps_exact_legacy_argv(monkeypatch, capsys):
@@ -56,7 +58,9 @@ def test_db_prefix_top_level_help_keeps_exact_legacy_argv(monkeypatch, capsys):
     argv = ["--db", "memory.db", "--help"]
     assert cli.main(argv) == 0
     assert calls == [argv]
-    assert "current-status" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "current-status" in out
+    assert "current-env" in out
 
 
 def test_nested_help_remains_owned_by_safe_legacy_dispatch(monkeypatch, capsys):
@@ -98,6 +102,7 @@ def test_bound_session_help_is_pure_and_does_not_verify_binding(monkeypatch, cap
     out = capsys.readouterr().out
     assert "Current runtime:" in out
     assert "current-status" in out
+    assert "current-env" in out
 
 
 def test_nonzero_legacy_help_exit_is_not_swallowed(monkeypatch):
