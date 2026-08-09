@@ -1,7 +1,9 @@
 """ContinuityOS governance and shadow-gate primitives.
 
 Imports are lazy so the read-only ANTI_AMNESIA entry point does not initialize
-the legacy ledger, policy, database, or recovery plane.
+the legacy ledger, policy, database, or recovery plane. Public ``preflight`` and
+``Ledger`` names add the current-session monotonic boundary while the historical
+engine/ledger modules remain available for compatibility and focused testing.
 """
 from __future__ import annotations
 
@@ -22,8 +24,8 @@ __all__ = [
 _LAZY: Dict[str, Tuple[str, str]] = {
     "ActionSpec": (".spec", "ActionSpec"),
     "DECISIONS": (".spec", "DECISIONS"),
-    "preflight": (".engine", "preflight"),
-    "Ledger": (".ledger", "Ledger"),
+    "preflight": (".current_preflight", "preflight"),
+    "Ledger": (".current_ledger", "Ledger"),
     "load_policy": (".policy", "load_policy"),
     "DEFAULT_POLICY": (".policy", "DEFAULT_POLICY"),
     "PolicyError": (".policy", "PolicyError"),

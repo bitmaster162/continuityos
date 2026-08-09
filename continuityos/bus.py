@@ -22,6 +22,8 @@ import json, hmac, hashlib, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional, Tuple
 
+from .current_effect_boundary import assert_current_effect_allowed
+
 READ_METHODS = {"ping", "memory.find", "memory.recall", "governance.alignment",
                 "advocate.challenge", "audit.run"}
 WRITE_METHODS = {"memory.upsert", "memory.remember"}
@@ -35,6 +37,8 @@ def _sig(secret: str, msg: str) -> str:
 def mint_token(secret: str, sub: str, scope: str = "read", ttl: int = 86400) -> str:
     if scope not in SCOPE_METHODS:
         raise ValueError("scope must be read|write")
+    if scope == "write":
+        assert_current_effect_allowed("bus.write_token")
     body = "%s.%s.%s" % (sub, scope, int(time.time()) + ttl)
     return "%s.%s" % (body, _sig(secret, body))
 
@@ -76,9 +80,11 @@ def build_dispatch(memory, twin=None, continuity=None):
         return None if it is None else {"id": it.id, "text": it.text, "namespace": it.namespace, "meta": it.meta}
 
     def m_upsert(p):
+        assert_current_effect_allowed("bus.memory.upsert")
         return {"id": memory.upsert(p["text"], namespace=p["namespace"], key=p["key"])}
 
     def m_remember(p):
+        assert_current_effect_allowed("bus.memory.remember")
         return {"id": memory.remember(p["text"], namespace=p.get("namespace", "notes"))}
 
     def g_align(p):
@@ -130,6 +136,7 @@ def make_handler(secret: str, dispatch: Dict[str, Any]):
 
 def serve(memory, secret: str, host: str = "127.0.0.1", port: int = 8079,
           twin=None, continuity=None):
+    assert_current_effect_allowed("bus.server_start")
     if not secret:
         raise ValueError("A2A requires a non-empty --secret (HMAC key)")
     dispatch = build_dispatch(memory, twin, continuity)
