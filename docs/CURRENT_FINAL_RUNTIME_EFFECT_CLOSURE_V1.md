@@ -8,7 +8,8 @@ The residual audit after R28 found two remaining ContinuityOS product surfaces t
 
 With a declared verified current session:
 
-- an existing usage database may be opened read-only for `plan`, `limit`, `usage`, `allow`, and `report`;
+- an existing **quiescent** usage database may be opened `mode=ro&immutable=1` for `plan`, `limit`, `usage`, `allow`, and `report`;
+- a non-empty WAL is refused rather than silently ignoring uncheckpointed usage state;
 - a missing usage database or directory is never created;
 - `:memory:` construction is refused because it creates a fresh mutable meter state;
 - `set_plan`, `record`, and `charge` fail closed;
