@@ -16,6 +16,9 @@ no longer fall back silently to the legacy policy/memory/ledger execution plane.
 binding is absent, incomplete, invalid, or exactly verified and exposes the
 resulting runtime ceilings without evaluating legacy policy or executing work.
 
+``current-env`` verifies explicit challenge/SHA/ACK inputs and renders copy/paste
+shell bindings without mutating this process environment.
+
 Top-level ``continuity --help`` preserves the historical help output and appends a
 small current-runtime discovery section. Nested command help continues to delegate
 unchanged to the historical/safe CLI layers.
@@ -29,6 +32,7 @@ from pathlib import Path
 import sys
 from typing import Mapping, Sequence
 
+from .current_env import build_current_env_export
 from .current_runtime import (
     block_current_run,
     evaluate_current_preflight,
@@ -46,6 +50,7 @@ _TRUE = {"1", "true", "yes", "on"}
 _CURRENT_RUNTIME_HELP = """
 Current runtime:
   current-status              show current-session binding and effective ceilings
+  current-env                 verify challenge/ACK and render copy/paste shell bindings
   preflight <tool> <command>  read-only assessment; bound current sessions never grant execution
   run <tool> -- <command...>  execution is held when a current session is bound
 
@@ -274,6 +279,37 @@ def _route_current_status(
     return 0
 
 
+def _current_env_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="continuity current-env")
+    parser.add_argument("--challenge", required=True)
+    parser.add_argument("--challenge-sha256", required=True)
+    parser.add_argument("--ack", required=True)
+    parser.add_argument("--format", choices=("json", "powershell", "posix"), default="json")
+    return parser
+
+
+def _route_current_env(argv: list[str], command_index: int) -> int:
+    parser = _current_env_parser()
+    try:
+        args = parser.parse_args(argv[command_index + 1 :])
+    except SystemExit as exc:
+        return int(exc.code or 0)
+    result = build_current_env_export(
+        args.challenge,
+        args.challenge_sha256,
+        args.ack,
+        output_format=args.format,
+    )
+    if result.get("terminal") != "CURRENT_ENV_EXPORT_PASS":
+        _emit(result)
+        return 2
+    if args.format == "json":
+        _emit(result)
+    else:
+        print(str(result.get("rendered") or ""), end="")
+    return 0
+
+
 def _preflight_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="continuity preflight")
     parser.add_argument("tool")
@@ -352,6 +388,9 @@ def main(argv: list[str] | None = None) -> int:
         return int(r23_safe_main(args) or 0)
 
     command = args[command_index]
+    if command == "current-env":
+        return _route_current_env(args, command_index)
+
     binding, missing = current_binding_from_env(os.environ)
 
     if command == "current-status":
