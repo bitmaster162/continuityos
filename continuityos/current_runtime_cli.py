@@ -1,8 +1,8 @@
 """Installed ``continuity`` dispatcher with current-session runtime clamping.
 
-The R23 safe CLI remains the compatibility implementation for all commands when no
-current runtime binding is declared.  A caller declares a current session through
-an exact environment binding:
+The R23 safe CLI remains the compatibility implementation for commands outside the
+current runtime surface when no current runtime binding is declared. A caller
+declares a current session through an exact environment binding:
 
 ``CONTINUITYOS_CURRENT_CHALLENGE``
 ``CONTINUITYOS_CURRENT_CHALLENGE_SHA256``
@@ -11,6 +11,10 @@ an exact environment binding:
 If any one of those variables is present (or
 ``CONTINUITYOS_CURRENT_SESSION_REQUIRED`` is true), ``preflight`` and ``run`` can
 no longer fall back silently to the legacy policy/memory/ledger execution plane.
+
+``current-status`` is a pure read-only operator surface that reports whether that
+binding is absent, incomplete, invalid, or exactly verified and exposes the
+resulting runtime ceilings without evaluating legacy policy or executing work.
 """
 from __future__ import annotations
 
@@ -21,7 +25,11 @@ from pathlib import Path
 import sys
 from typing import Mapping, Sequence
 
-from .current_runtime import block_current_run, evaluate_current_preflight
+from .current_runtime import (
+    block_current_run,
+    evaluate_current_preflight,
+    verify_current_runtime_binding,
+)
 from .safe_cli import main as r23_safe_main
 
 ENV_CHALLENGE = "CONTINUITYOS_CURRENT_CHALLENGE"
@@ -29,6 +37,7 @@ ENV_CHALLENGE_SHA = "CONTINUITYOS_CURRENT_CHALLENGE_SHA256"
 ENV_ACK = "CONTINUITYOS_CURRENT_ACK"
 ENV_REQUIRED = "CONTINUITYOS_CURRENT_SESSION_REQUIRED"
 SCHEMA = "continuityos.current_runtime.dispatch/v1"
+STATUS_SCHEMA = "continuityos.current_runtime.status/v1"
 _TRUE = {"1", "true", "yes", "on"}
 
 
@@ -98,6 +107,130 @@ def _binding_error(missing: list[str], command: str) -> int:
         "effects": _effects(),
     })
     return 2
+
+
+def _status_capabilities(*, bound: bool) -> dict[str, str]:
+    if not bound:
+        return {
+            "current_binding_verification": "NOT_ACTIVE",
+            "read_only_inspection": "AVAILABLE",
+            "current_preflight": "NOT_BOUND",
+            "effectful_continuityos_calls": "LEGACY_MODE",
+            "execution": "LEGACY_MODE",
+        }
+    return {
+        "current_binding_verification": "PASS",
+        "read_only_inspection": "ALLOW",
+        "current_preflight": "ALLOW_READ_ONLY",
+        "effectful_continuityos_calls": "HOLD",
+        "execution": "HOLD",
+    }
+
+
+def _route_current_status(
+    binding: Mapping[str, str] | None,
+    missing: list[str],
+) -> int:
+    if binding is None:
+        _emit({
+            "schema": STATUS_SCHEMA,
+            "terminal": "CURRENT_RUNTIME_STATUS_UNBOUND",
+            "reason": "NO_CURRENT_SESSION_BINDING_DECLARED",
+            "mode": "LEGACY_UNBOUND",
+            "current_session_declared": False,
+            "binding_complete": False,
+            "binding_verified": False,
+            "legacy_fallback": True,
+            "capabilities": _status_capabilities(bound=False),
+            "effects": _effects(),
+        })
+        return 0
+
+    inputs = {
+        "challenge": binding.get("challenge", ""),
+        "challenge_sha256": binding.get("challenge_sha256", ""),
+        "ack": binding.get("ack", ""),
+    }
+    if missing:
+        _emit({
+            "schema": STATUS_SCHEMA,
+            "terminal": "CURRENT_RUNTIME_STATUS_REVISE",
+            "reason": "CURRENT_SESSION_BINDING_INCOMPLETE",
+            "mode": "CURRENT_DECLARED_INVALID",
+            "current_session_declared": True,
+            "binding_complete": False,
+            "binding_verified": False,
+            "missing": missing,
+            "binding_inputs": inputs,
+            "legacy_fallback": False,
+            "execution_decision": "HOLD",
+            "effects": _effects(),
+        })
+        return 2
+
+    try:
+        verdict = verify_current_runtime_binding(
+            Path(binding["challenge"]).expanduser(),
+            Path(binding["ack"]).expanduser(),
+            expected_challenge_sha256=binding["challenge_sha256"],
+        )
+    except Exception as exc:
+        _emit({
+            "schema": STATUS_SCHEMA,
+            "terminal": "CURRENT_RUNTIME_STATUS_REVISE",
+            "reason": "CURRENT_SESSION_BINDING_INVALID",
+            "mode": "CURRENT_DECLARED_INVALID",
+            "current_session_declared": True,
+            "binding_complete": True,
+            "binding_verified": False,
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "binding_inputs": inputs,
+            "legacy_fallback": False,
+            "execution_decision": "HOLD",
+            "effects": _effects(),
+        })
+        return 2
+
+    if verdict.get("binding_verified") is not True:
+        _emit({
+            "schema": STATUS_SCHEMA,
+            "terminal": "CURRENT_RUNTIME_STATUS_REVISE",
+            "reason": "CURRENT_COLD_START_ACK_NOT_VERIFIED",
+            "mode": "CURRENT_DECLARED_INVALID",
+            "current_session_declared": True,
+            "binding_complete": True,
+            "binding_verified": False,
+            "binding_inputs": inputs,
+            "binding_verdict": verdict,
+            "legacy_fallback": False,
+            "execution_decision": "HOLD",
+            "effects": _effects(),
+        })
+        return 2
+
+    _emit({
+        "schema": STATUS_SCHEMA,
+        "terminal": "CURRENT_RUNTIME_STATUS_PASS",
+        "reason": "EXACT_CURRENT_COLD_START_VERIFIED",
+        "mode": "CURRENT_BOUND_READ_ONLY",
+        "current_session_declared": True,
+        "binding_complete": True,
+        "binding_verified": True,
+        "authority_generation": verdict.get("authority_generation"),
+        "challenge_id": verdict.get("challenge_id"),
+        "challenge_sha256": verdict.get("challenge_sha256"),
+        "ack_sha256": verdict.get("ack_sha256"),
+        "binding_inputs": inputs,
+        "session_effect_ceiling": "READ_ONLY",
+        "authority_ceiling": "NO_FURTHER_AGENT_WORK",
+        "execution_decision": "HOLD",
+        "execution_authorized": False,
+        "legacy_fallback": False,
+        "capabilities": _status_capabilities(bound=True),
+        "effects": _effects(),
+    })
+    return 0
 
 
 def _preflight_parser() -> argparse.ArgumentParser:
@@ -176,10 +309,23 @@ def main(argv: list[str] | None = None) -> int:
         return int(r23_safe_main(args) or 0)
 
     command = args[command_index]
+    binding, missing = current_binding_from_env(os.environ)
+
+    if command == "current-status":
+        if len(args[command_index + 1 :]) != 0:
+            _emit({
+                "schema": STATUS_SCHEMA,
+                "terminal": "CURRENT_RUNTIME_STATUS_REVISE",
+                "reason": "CURRENT_STATUS_TAKES_NO_ARGUMENTS",
+                "legacy_fallback": False,
+                "effects": _effects(),
+            })
+            return 2
+        return _route_current_status(binding, missing)
+
     if command not in {"preflight", "run"}:
         return int(r23_safe_main(args) or 0)
 
-    binding, missing = current_binding_from_env(os.environ)
     if binding is None:
         return int(r23_safe_main(args) or 0)
     if missing:
