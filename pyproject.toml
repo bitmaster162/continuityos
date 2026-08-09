@@ -41,6 +41,7 @@ dev = ["pytest>=7", "pytest-cov>=4", "ruff>=0.5"]
 cos = "continuityos.current_entrypoints:cos_main"
 continuity = "continuityos.current_runtime_cli:main"
 continuity-work = "continuityos.current_work_cli:main"
+continuity-memory-delta = "continuityos.current_memory_delta_cli:main"
 continuity-state = "continuityos.current_entrypoints:state_main"
 continuity-memory = "continuityos.current_entrypoints:operational_memory_main"
 continuity-context = "continuityos.current_entrypoints:operational_context_main"
