@@ -39,7 +39,7 @@ dev = ["pytest>=7", "pytest-cov>=4", "ruff>=0.5"]
 
 [project.scripts]
 cos = "continuityos.cli:main"
-continuity = "continuityos.safe_cli:main"
+continuity = "continuityos.current_runtime_cli:main"
 continuity-state = "continuityos.state_resolve_cli:main"
 continuity-memory = "continuityos.operational_memory:main"
 continuity-context = "continuityos.operational_context:main"
