@@ -380,11 +380,14 @@ def _patch_metering(module: ModuleType) -> None:
             )
             if not os.path.isfile(normalized):
                 raise FileNotFoundError(normalized)
+            wal = normalized + "-wal"
+            if os.path.isfile(wal) and os.path.getsize(wal) > 0:
+                raise RuntimeError("metering database is not quiescent")
             self.window = window
             self.path = normalized
             self.read_only = True
             self.db = sqlite3.connect(
-                Path(normalized).as_uri() + "?mode=ro",
+                Path(normalized).as_uri() + "?mode=ro&immutable=1",
                 uri=True,
             )
             self.db.execute("PRAGMA query_only=ON")
