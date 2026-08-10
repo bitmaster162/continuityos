@@ -9,7 +9,6 @@ OperationalMemory.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 from pathlib import Path
 import shutil
@@ -17,12 +16,9 @@ from typing import Any, Mapping
 
 from .current_effect_boundary import MODE_LEGACY, inspect_current_session
 from . import operational_memory_apply as apply
-from .current_project_update_review import (
-    PACKET_SCHEMA,
-    _authorization_skeleton,
-)
+from .current_project_update_review import PACKET_SCHEMA, _authorization_skeleton
 from .operational_memory import strict_json_loads
-from .project_memory_bootstrap import MAX_ARTIFACT_BYTES, _stable_read
+from .project_memory_bootstrap import MAX_ARTIFACT_BYTES, _safe_parent, _stable_read
 
 RECEIPT_SCHEMA = "continuityos.operational_memory.project_update_materialization/v1"
 PROPOSAL_NAME = "OPERATIONAL_MEMORY_DELTA_PROPOSAL.json"
@@ -199,9 +195,11 @@ def materialize_project_update_review(packet_path: str | Path, output_dir: str |
         validated = _validate_packet(packet)
         if out.exists() or out.is_symlink():
             raise FileExistsError("output directory already exists")
-        parent = out.parent
-        if not parent.exists() or not parent.is_dir() or parent.is_symlink():
-            raise ValueError("output parent must be an existing non-symlink directory")
+        # Reuse the composed R40 target-parent invariant: the lexical output parent
+        # must be the physical parent, with no symlink/junction/alias ancestor.
+        canonical_parent = _safe_parent(out / ".r54-path-probe")
+        if canonical_parent != out.parent:
+            raise ValueError("output parent is not canonical")
     except Exception as exc:
         return _receipt(
             "PROJECT_UPDATE_MATERIALIZATION_REVISE",
