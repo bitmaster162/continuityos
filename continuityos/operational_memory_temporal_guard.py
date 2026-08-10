@@ -5,10 +5,11 @@ only for R37. For R38, which is already guarded by R40, the temporal patch is
 composed into the existing R40 post-import patch chain so target-path and temporal
 checks stay active together.
 
-R47 extends the R38 side of that same boundary: every bootstrap claim/decision
-``recorded_at`` must be no later than the exact validated ``bootstrap_recorded_at``
-that authorizes the manifest. This prevents manifest event-time from advancing the
-fresh OperationalMemory projection beyond its bootstrap authority time.
+R47 binds every bootstrap claim/decision ``recorded_at`` to the exact validated
+``bootstrap_recorded_at``. R49 additionally binds bootstrap claim ``valid_from`` to
+that same authority time. R38 emits claim events with ``occurred_at=valid_from``;
+without the R49 bound, a year-9999 valid_from can advance the fresh OperationalMemory
+projection clock to year 9999 even when authority and record times are current.
 """
 from __future__ import annotations
 
@@ -58,6 +59,16 @@ def _validate_bootstrap_record_times(module: ModuleType, manifest, bootstrap_tim
                 raise ValueError(
                     f"{collection}[{index}].recorded_at exceeds bootstrap_recorded_at"
                 )
+            if collection == "claims":
+                valid_from = _as_datetime(
+                    module,
+                    row.get("valid_from"),
+                    field=f"claims[{index}].valid_from",
+                )
+                if valid_from > bootstrap_time:
+                    raise ValueError(
+                        f"claims[{index}].valid_from exceeds bootstrap_recorded_at"
+                    )
 
 
 def _patch(module: ModuleType) -> None:
@@ -88,6 +99,9 @@ def _patch(module: ModuleType) -> None:
 
     guarded_validate_authorization.__continuityos_r46_temporal_guarded__ = True
     guarded_validate_authorization.__continuityos_r47_bootstrap_record_time_guarded__ = (
+        module.__name__ == _BOOTSTRAP_TARGET
+    )
+    guarded_validate_authorization.__continuityos_r49_bootstrap_valid_from_guarded__ = (
         module.__name__ == _BOOTSTRAP_TARGET
     )
     module._validate_authorization = guarded_validate_authorization
@@ -126,7 +140,7 @@ class _TemporalGuardFinder(MetaPathFinder):
 
 
 def _compose_with_r40() -> None:
-    """Append R46/R47's R38 patch to R40's existing post-import patch chain."""
+    """Append R46/R47/R49's R38 patch to R40's existing post-import patch chain."""
     r40 = sys.modules.get(_R40_GUARD_MODULE)
     if r40 is None:
         raise RuntimeError("R40 project-memory target guard must be loaded before temporal guards")
