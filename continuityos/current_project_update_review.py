@@ -20,6 +20,7 @@ from . import current_claim_sync as claim_sync
 from . import operational_memory_apply as apply
 from .current_memory_apply_auth_request import REQUEST_SCHEMA as AUTH_REQUEST_SCHEMA
 from .current_work import build_current_work_from_db
+from .operational_memory import OperationalMemory
 from .operational_memory_target_binding_guard import _validate_bound_target
 
 PACKET_SCHEMA = "continuityos.operational_memory.project_update_review/v1"
@@ -138,6 +139,31 @@ def build_project_update_review_packet(
                 "current-work changed after claim-sync projection: "
                 f"expected={expected_work_sha} actual={current_work.get('capsule_sha256')}"
             )
+
+        # R53: the work capsule is project-scoped, while R36/R37 bind the proposal to
+        # the entire OperationalMemory projection. An unrelated subject can therefore
+        # move projection/cursor/chain without changing this project's work capsule.
+        # Re-read the full immutable DB snapshot and require the exact R37 base identity
+        # before presenting a packet as ready for authority review.
+        target_path = target.get("path") if isinstance(target, Mapping) else None
+        if not isinstance(target_path, str) or not target_path:
+            raise ValueError("target binding returned no canonical path")
+        with OperationalMemory(target_path, read_only=True) as memory:
+            verification = memory.verify()
+            if verification.get("ok") is not True:
+                raise ValueError(
+                    "operational memory verification failed after claim-sync: "
+                    + "; ".join(verification.get("errors") or [])
+                )
+            current_projection = memory.projection()
+        expected_base = apply._expected_base(normalized)
+        actual_base = apply._base_identity(current_projection, project_id)
+        if actual_base != expected_base:
+            raise ValueError(
+                "operational-memory base changed after claim-sync projection: "
+                f"expected={expected_base} actual={actual_base}"
+            )
+
         proposal_canonical_json = apply._canonical_json(normalized)
         proposal_bytes = proposal_canonical_json.encode("utf-8")
         proposal_sha = hashlib.sha256(proposal_bytes).hexdigest()
