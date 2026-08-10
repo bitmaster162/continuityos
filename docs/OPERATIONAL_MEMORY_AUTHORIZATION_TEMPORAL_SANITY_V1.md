@@ -7,7 +7,9 @@ R46 closes a temporal-poisoning class in both shadow-memory effect paths:
 
 Before R46, those authority timestamps had no upper wall-clock bound. A structurally valid authorization dated `9999-12-31` therefore passed the relevant read-only preflight and the effectful gate. The authority timestamp is reused as durable event/record time, so a successful operation could advance `projection.valid_at` to year 9999 and distort later temporal ordering.
 
-R46 preserves the historical R37 and R38 implementation bytes. A stdlib-only lazy post-import guard wraps their shared authorization-validator boundaries. Because R44 reuses R37 `_validate_authorization` and R41 reuses R38 `_validate_authorization`, the read-only preflights and effectful gates share one temporal policy instead of duplicating it.
+R46 preserves the historical R37 and R38 implementation bytes. A stdlib-only lazy post-import guard wraps the R37 authorization boundary directly. R38 already has the R40 lazy target-path guard, so R46 composes its bootstrap temporal patch into R40's existing post-import patch chain instead of installing a competing finder. This guarantees both R40 path canonicalization and R46 temporal sanity remain active together.
+
+Because R44 reuses R37 `_validate_authorization` and R41 reuses R38 `_validate_authorization`, the read-only preflights and effectful gates share the same path-specific validation boundary instead of duplicating policy.
 
 The resulting invariant is:
 
@@ -23,6 +25,7 @@ The regression suite locks these cases:
 - year-9999 bootstrap authorization is rejected by R41 and R38 before target/temp creation;
 - exactly five minutes of positive apply clock skew is accepted;
 - more than five minutes of positive apply clock skew is rejected;
-- delayed historical apply authorization remains valid.
+- delayed historical apply authorization remains valid;
+- R40 target-path and R46 temporal guards are simultaneously active on R38.
 
 No new command, authority class, identity-authentication claim, execution permission, canonical-state mutation, deployment, dispatch, trading, wallet access, or capital permission is introduced.
