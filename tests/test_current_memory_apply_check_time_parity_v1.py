@@ -18,7 +18,21 @@ def _write(path, value):
 
 def test_omitted_valid_from_uses_apply_time_exactly_like_r37(tmp_path):
     db = tmp_path / "memory.db"
+    # Pin projection.valid_at before the tested apply time so the R37 authorization
+    # itself is valid and both paths reach the claim-window check.
     with OperationalMemory(str(db)) as memory:
+        memory.record_claim(
+            subject_id=PROJECT,
+            predicate="project.seed",
+            scope="global",
+            value="base",
+            evidence_state="UNKNOWN",
+            evidence_refs=[],
+            valid_from="2026-08-10T03:00:00Z",
+            recorded_at="2026-08-10T03:00:00Z",
+            actor_type="DETERMINISTIC_CONTROLLER",
+            actor_id="R44_TIME_BASE",
+        )
         assert memory.verify()["ok"] is True
 
     request = {
@@ -37,6 +51,7 @@ def test_omitted_valid_from_uses_apply_time_exactly_like_r37(tmp_path):
     }
     proposal = build_memory_delta_proposal_from_db(db, request)
     assert proposal["terminal"] == "CURRENT_MEMORY_DELTA_PROPOSAL_PASS"
+    assert proposal["base"]["valid_at"] == "2026-08-10T03:00:00.000000Z"
     proposal_path = tmp_path / "proposal.json"
     proposal_sha = _write(proposal_path, proposal)
     base = proposal["base"]
