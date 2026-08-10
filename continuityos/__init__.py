@@ -15,6 +15,7 @@ from .project_memory_target_guard import install_project_memory_target_path_guar
 from .operational_memory_temporal_guard import install_operational_memory_temporal_guard
 from .operational_memory_replay_guard import install_operational_memory_replay_guard
 from .operational_memory_target_binding_guard import install_operational_memory_target_binding_guard
+from .project_update_snapshot_guard import install_project_update_snapshot_guard
 
 # Install only stdlib meta-path watchers here. They do not import guarded target
 # modules and therefore preserve the package's historical lazy-loading property.
@@ -24,6 +25,7 @@ install_project_memory_target_path_guard()
 install_operational_memory_temporal_guard()
 install_operational_memory_replay_guard()
 install_operational_memory_target_binding_guard()
+install_project_update_snapshot_guard()
 
 
 __all__ = [
