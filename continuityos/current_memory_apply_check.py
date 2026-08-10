@@ -57,9 +57,14 @@ def _result(terminal: str, reason: str, *, project_id: str | None = None, errors
     }
 
 
-def _check_operation_targets(memory: Any, proposal: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _check_operation_targets(
+    memory: Any,
+    proposal: Mapping[str, Any],
+    authorization: Mapping[str, Any],
+) -> list[dict[str, Any]]:
     con = memory.con
     project_id = proposal["project_id"]
+    rec = authorization["apply_recorded_at"]
     checked: list[dict[str, Any]] = []
     for op in proposal["operations"]:
         kind = op["op"]
@@ -72,14 +77,11 @@ def _check_operation_targets(memory: Any, proposal: Mapping[str, Any]) -> list[d
             refs = apply.normalize_evidence_refs(op.get("evidence_refs"))
             if state != "UNKNOWN" and not refs:
                 raise apply.PolicyViolation(f"{state} claim requires immutable evidence")
-            vf = op.get("valid_from")
-            vt = op.get("valid_to")
-            if vf is not None:
-                vf = apply._normalize_time(vf, field="valid_from")
-            if vt is not None:
-                vt = apply._normalize_time(vt, field="valid_to")
-                if vf is not None and vt <= vf:
-                    raise ValueError("valid_to must be later than valid_from")
+            # Mirror R37 exactly: an omitted valid_from means apply_recorded_at.
+            vf = apply._normalize_time(op.get("valid_from") or rec, field="valid_from")
+            vt = apply._normalize_time(op.get("valid_to"), field="valid_to") if op.get("valid_to") is not None else None
+            if vt is not None and vt <= vf:
+                raise ValueError("valid_to must be later than valid_from")
             target_id = op.get("supersedes_id")
             if target_id:
                 row = con.execute("SELECT * FROM claims WHERE claim_id=?", (target_id,)).fetchone()
@@ -207,7 +209,7 @@ def check_authorized_memory_delta(db_path: str | Path, proposal_path: str | Path
                     r37_revalidation_required=True,
                     **common,
                 )
-            checked = _check_operation_targets(memory, proposal)
+            checked = _check_operation_targets(memory, proposal, authorization)
     except Exception as exc:
         return _result(
             "CURRENT_MEMORY_APPLY_CHECK_REVISE",
