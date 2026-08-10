@@ -1,7 +1,7 @@
 """Packet-aware read-only preflight after R52 authority review.
 
-R54 accepts an exact R52 review packet plus a separately completed R37
-authorization artifact. It validates the packet/proposal transport in memory and
+R54 accepts an exact R52 review packet plus separately completed raw R37
+authorization bytes. It validates the packet/proposal transport in memory and
 reuses the R37 validators plus R44 operation-target checker against an immutable
 OperationalMemory snapshot. It never materializes proposal bytes, writes memory,
 or grants execution. R37 remains the separate unbound effectful gate and must
@@ -124,15 +124,23 @@ def _validate_packet(value: Any) -> tuple[dict[str, Any], dict[str, Any], bytes,
 def preflight_project_update_packet(
     db_path: str | Path,
     packet: Mapping[str, Any],
-    authorization: Mapping[str, Any],
-    *,
-    authorization_file_sha256: str,
+    authorization_bytes: bytes,
 ) -> dict[str, Any]:
     """Validate an R52 packet + completed authorization against immutable memory."""
     try:
+        if not isinstance(authorization_bytes, bytes) or not authorization_bytes:
+            raise ValueError("authorization bytes must be non-empty bytes")
+        authorization_file_sha256 = hashlib.sha256(authorization_bytes).hexdigest()
+        try:
+            authorization_raw = strict_json_loads(authorization_bytes.decode("utf-8-sig"))
+        except Exception as exc:
+            raise ValueError(f"authorization invalid JSON: {exc}") from exc
+        if not isinstance(authorization_raw, Mapping):
+            raise ValueError("authorization root must be an object")
+
         packet_value, proposal, proposal_bytes, proposal_sha = _validate_packet(packet)
         auth = apply._validate_authorization(
-            authorization,
+            authorization_raw,
             proposal=proposal,
             proposal_file_sha256=proposal_sha,
         )
