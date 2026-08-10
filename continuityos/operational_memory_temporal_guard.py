@@ -1,9 +1,10 @@
 """Lazy temporal-sanity guard for shadow-memory authority timestamps.
 
-R46 preserves the historical R37/R38 implementation bytes and wraps only their
-shared authorization-validator boundaries after module import. R44 and R41 reuse
-those validators, so both read-only preflights and both effectful gates reject
-implausibly future authority timestamps before any write can occur.
+R46 preserves the historical R37/R38 implementation bytes. It owns a lazy loader
+only for R37. For R38, which is already guarded by R40, R46 composes its temporal
+patch into the existing R40 post-import patch instead of installing a competing
+meta-path finder. This guarantees target-path canonicalization and temporal sanity
+are both active on project-memory bootstrap.
 """
 from __future__ import annotations
 
@@ -14,9 +15,12 @@ from importlib.machinery import PathFinder
 import sys
 from types import ModuleType
 
+_APPLY_TARGET = "continuityos.operational_memory_apply"
+_BOOTSTRAP_TARGET = "continuityos.project_memory_bootstrap"
+_R40_GUARD_MODULE = "continuityos.project_memory_target_guard"
 _TARGET_FIELDS = {
-    "continuityos.operational_memory_apply": "apply_recorded_at",
-    "continuityos.project_memory_bootstrap": "bootstrap_recorded_at",
+    _APPLY_TARGET: "apply_recorded_at",
+    _BOOTSTRAP_TARGET: "bootstrap_recorded_at",
 }
 MAX_AUTH_FUTURE_SKEW_SECONDS = 300
 
@@ -37,10 +41,7 @@ def _patch(module: ModuleType) -> None:
     @wraps(original)
     def guarded_validate_authorization(*args, **kwargs):
         authorization = original(*args, **kwargs)
-        normalized = module._normalize_time(
-            authorization[field],
-            field=field,
-        )
+        normalized = module._normalize_time(authorization[field], field=field)
         authority_time = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
         latest = _utc_now() + timedelta(seconds=MAX_AUTH_FUTURE_SKEW_SECONDS)
         if authority_time > latest:
@@ -74,7 +75,8 @@ class _TemporalGuardFinder(MetaPathFinder):
     __continuityos_r46_temporal_guard_finder__ = True
 
     def find_spec(self, fullname, path=None, target=None):
-        if fullname not in _TARGET_FIELDS:
+        # R38 is deliberately not handled here: R40 already owns its loader.
+        if fullname != _APPLY_TARGET:
             return None
         spec = PathFinder.find_spec(fullname, path)
         if spec is None or spec.loader is None:
@@ -85,15 +87,40 @@ class _TemporalGuardFinder(MetaPathFinder):
         return spec
 
 
+def _compose_with_r40() -> None:
+    """Append R46's R38 patch to R40's existing post-import patch chain."""
+    r40 = sys.modules.get(_R40_GUARD_MODULE)
+    if r40 is None:
+        raise RuntimeError("R40 project-memory target guard must be loaded before R46")
+    original = r40._patch
+    if getattr(original, "__continuityos_r46_temporal_composed__", False):
+        return
+
+    @wraps(original)
+    def combined_patch(module):
+        original(module)
+        _patch(module)
+
+    combined_patch.__continuityos_r46_temporal_composed__ = True
+    r40._patch = combined_patch
+
+
 def install_operational_memory_temporal_guard() -> None:
-    """Install lazy R46 guards without eagerly importing R37/R38 code."""
+    """Install R46 while preserving the existing R40 bootstrap loader guard."""
+    _compose_with_r40()
+
     if not any(
         getattr(finder, "__continuityos_r46_temporal_guard_finder__", False)
         for finder in sys.meta_path
     ):
         sys.meta_path.insert(0, _TemporalGuardFinder())
 
-    for target in _TARGET_FIELDS:
-        module = sys.modules.get(target)
-        if module is not None:
-            _patch(module)
+    apply_module = sys.modules.get(_APPLY_TARGET)
+    if apply_module is not None:
+        _patch(apply_module)
+
+    # If R38 was imported before this installer, R40 has already patched it; add
+    # the temporal layer directly. Otherwise R40's composed loader will do both.
+    bootstrap_module = sys.modules.get(_BOOTSTRAP_TARGET)
+    if bootstrap_module is not None:
+        _patch(bootstrap_module)
