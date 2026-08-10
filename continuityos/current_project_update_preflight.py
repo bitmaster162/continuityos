@@ -75,7 +75,8 @@ def _result(terminal: str, reason: str, *, errors=None, project_id=None, **extra
 def _validate_packet(value: Any) -> tuple[dict[str, Any], dict[str, Any], bytes, str]:
     if not isinstance(value, Mapping):
         raise ValueError("packet root must be an object")
-    missing = _PACKET_BODY_KEYS | {"packet_id"} - set(value)
+    required = _PACKET_BODY_KEYS | {"packet_id"}
+    missing = required - set(value)
     if missing:
         raise ValueError(f"packet missing required keys: {sorted(missing)}")
     if value.get("schema") != PACKET_SCHEMA:
