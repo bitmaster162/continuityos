@@ -211,3 +211,16 @@ def test_delayed_historical_authorization_remains_valid(monkeypatch, tmp_path):
         proposal_file_sha256=apply._sha_bytes(proposal_path.read_bytes()),
     )
     assert validated["apply_recorded_at"] == "2026-08-10T04:10:00.000000Z"
+
+
+def test_r40_target_guard_and_r46_temporal_guard_compose_on_bootstrap():
+    assert getattr(
+        bootstrap._safe_parent,
+        "__continuityos_r40_target_path_guarded__",
+        False,
+    ) is True
+    assert getattr(
+        bootstrap._validate_authorization,
+        "__continuityos_r46_temporal_guarded__",
+        False,
+    ) is True
