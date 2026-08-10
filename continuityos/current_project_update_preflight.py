@@ -179,6 +179,23 @@ def preflight_project_update_packet(
                 raise ValueError("operational memory verification failed")
             prior = apply._find_prior_apply(memory, proposal["proposal_id"], proposal_sha)
             if prior is not None:
+                durable_auth_sha = prior.get("payload", {}).get("authorization_file_sha256")
+                if durable_auth_sha != authorization_file_sha256:
+                    return _result(
+                        "CURRENT_PROJECT_UPDATE_PREFLIGHT_REVISE",
+                        "REPLAY_AUTHORIZATION_IDENTITY_MISMATCH",
+                        project_id=project_id,
+                        errors=[
+                            f"durable_authorization_file_sha256={durable_auth_sha}",
+                            f"presented_authorization_file_sha256={authorization_file_sha256}",
+                        ],
+                        durable_apply_event=prior,
+                        durable_authorization_file_sha256=durable_auth_sha,
+                        presented_authorization_file_sha256=authorization_file_sha256,
+                        effectful_gate_required=False,
+                        r37_revalidation_required=False,
+                        **common,
+                    )
                 projection = memory.projection()
                 return _result(
                     "CURRENT_PROJECT_UPDATE_PREFLIGHT_ALREADY_APPLIED",
