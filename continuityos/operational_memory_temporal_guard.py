@@ -1,10 +1,14 @@
 """Lazy temporal-sanity guard for shadow-memory authority timestamps.
 
 R46 preserves the historical R37/R38 implementation bytes. It owns a lazy loader
-only for R37. For R38, which is already guarded by R40, R46 composes its temporal
-patch into the existing R40 post-import patch instead of installing a competing
-meta-path finder. This guarantees target-path canonicalization and temporal sanity
-are both active on project-memory bootstrap.
+only for R37. For R38, which is already guarded by R40, the temporal patch is
+composed into the existing R40 post-import patch chain so target-path and temporal
+checks stay active together.
+
+R47 extends the R38 side of that same boundary: every bootstrap claim/decision
+``recorded_at`` must be no later than the exact validated ``bootstrap_recorded_at``
+that authorizes the manifest. This prevents manifest event-time from advancing the
+fresh OperationalMemory projection beyond its bootstrap authority time.
 """
 from __future__ import annotations
 
@@ -30,6 +34,32 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _as_datetime(module: ModuleType, value, *, field: str) -> datetime:
+    normalized = module._normalize_time(value, field=field)
+    return datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+
+
+def _validate_bootstrap_record_times(module: ModuleType, manifest, bootstrap_time: datetime) -> None:
+    if not isinstance(manifest, dict):
+        raise ValueError("bootstrap manifest missing during temporal validation")
+    for collection in ("claims", "proposed_decisions"):
+        rows = manifest.get(collection)
+        if not isinstance(rows, list):
+            raise ValueError(f"bootstrap manifest {collection} missing during temporal validation")
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                raise ValueError(f"bootstrap manifest {collection}[{index}] invalid during temporal validation")
+            recorded = _as_datetime(
+                module,
+                row.get("recorded_at"),
+                field=f"{collection}[{index}].recorded_at",
+            )
+            if recorded > bootstrap_time:
+                raise ValueError(
+                    f"{collection}[{index}].recorded_at exceeds bootstrap_recorded_at"
+                )
+
+
 def _patch(module: ModuleType) -> None:
     field = _TARGET_FIELDS.get(module.__name__)
     if field is None:
@@ -41,17 +71,25 @@ def _patch(module: ModuleType) -> None:
     @wraps(original)
     def guarded_validate_authorization(*args, **kwargs):
         authorization = original(*args, **kwargs)
-        normalized = module._normalize_time(authorization[field], field=field)
-        authority_time = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+        authority_time = _as_datetime(module, authorization[field], field=field)
         latest = _utc_now() + timedelta(seconds=MAX_AUTH_FUTURE_SKEW_SECONDS)
         if authority_time > latest:
             raise ValueError(
                 f"{field} exceeds allowed future clock skew of "
                 f"{MAX_AUTH_FUTURE_SKEW_SECONDS} seconds"
             )
+        if module.__name__ == _BOOTSTRAP_TARGET:
+            _validate_bootstrap_record_times(
+                module,
+                kwargs.get("manifest"),
+                authority_time,
+            )
         return authorization
 
     guarded_validate_authorization.__continuityos_r46_temporal_guarded__ = True
+    guarded_validate_authorization.__continuityos_r47_bootstrap_record_time_guarded__ = (
+        module.__name__ == _BOOTSTRAP_TARGET
+    )
     module._validate_authorization = guarded_validate_authorization
 
 
@@ -88,10 +126,10 @@ class _TemporalGuardFinder(MetaPathFinder):
 
 
 def _compose_with_r40() -> None:
-    """Append R46's R38 patch to R40's existing post-import patch chain."""
+    """Append R46/R47's R38 patch to R40's existing post-import patch chain."""
     r40 = sys.modules.get(_R40_GUARD_MODULE)
     if r40 is None:
-        raise RuntimeError("R40 project-memory target guard must be loaded before R46")
+        raise RuntimeError("R40 project-memory target guard must be loaded before temporal guards")
     original = r40._patch
     if getattr(original, "__continuityos_r46_temporal_composed__", False):
         return
@@ -106,7 +144,7 @@ def _compose_with_r40() -> None:
 
 
 def install_operational_memory_temporal_guard() -> None:
-    """Install R46 while preserving the existing R40 bootstrap loader guard."""
+    """Install temporal guards while preserving the existing R40 bootstrap loader."""
     _compose_with_r40()
 
     if not any(
