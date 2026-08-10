@@ -7,9 +7,11 @@ checks stay active together.
 
 R47 binds every bootstrap claim/decision ``recorded_at`` to the exact validated
 ``bootstrap_recorded_at``. R49 additionally binds bootstrap claim ``valid_from`` to
-that same authority time. R38 emits claim events with ``occurred_at=valid_from``;
-without the R49 bound, a year-9999 valid_from can advance the fresh OperationalMemory
-projection clock to year 9999 even when authority and record times are current.
+that same authority time. R50 applies the symmetric rule to R37/R44 claim delta
+operations: an explicit claim ``valid_from`` cannot be later than the exact
+``apply_recorded_at`` that authorizes the operation. Both R38 and R37 emit claim
+events with ``occurred_at=valid_from``; the bounds prevent future event-time from
+advancing OperationalMemory's projection clock beyond the approving authority time.
 """
 from __future__ import annotations
 
@@ -71,6 +73,32 @@ def _validate_bootstrap_record_times(module: ModuleType, manifest, bootstrap_tim
                     )
 
 
+def _validate_apply_operation_times(module: ModuleType, proposal, apply_time: datetime) -> None:
+    if not isinstance(proposal, dict):
+        raise ValueError("apply proposal missing during temporal validation")
+    operations = proposal.get("operations")
+    if not isinstance(operations, list):
+        raise ValueError("apply proposal operations missing during temporal validation")
+    for index, operation in enumerate(operations):
+        if not isinstance(operation, dict):
+            raise ValueError(f"operations[{index}] invalid during temporal validation")
+        if operation.get("op") not in {"RECORD_CLAIM", "SUPERSEDE_CLAIM"}:
+            continue
+        # R37 defaults an omitted valid_from to apply_recorded_at, so omission is
+        # already temporally bounded and remains backward-compatible.
+        if operation.get("valid_from") is None:
+            continue
+        valid_from = _as_datetime(
+            module,
+            operation.get("valid_from"),
+            field=f"operations[{index}].valid_from",
+        )
+        if valid_from > apply_time:
+            raise ValueError(
+                f"operations[{index}].valid_from exceeds apply_recorded_at"
+            )
+
+
 def _patch(module: ModuleType) -> None:
     field = _TARGET_FIELDS.get(module.__name__)
     if field is None:
@@ -95,6 +123,12 @@ def _patch(module: ModuleType) -> None:
                 kwargs.get("manifest"),
                 authority_time,
             )
+        elif module.__name__ == _APPLY_TARGET:
+            _validate_apply_operation_times(
+                module,
+                kwargs.get("proposal"),
+                authority_time,
+            )
         return authorization
 
     guarded_validate_authorization.__continuityos_r46_temporal_guarded__ = True
@@ -103,6 +137,9 @@ def _patch(module: ModuleType) -> None:
     )
     guarded_validate_authorization.__continuityos_r49_bootstrap_valid_from_guarded__ = (
         module.__name__ == _BOOTSTRAP_TARGET
+    )
+    guarded_validate_authorization.__continuityos_r50_apply_valid_from_guarded__ = (
+        module.__name__ == _APPLY_TARGET
     )
     module._validate_authorization = guarded_validate_authorization
 
