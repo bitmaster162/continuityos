@@ -41,6 +41,7 @@ dev = ["pytest>=7", "pytest-cov>=4", "ruff>=0.5"]
 cos = "continuityos.current_entrypoints:cos_main"
 continuity = "continuityos.current_runtime_cli:main"
 continuity-work = "continuityos.current_work_cli:main"
+continuity-project-update-review = "continuityos.current_project_update_review_cli:main"
 continuity-memory-delta = "continuityos.current_memory_delta_cli:main"
 continuity-memory-claim-sync-plan = "continuityos.current_claim_sync_cli:main"
 continuity-memory-apply-auth-request = "continuityos.current_memory_apply_auth_request_cli:main"
