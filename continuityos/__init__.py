@@ -12,12 +12,14 @@ from typing import Dict, Tuple
 from ._version import __version__
 from .current_direct_surface_guard import install_direct_surface_guards
 from .project_memory_target_guard import install_project_memory_target_path_guard
+from .operational_memory_temporal_guard import install_operational_memory_temporal_guard
 
 # Install only stdlib meta-path watchers here. They do not import guarded target
 # modules and therefore preserve the package's historical lazy-loading property.
 # Guards are applied only when a target is later imported.
 install_direct_surface_guards()
 install_project_memory_target_path_guard()
+install_operational_memory_temporal_guard()
 
 
 __all__ = [
