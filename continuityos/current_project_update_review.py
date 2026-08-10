@@ -2,7 +2,7 @@
 
 R52 composes the already-merged R43 claim-sync planner, R51 target-bound R36
 proposal, R35 current-work view and R45 authorization-review contract into one
- deterministic JSON packet. It removes manual claim-id/hash and proposal-file SHA
+deterministic JSON packet. It removes manual claim-id/hash and proposal-file SHA
 copying while deliberately stopping before authority or effects.
 
 The packet contains exact proposal bytes/hash plus an intentionally incomplete R37
@@ -132,6 +132,12 @@ def build_project_update_review_packet(
         current_work = build_current_work_from_db(db_path, project_id)
         if current_work.get("terminal") == "CURRENT_WORK_REVISE":
             raise ValueError("current-work is REVISE: " + "; ".join(current_work.get("errors") or []))
+        expected_work_sha = normalized["base"].get("current_work_capsule_sha256")
+        if current_work.get("capsule_sha256") != expected_work_sha:
+            raise ValueError(
+                "current-work changed after claim-sync projection: "
+                f"expected={expected_work_sha} actual={current_work.get('capsule_sha256')}"
+            )
         proposal_canonical_json = apply._canonical_json(normalized)
         proposal_bytes = proposal_canonical_json.encode("utf-8")
         proposal_sha = hashlib.sha256(proposal_bytes).hexdigest()
