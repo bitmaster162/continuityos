@@ -1,9 +1,9 @@
-"""Lazy temporal-sanity guard for R37 shadow-memory authorizations.
+"""Lazy temporal-sanity guard for shadow-memory authority timestamps.
 
-R46 preserves the historical R37 implementation bytes and wraps only its shared
-``_validate_authorization`` boundary after module import. R44 reuses that same
-validator, so both point-in-time preflight and the effectful R37 gate reject an
-implausibly future ``apply_recorded_at`` before any write can occur.
+R46 preserves the historical R37/R38 implementation bytes and wraps only their
+shared authorization-validator boundaries after module import. R44 and R41 reuse
+those validators, so both read-only preflights and both effectful gates reject
+implausibly future authority timestamps before any write can occur.
 """
 from __future__ import annotations
 
@@ -14,7 +14,10 @@ from importlib.machinery import PathFinder
 import sys
 from types import ModuleType
 
-_TARGET = "continuityos.operational_memory_apply"
+_TARGET_FIELDS = {
+    "continuityos.operational_memory_apply": "apply_recorded_at",
+    "continuityos.project_memory_bootstrap": "bootstrap_recorded_at",
+}
 MAX_AUTH_FUTURE_SKEW_SECONDS = 300
 
 
@@ -24,26 +27,25 @@ def _utc_now() -> datetime:
 
 
 def _patch(module: ModuleType) -> None:
+    field = _TARGET_FIELDS.get(module.__name__)
+    if field is None:
+        return
     original = module._validate_authorization
     if getattr(original, "__continuityos_r46_temporal_guarded__", False):
         return
 
     @wraps(original)
-    def guarded_validate_authorization(value, *, proposal, proposal_file_sha256):
-        authorization = original(
-            value,
-            proposal=proposal,
-            proposal_file_sha256=proposal_file_sha256,
-        )
+    def guarded_validate_authorization(*args, **kwargs):
+        authorization = original(*args, **kwargs)
         normalized = module._normalize_time(
-            authorization["apply_recorded_at"],
-            field="apply_recorded_at",
+            authorization[field],
+            field=field,
         )
-        apply_time = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+        authority_time = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
         latest = _utc_now() + timedelta(seconds=MAX_AUTH_FUTURE_SKEW_SECONDS)
-        if apply_time > latest:
+        if authority_time > latest:
             raise ValueError(
-                "apply_recorded_at exceeds allowed future clock skew of "
+                f"{field} exceeds allowed future clock skew of "
                 f"{MAX_AUTH_FUTURE_SKEW_SECONDS} seconds"
             )
         return authorization
@@ -72,7 +74,7 @@ class _TemporalGuardFinder(MetaPathFinder):
     __continuityos_r46_temporal_guard_finder__ = True
 
     def find_spec(self, fullname, path=None, target=None):
-        if fullname != _TARGET:
+        if fullname not in _TARGET_FIELDS:
             return None
         spec = PathFinder.find_spec(fullname, path)
         if spec is None or spec.loader is None:
@@ -84,13 +86,14 @@ class _TemporalGuardFinder(MetaPathFinder):
 
 
 def install_operational_memory_temporal_guard() -> None:
-    """Install the lazy R46 guard without eagerly importing R37 apply code."""
+    """Install lazy R46 guards without eagerly importing R37/R38 code."""
     if not any(
         getattr(finder, "__continuityos_r46_temporal_guard_finder__", False)
         for finder in sys.meta_path
     ):
         sys.meta_path.insert(0, _TemporalGuardFinder())
 
-    module = sys.modules.get(_TARGET)
-    if module is not None:
-        _patch(module)
+    for target in _TARGET_FIELDS:
+        module = sys.modules.get(target)
+        if module is not None:
+            _patch(module)
