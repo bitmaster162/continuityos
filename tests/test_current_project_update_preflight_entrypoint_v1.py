@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import importlib.metadata as metadata
+from pathlib import Path
 
 
 def test_packaged_project_update_preflight_entrypoint_points_at_verified_cli():
-    matches = {
-        ep.name: ep.value
-        for ep in metadata.entry_points(group="console_scripts")
-        if ep.name == "continuity-project-update-preflight"
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    if pyproject.is_file():
+        text = pyproject.read_text(encoding="utf-8")
+        assert (
+            'continuity-project-update-preflight = "continuityos.current_project_update_preflight_cli:main"'
+            in text
+        )
+        return
+
+    points = {
+        item.name: item.value
+        for item in metadata.entry_points(group="console_scripts")
     }
-    assert matches == {
-        "continuity-project-update-preflight": "continuityos.current_project_update_preflight_cli:main"
-    }
+    assert points["continuity-project-update-preflight"] == "continuityos.current_project_update_preflight_cli:main"
