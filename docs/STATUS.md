@@ -27,11 +27,24 @@ MCP         CONFIGURED  (config only; no live probe)
 Governance  ARMED  6 canon item(s)
 ```
 
+## Zero-write snapshot contract
+
+The selected memory DB is read through SQLite `immutable=1`, not through a normal writable or WAL-participating connection. Before and after the snapshot, `cos status` checks for non-empty `-wal` or rollback-journal sidecars and verifies that the main DB size/mtime did not change during the read.
+
+If the database is actively changing or has a non-empty sidecar, status returns:
+
+```text
+COS_STATUS_HOLD
+reason = MEMORY_DB_NOT_QUIESCENT
+```
+
+It does not ignore active WAL state and it does not perform recovery or checkpointing merely to obtain a status view.
+
 ## What it reads
 
-- the exact existing ContinuityOS memory DB, opened read-only;
+- the exact existing ContinuityOS memory DB from one quiescent immutable snapshot;
 - memory count and namespaces;
-- continuity doctor checks;
+- the same continuity-doctor invariants from that snapshot;
 - frontiers and open loops;
 - the latest checkpoint and its recorded next action;
 - Claude and Cursor MCP configuration for the selected DB;
@@ -42,15 +55,16 @@ Governance  ARMED  6 canon item(s)
 `cos status` does **not**:
 
 - create a missing memory DB;
-- migrate or repair a DB;
+- migrate, checkpoint, recover, or repair a DB;
 - write memory;
+- create SQLite sidecars as part of the status snapshot;
 - modify Claude or Cursor configuration;
 - spawn an MCP subprocess;
 - make a network request;
 - dispatch an agent;
 - deploy anything.
 
-If the DB is missing or unreadable, the command returns `COS_STATUS_HOLD` and leaves the path untouched.
+If the DB is missing or unreadable, the command returns `COS_STATUS_HOLD` and leaves the path untouched. If it is non-quiescent, it returns HOLD rather than reporting a potentially stale immutable view.
 
 ## MCP status semantics
 
@@ -64,7 +78,7 @@ This is deliberately **not** called live MCP health because `cos status` does no
 
 ## Continuity semantics
 
-`Continuity HEALTHY` is the existing `Continuity.doctor()` verdict. `ATTENTION` does not silently rewrite or repair anything; use `--verbose` to see every doctor check.
+`Continuity HEALTHY` uses the same invariants as the existing `Continuity.doctor()` surface, evaluated from the immutable snapshot. `ATTENTION` does not silently rewrite or repair anything; use `--verbose` to see every check.
 
 `Next action` is the `next` field from the latest recorded checkpoint. If there is no checkpoint, it is `—`. The status command never invents a successor action.
 
