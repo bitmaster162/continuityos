@@ -1,0 +1,30 @@
+{
+  "$id": "continuityos.github_transition.terminal_state/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "continuityos.github_transition.terminal_state/v1"
+    },
+    "task_body_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "task_id": {
+      "const": "FINAL_HOST_CLOSURE_AND_GITHUB_TRANSITION_R1"
+    },
+    "terminal": {
+      "enum": [
+        "FINAL_HOST_CLOSURE_AND_GITHUB_TRANSITION_COMPLETE",
+        "FINAL_HOST_CLOSURE_AND_GITHUB_TRANSITION_REVISE"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "task_id",
+    "task_body_sha256",
+    "terminal"
+  ],
+  "type": "object"
+}

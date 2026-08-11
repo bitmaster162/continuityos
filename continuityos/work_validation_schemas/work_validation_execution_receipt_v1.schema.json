@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "continuityos.work_validation.execution_receipt/v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "execution_schema",
+    "status",
+    "admission_binding_sha256",
+    "admission_receipt_sha256",
+    "base_head",
+    "candidate_head",
+    "candidate_tree",
+    "candidate_branch",
+    "commands",
+    "worktree_clean_before",
+    "worktree_clean_after",
+    "network_access_used",
+    "dependency_install_used",
+    "full_suite_runs",
+    "install_attempts",
+    "total_output_bytes",
+    "effects"
+  ],
+  "properties": {
+    "schema": {"const": "continuityos.work_admission.validation_receipt/v1"},
+    "execution_schema": {"const": "continuityos.work_validation.execution_receipt/v1"},
+    "status": {
+      "enum": [
+        "WORK_VALIDATION_EXECUTION_PASS",
+        "WORK_VALIDATION_EXECUTION_HOLD",
+        "WORK_VALIDATION_EXECUTION_REVISE"
+      ]
+    },
+    "admission_binding_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "admission_receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "base_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "candidate_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "candidate_tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "candidate_branch": {"type": "string"},
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id", "argv", "cwd", "kind", "timeout_seconds",
+          "max_stdout_bytes", "max_stderr_bytes", "exit_code",
+          "duration_ms", "stdout_path", "stderr_path",
+          "stdout_size_bytes", "stderr_size_bytes",
+          "stdout_sha256", "stderr_sha256", "timed_out",
+          "output_limit_exceeded", "truncated"
+        ],
+        "properties": {
+          "id": {"type": "string"},
+          "argv": {"type": "array", "items": {"type": "string"}},
+          "cwd": {"type": "string"},
+          "kind": {"enum": ["FOCUSED", "FULL_SUITE", "BUILD", "STATIC", "SECURITY", "OTHER"]},
+          "timeout_seconds": {"type": "integer", "minimum": 1},
+          "max_stdout_bytes": {"type": "integer", "minimum": 0},
+          "max_stderr_bytes": {"type": "integer", "minimum": 0},
+          "exit_code": {"type": ["integer", "null"]},
+          "duration_ms": {"type": "integer", "minimum": 0},
+          "stdout_path": {"type": "string"},
+          "stderr_path": {"type": "string"},
+          "stdout_size_bytes": {"type": "integer", "minimum": 0},
+          "stderr_size_bytes": {"type": "integer", "minimum": 0},
+          "stdout_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "stderr_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "timed_out": {"type": "boolean"},
+          "output_limit_exceeded": {"type": "boolean"},
+          "truncated": {"type": "boolean"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "worktree_clean_before": {"const": true},
+    "worktree_clean_after": {"const": true},
+    "network_access_used": {"enum": ["DENY", "READ_ONLY"]},
+    "dependency_install_used": {"enum": ["DENY", "LOCKED_ONLY"]},
+    "full_suite_runs": {"type": "integer", "minimum": 0},
+    "install_attempts": {"type": "integer", "minimum": 0},
+    "total_output_bytes": {"type": "integer", "minimum": 0},
+    "effects": {"type": "object"}
+  },
+  "additionalProperties": true
+}

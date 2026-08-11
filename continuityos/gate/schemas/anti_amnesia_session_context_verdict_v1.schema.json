@@ -1,0 +1,121 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "ack_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "binding_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "can_trade": {
+      "const": false,
+      "type": "boolean"
+    },
+    "capital_permission": {
+      "const": "DENY",
+      "type": "string"
+    },
+    "challenge_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "checks": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "check_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "code": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "PASS",
+              "FAIL"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "check_id",
+          "status",
+          "code"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "live_state_modified": {
+      "const": false,
+      "type": "boolean"
+    },
+    "mismatches": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "expected": {},
+          "observed": {},
+          "path": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "expected",
+          "observed"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "outcome": {
+      "enum": [
+        "PASS",
+        "FAIL"
+      ],
+      "type": "string"
+    },
+    "release_blocked": {
+      "type": "boolean"
+    },
+    "schema": {
+      "const": "ANTI_AMNESIA_SESSION_CONTEXT_VERDICT_V1",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "SESSION_CONTEXT_PASS",
+        "SESSION_CONTEXT_FAIL"
+      ],
+      "type": "string"
+    },
+    "writes_performed": {
+      "maxItems": 0,
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema",
+    "binding_id",
+    "challenge_sha256",
+    "ack_sha256",
+    "checks",
+    "mismatches",
+    "outcome",
+    "status",
+    "release_blocked",
+    "live_state_modified",
+    "writes_performed",
+    "can_trade",
+    "capital_permission"
+  ],
+  "title": "Anti-Amnesia Session Context Verdict v1",
+  "type": "object"
+}

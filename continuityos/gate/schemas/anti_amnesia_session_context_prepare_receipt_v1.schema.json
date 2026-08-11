@@ -1,0 +1,115 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "base_challenge_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "binding_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "binding_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "can_trade": {
+      "const": false,
+      "type": "boolean"
+    },
+    "capital_permission": {
+      "const": "DENY",
+      "type": "string"
+    },
+    "challenge_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "checkpoint_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "context_spec_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "context_verification_receipt_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "expected_ack_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "live_state_modified": {
+      "const": false,
+      "type": "boolean"
+    },
+    "operational_context_file_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "operational_context_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "output_dir": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema": {
+      "const": "ANTI_AMNESIA_SESSION_CONTEXT_PREPARE_RECEIPT_V1",
+      "type": "string"
+    },
+    "session_input_manifest_file_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "session_input_manifest_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "session_input_replay_receipt_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "status": {
+      "const": "SESSION_CONTEXT_CHALLENGE_READY",
+      "type": "string"
+    },
+    "writes_performed": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "schema",
+    "binding_id",
+    "output_dir",
+    "base_challenge_sha256",
+    "session_input_manifest_file_sha256",
+    "session_input_manifest_sha256",
+    "binding_sha256",
+    "operational_context_file_sha256",
+    "operational_context_sha256",
+    "context_spec_sha256",
+    "context_verification_receipt_sha256",
+    "session_input_replay_receipt_sha256",
+    "challenge_sha256",
+    "expected_ack_sha256",
+    "checkpoint_id",
+    "status",
+    "live_state_modified",
+    "writes_performed",
+    "can_trade",
+    "capital_permission"
+  ],
+  "title": "Anti-Amnesia Session Context Prepare Receipt v1",
+  "type": "object"
+}

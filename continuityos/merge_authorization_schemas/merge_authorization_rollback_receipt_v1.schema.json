@@ -1,0 +1,46 @@
+{
+  "$id": "continuityos.merge_authorization.rollback_receipt/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "base_head": {
+      "type": "string"
+    },
+    "candidate_head": {
+      "type": "string"
+    },
+    "destructive_reset": {
+      "const": false
+    },
+    "effects": {
+      "type": "object"
+    },
+    "repository": {
+      "type": "string"
+    },
+    "schema": {
+      "const": "continuityos.merge_authorization.rollback_receipt/v1"
+    },
+    "strategy": {
+      "const": "REVERT_MERGE_COMMIT"
+    },
+    "tested": {
+      "const": true
+    },
+    "validation_status": {
+      "const": "PASS"
+    }
+  },
+  "required": [
+    "schema",
+    "strategy",
+    "tested",
+    "validation_status",
+    "destructive_reset",
+    "repository",
+    "base_head",
+    "candidate_head",
+    "effects"
+  ],
+  "type": "object"
+}

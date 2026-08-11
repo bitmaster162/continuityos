@@ -1,0 +1,58 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ANTI_AMNESIA_COLD_START_CHALLENGE_V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "challenge_id", "gate", "mode", "authority_generation",
+    "boot_receipt", "session_spec", "candidate_capsule",
+    "controller_expected_ack", "candidate_instructions", "live_state_modified",
+    "can_trade", "capital_permission"
+  ],
+  "properties": {
+    "schema": {"const": "ANTI_AMNESIA_COLD_START_CHALLENGE_V1"},
+    "challenge_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "gate": {"const": "ANTI_AMNESIA_GATE_V1"},
+    "mode": {"const": "SHADOW"},
+    "authority_generation": {"const": "R63"},
+    "boot_receipt": {"$ref": "#/definitions/source"},
+    "session_spec": {"$ref": "#/definitions/source"},
+    "candidate_capsule": {"$ref": "#/definitions/path_hash"},
+    "controller_expected_ack": {"$ref": "#/definitions/path_hash"},
+    "candidate_instructions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["output_schema", "output_filename", "no_external_context", "no_archive_access", "no_repo_writes"],
+      "properties": {
+        "output_schema": {"const": "ANTI_AMNESIA_BOOT_ACK_V1"},
+        "output_filename": {"const": "BOOT_ACK.json"},
+        "no_external_context": {"const": true},
+        "no_archive_access": {"const": true},
+        "no_repo_writes": {"const": true}
+      }
+    },
+    "live_state_modified": {"const": false},
+    "can_trade": {"const": false},
+    "capital_permission": {"const": "DENY"}
+  },
+  "definitions": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_name", "sha256"],
+      "properties": {
+        "source_name": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "path_hash": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

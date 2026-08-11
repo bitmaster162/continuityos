@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "continuityos"
-version = "0.9.0"
-description = "Durable, hybrid (structural + semantic) memory for AI agents and humans. Local-first, zero external services. Guided `cos setup` wizard + Sim-OS. v0.9: import ChatGPT/Claude history, export rules to CLAUDE.md/AGENTS.md/Cursor, RaaS usage metering, monetization-map builder."
+dynamic = ["version"]
+description = "Local-first durable memory and continuity for AI agents: import history, resume work across sessions, connect MCP clients, and preserve explicit governance boundaries."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
@@ -38,8 +38,23 @@ sentence-transformers = ["sentence-transformers>=2.2"]
 dev = ["pytest>=7", "pytest-cov>=4", "ruff>=0.5"]
 
 [project.scripts]
-cos = "continuityos.cli:main"
-continuity = "continuityos.gate.cli:main"
+cos = "continuityos.current_entrypoints:cos_main"
+continuity = "continuityos.current_runtime_cli:main"
+continuity-work = "continuityos.current_work_cli:main"
+continuity-project-update-review = "continuityos.current_project_update_review_cli:main"
+continuity-project-update-preflight = "continuityos.current_project_update_preflight_cli:main"
+continuity-memory-delta = "continuityos.current_memory_delta_cli:main"
+continuity-memory-claim-sync-plan = "continuityos.current_claim_sync_cli:main"
+continuity-memory-apply-auth-request = "continuityos.current_memory_apply_auth_request_cli:main"
+continuity-memory-apply-check = "continuityos.current_memory_apply_check_cli:main"
+continuity-memory-apply = "continuityos.operational_memory_apply_cli:main"
+continuity-memory-bootstrap = "continuityos.project_memory_bootstrap_cli:main"
+continuity-memory-bootstrap-plan = "continuityos.current_bootstrap_plan_cli:main"
+continuity-memory-bootstrap-check = "continuityos.current_bootstrap_check_cli:main"
+continuity-state = "continuityos.current_entrypoints:state_main"
+continuity-memory = "continuityos.current_entrypoints:operational_memory_main"
+continuity-context = "continuityos.current_entrypoints:operational_context_main"
+continuity-session = "continuityos.current_entrypoints:session_input_main"
 
 [project.urls]
 Homepage = "https://sovereign-arena-site.vercel.app/continuityos"
@@ -48,3 +63,25 @@ Source = "https://github.com/bitmaster162/continuityos"
 [tool.setuptools.packages.find]
 include = ["continuityos*"]
 exclude = ["demo*", "bench*", "tests*", "docs*", "examples*", "dist*"]
+
+[tool.setuptools.package-data]
+"continuityos.gate.schemas" = ["*.json"]
+"continuityos.operational_context_schemas" = ["*.json"]
+"continuityos.session_input_schemas" = ["*.json"]
+"continuityos.github_transition_schemas" = ["*.json"]
+"continuityos.work_admission_schemas" = ["*.json"]
+"continuityos.work_validation_schemas" = ["*.json"]
+"continuityos.work_ledger_schemas" = ["*.json"]
+"continuityos.github_candidate_review_schemas" = ["*.json"]
+"continuityos.control_plane_integration" = ["*.json"]
+"continuityos.control_plane_policy" = ["*.json"]
+"continuityos.completion_claim_schemas" = ["*.json"]
+"continuityos.control_plane_binding_schemas" = ["*.json"]
+"continuityos.merge_authorization_schemas" = ["*.json"]
+"continuityos.merge_execution_schemas" = ["*.json"]
+
+[tool.setuptools.dynamic]
+version = {attr = "continuityos._version.__version__"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

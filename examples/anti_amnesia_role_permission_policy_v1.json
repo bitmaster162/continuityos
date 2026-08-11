@@ -1,0 +1,25 @@
+{
+  "schema": "ANTI_AMNESIA_ROLE_PERMISSION_POLICY_V1",
+  "authority_generation": "R63",
+  "policy_id": "example-code-review-policy",
+  "roles": {
+    "CODEX-01": {
+      "allow_no_case": false,
+      "allowed_delta_prefixes": [
+        "/projects/continuityos",
+        "/returns/CODEX-01"
+      ],
+      "allowed_git_paths": [
+        ".github/workflows/ci.yml",
+        "continuityos/",
+        "docs/",
+        "examples/",
+        "pyproject.toml",
+        "tests/"
+      ],
+      "allowed_effect_classes": [
+        "REVERSIBLE"
+      ]
+    }
+  }
+}

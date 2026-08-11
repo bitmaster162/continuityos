@@ -1,0 +1,88 @@
+{
+  "$id": "continuityos.merge_execution.pull_request_readback/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "auto_merge_used": {
+      "type": "boolean"
+    },
+    "base_branch": {
+      "type": "string"
+    },
+    "base_head_before": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "head_branch": {
+      "type": "string"
+    },
+    "head_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "head_tree": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "merge_commit_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "merge_commit_tree": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "merge_method": {
+      "const": "MERGE_COMMIT"
+    },
+    "merged": {
+      "type": "boolean"
+    },
+    "merged_at_utc": {
+      "type": "string"
+    },
+    "merged_by_actor_id": {
+      "type": "string"
+    },
+    "number": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "provider": {
+      "const": "GITHUB"
+    },
+    "readback": {
+      "type": "boolean"
+    },
+    "repository": {
+      "type": "string"
+    },
+    "schema": {
+      "const": "continuityos.merge_execution.pull_request_readback/v1"
+    },
+    "state": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "provider",
+    "readback",
+    "repository",
+    "number",
+    "state",
+    "merged",
+    "merge_method",
+    "auto_merge_used",
+    "base_branch",
+    "base_head_before",
+    "head_branch",
+    "head_sha",
+    "head_tree",
+    "merge_commit_sha",
+    "merge_commit_tree",
+    "merged_by_actor_id",
+    "merged_at_utc"
+  ],
+  "type": "object"
+}

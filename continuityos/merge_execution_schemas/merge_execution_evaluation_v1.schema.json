@@ -1,0 +1,106 @@
+{
+  "$id": "continuityos.merge_execution.evaluation/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "binding": {
+      "type": "object"
+    },
+    "can_trade": {
+      "const": false
+    },
+    "capital_permission": {
+      "const": "DENY"
+    },
+    "checks": {
+      "type": "array"
+    },
+    "current_state_apply": {
+      "const": false
+    },
+    "deploy_permission": {
+      "const": "DENY"
+    },
+    "deployment": {
+      "const": false
+    },
+    "effect": {
+      "const": "VERIFY_ONLY_EXTERNAL_MERGE_OBSERVED"
+    },
+    "external_merge_verified": {
+      "type": "boolean"
+    },
+    "gate_merge_executed": {
+      "const": false
+    },
+    "generated_at_utc": {
+      "type": "string"
+    },
+    "holds": {
+      "type": "array"
+    },
+    "live_state_modified": {
+      "const": false
+    },
+    "observed": {
+      "type": "object"
+    },
+    "outcome": {
+      "enum": [
+        "MERGE_RESULT_PROVEN",
+        "WOULD_HOLD"
+      ]
+    },
+    "r63_apply": {
+      "const": false
+    },
+    "reasons": {
+      "type": "array"
+    },
+    "registry_apply": {
+      "const": false
+    },
+    "schema": {
+      "const": "continuityos.merge_execution.evaluation/v1"
+    },
+    "self_application": {
+      "const": false
+    },
+    "status": {
+      "enum": [
+        "MERGE_EXECUTION_VERIFIED",
+        "MERGE_EXECUTION_HOLD",
+        "MERGE_EXECUTION_REVISE"
+      ]
+    },
+    "writes_performed": {
+      "maxItems": 0,
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema",
+    "generated_at_utc",
+    "status",
+    "outcome",
+    "binding",
+    "observed",
+    "checks",
+    "reasons",
+    "holds",
+    "effect",
+    "gate_merge_executed",
+    "external_merge_verified",
+    "deployment",
+    "registry_apply",
+    "current_state_apply",
+    "r63_apply",
+    "live_state_modified",
+    "writes_performed",
+    "can_trade",
+    "capital_permission",
+    "deploy_permission",
+    "self_application"
+  ],
+  "type": "object"
+}

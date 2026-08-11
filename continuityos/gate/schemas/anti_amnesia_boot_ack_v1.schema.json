@@ -1,0 +1,34 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ANTI_AMNESIA_BOOT_ACK_V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "challenge_id", "authority_generation", "role", "active_case",
+    "work_order_id", "baseline_head", "baseline_tree", "allowed_changes",
+    "forbidden_actions", "immutable_decisions", "next_action", "terminal_condition",
+    "effect_ceiling", "may_dispatch_codex", "can_trade", "capital_permission",
+    "boot_status", "boot_warnings"
+  ],
+  "properties": {
+    "schema": {"const": "ANTI_AMNESIA_BOOT_ACK_V1"},
+    "challenge_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "authority_generation": {"const": "R63"},
+    "role": {"type": "string"},
+    "active_case": {"type": ["string", "null"]},
+    "work_order_id": {"type": "string"},
+    "baseline_head": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "baseline_tree": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "allowed_changes": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "forbidden_actions": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "immutable_decisions": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "next_action": {"type": "string"},
+    "terminal_condition": {"type": "string"},
+    "effect_ceiling": {"type": "string"},
+    "may_dispatch_codex": {"const": false},
+    "can_trade": {"const": false},
+    "capital_permission": {"const": "DENY"},
+    "boot_status": {"enum": ["SHADOW_READY", "SHADOW_READY_WITH_WARNINGS"]},
+    "boot_warnings": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "continuityos.work_admission.receipt/v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "status",
+    "outcome",
+    "checks",
+    "live_state_modified",
+    "can_trade",
+    "capital_permission",
+    "self_application"
+  ],
+  "properties": {
+    "schema": {
+      "const": "continuityos.work_admission.receipt/v1"
+    },
+    "status": {
+      "enum": [
+        "WORK_ADMISSION_PASS",
+        "WORK_ADMISSION_HOLD",
+        "WORK_ADMISSION_REVISE"
+      ]
+    },
+    "outcome": {
+      "enum": [
+        "WOULD_ALLOW",
+        "WOULD_HOLD"
+      ]
+    },
+    "checks": {
+      "type": "array"
+    },
+    "live_state_modified": {
+      "const": false
+    },
+    "can_trade": {
+      "const": false
+    },
+    "capital_permission": {
+      "const": "DENY"
+    },
+    "self_application": {
+      "const": false
+    }
+  }
+}

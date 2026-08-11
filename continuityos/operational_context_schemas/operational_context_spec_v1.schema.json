@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CONTINUITYOS_OPERATIONAL_CONTEXT_SPEC_V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "checkpoint_id",
+    "subjects",
+    "claim_predicates",
+    "evidence_states",
+    "decision_states",
+    "include_broker_summary",
+    "max_claims",
+    "max_decisions",
+    "max_output_bytes",
+    "valid_at"
+  ],
+  "properties": {
+    "schema": {"const": "CONTINUITYOS_OPERATIONAL_CONTEXT_SPEC_V1"},
+    "checkpoint_id": {"type": "string", "minLength": 1, "maxLength": 192},
+    "subjects": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 512}
+    },
+    "claim_predicates": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 512}
+    },
+    "evidence_states": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": ["VERIFIED", "SOURCE_BACKED", "INFERENCE", "ASSUMPTION", "HYPOTHESIS", "UNKNOWN"]
+      }
+    },
+    "decision_states": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"enum": ["PROPOSED", "ACCEPTED", "REJECTED", "HOLD", "SUPERSEDED"]}
+    },
+    "include_broker_summary": {"type": "boolean"},
+    "max_claims": {"type": "integer", "minimum": 0, "maximum": 1024},
+    "max_decisions": {"type": "integer", "minimum": 0, "maximum": 1024},
+    "max_output_bytes": {"type": "integer", "minimum": 4096, "maximum": 1048576},
+    "valid_at": {"type": ["string", "null"]}
+  }
+}

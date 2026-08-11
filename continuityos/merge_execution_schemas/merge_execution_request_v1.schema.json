@@ -1,0 +1,276 @@
+{
+  "$id": "continuityos.merge_execution.request/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "authority_generation": {
+      "const": "R63"
+    },
+    "authorization": {
+      "additionalProperties": false,
+      "properties": {
+        "nonce": {
+          "pattern": "^[A-Za-z0-9_-]{16,128}$",
+          "type": "string"
+        },
+        "receipt_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "subject_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "receipt_sha256",
+        "subject_sha256",
+        "nonce"
+      ],
+      "type": "object"
+    },
+    "bindings": {
+      "additionalProperties": false,
+      "properties": {
+        "authorization_consumption_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "authorization_receipt_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "base_branch_readback_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "branch_protection_readback_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "host_execution_receipt_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "merge_commit_readback_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "pull_request_readback_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "authorization_receipt_sha256",
+        "host_execution_receipt_sha256",
+        "pull_request_readback_sha256",
+        "merge_commit_readback_sha256",
+        "base_branch_readback_sha256",
+        "branch_protection_readback_sha256",
+        "authorization_consumption_sha256"
+      ],
+      "type": "object"
+    },
+    "effects": {
+      "additionalProperties": false,
+      "properties": {
+        "auto_merge": {
+          "type": "boolean"
+        },
+        "can_trade": {
+          "const": false
+        },
+        "capital_permission": {
+          "const": "DENY"
+        },
+        "current_state_apply": {
+          "type": "boolean"
+        },
+        "deploy_permission": {
+          "const": "DENY"
+        },
+        "deployment": {
+          "type": "boolean"
+        },
+        "external_message": {
+          "type": "boolean"
+        },
+        "force_push": {
+          "type": "boolean"
+        },
+        "merge": {
+          "type": "boolean"
+        },
+        "order_execution": {
+          "type": "boolean"
+        },
+        "pull_request_merge": {
+          "type": "boolean"
+        },
+        "r63_apply": {
+          "type": "boolean"
+        },
+        "registry_apply": {
+          "type": "boolean"
+        },
+        "self_application": {
+          "type": "boolean"
+        },
+        "trading": {
+          "type": "boolean"
+        },
+        "wallet_access": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "force_push",
+        "merge",
+        "pull_request_merge",
+        "auto_merge",
+        "deployment",
+        "registry_apply",
+        "current_state_apply",
+        "r63_apply",
+        "trading",
+        "wallet_access",
+        "order_execution",
+        "external_message",
+        "self_application",
+        "can_trade",
+        "capital_permission",
+        "deploy_permission"
+      ],
+      "type": "object"
+    },
+    "policy": {
+      "additionalProperties": false,
+      "properties": {
+        "max_clock_skew_seconds": {
+          "maximum": 3600,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "merge_method": {
+          "const": "MERGE_COMMIT"
+        },
+        "preserve_branch_protection": {
+          "const": true
+        },
+        "preserve_visibility": {
+          "const": true
+        },
+        "required_approvals": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "required_checks": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 128,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "merge_method",
+        "required_checks",
+        "required_approvals",
+        "preserve_branch_protection",
+        "preserve_visibility",
+        "max_clock_skew_seconds"
+      ],
+      "type": "object"
+    },
+    "schema": {
+      "const": "continuityos.merge_execution.request/v1"
+    },
+    "subject": {
+      "additionalProperties": false,
+      "properties": {
+        "base": {
+          "additionalProperties": false,
+          "properties": {
+            "branch": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "head_before": {
+              "pattern": "^[0-9a-f]{40}$",
+              "type": "string"
+            },
+            "tree_before": {
+              "pattern": "^[0-9a-f]{40}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "branch",
+            "head_before",
+            "tree_before"
+          ],
+          "type": "object"
+        },
+        "candidate": {
+          "additionalProperties": false,
+          "properties": {
+            "branch": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "head": {
+              "pattern": "^[0-9a-f]{40}$",
+              "type": "string"
+            },
+            "tree": {
+              "pattern": "^[0-9a-f]{40}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "branch",
+            "head",
+            "tree"
+          ],
+          "type": "object"
+        },
+        "pull_request_number": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "repository": {
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "type": "string"
+        },
+        "visibility_before": {
+          "enum": [
+            "PRIVATE",
+            "PUBLIC"
+          ]
+        }
+      },
+      "required": [
+        "repository",
+        "visibility_before",
+        "base",
+        "candidate",
+        "pull_request_number"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema",
+    "authority_generation",
+    "subject",
+    "authorization",
+    "bindings",
+    "policy",
+    "effects"
+  ],
+  "type": "object"
+}

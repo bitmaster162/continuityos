@@ -1,7 +1,42 @@
-"""ContinuityOS Gate — AI Agent Governance Gateway (hard-boundary preflight).
-No registered dangerous tool may execute unless a ContinuityOS preflight decision exists."""
-from .spec import ActionSpec, DECISIONS
-from .engine import preflight
-from .ledger import Ledger
-from .policy import load_policy, DEFAULT_POLICY
-__all__ = ["ActionSpec", "DECISIONS", "preflight", "Ledger", "load_policy", "DEFAULT_POLICY"]
+"""ContinuityOS governance and shadow-gate primitives.
+
+Imports are lazy so the read-only ANTI_AMNESIA entry point does not initialize
+the legacy ledger, policy, database, or recovery plane. Public ``preflight`` and
+``Ledger`` names add the current-session monotonic boundary while the historical
+engine/ledger modules remain available for compatibility and focused testing.
+"""
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Dict, Tuple
+
+
+__all__ = [
+    "ActionSpec",
+    "DECISIONS",
+    "preflight",
+    "Ledger",
+    "load_policy",
+    "DEFAULT_POLICY",
+    "PolicyError",
+]
+
+_LAZY: Dict[str, Tuple[str, str]] = {
+    "ActionSpec": (".spec", "ActionSpec"),
+    "DECISIONS": (".spec", "DECISIONS"),
+    "preflight": (".current_preflight", "preflight"),
+    "Ledger": (".current_ledger", "Ledger"),
+    "load_policy": (".policy", "load_policy"),
+    "DEFAULT_POLICY": (".policy", "DEFAULT_POLICY"),
+    "PolicyError": (".policy", "PolicyError"),
+}
+
+
+def __getattr__(name: str):
+    try:
+        module_name, attribute_name = _LAZY[name]
+    except KeyError as exc:
+        raise AttributeError(name) from exc
+    value = getattr(import_module(module_name, __name__), attribute_name)
+    globals()[name] = value
+    return value

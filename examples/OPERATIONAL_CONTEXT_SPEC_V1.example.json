@@ -1,0 +1,27 @@
+{
+  "schema": "CONTINUITYOS_OPERATIONAL_CONTEXT_SPEC_V1",
+  "checkpoint_id": "cp-current",
+  "subjects": [
+    "role:FABLE-5",
+    "project:continuityos"
+  ],
+  "claim_predicates": [
+    "status",
+    "memory_gate"
+  ],
+  "evidence_states": [
+    "VERIFIED",
+    "SOURCE_BACKED",
+    "UNKNOWN"
+  ],
+  "decision_states": [
+    "ACCEPTED",
+    "HOLD",
+    "PROPOSED"
+  ],
+  "include_broker_summary": true,
+  "max_claims": 64,
+  "max_decisions": 32,
+  "max_output_bytes": 131072,
+  "valid_at": null
+}

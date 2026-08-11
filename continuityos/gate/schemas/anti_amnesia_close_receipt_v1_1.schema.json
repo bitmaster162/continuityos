@@ -1,0 +1,143 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ANTI_AMNESIA_CLOSE_RECEIPT_V1_1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "gate",
+    "mode",
+    "command",
+    "authority",
+    "workspace",
+    "candidate",
+    "semantic_binding",
+    "git_verification",
+    "delta_verification",
+    "approval",
+    "checks",
+    "errors",
+    "warnings",
+    "outcome",
+    "status",
+    "closed",
+    "enforced",
+    "live_state_reads_via_runtime_api",
+    "live_state_modified",
+    "r63_authority_replaced",
+    "writes_performed",
+    "can_trade",
+    "capital_permission"
+  ],
+  "properties": {
+    "schema": {"const": "ANTI_AMNESIA_CLOSE_RECEIPT_V1_1"},
+    "gate": {"const": "ANTI_AMNESIA_GATE_V1"},
+    "mode": {"const": "SHADOW"},
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "dry_run"],
+      "properties": {
+        "name": {"const": "close"},
+        "dry_run": {"type": "boolean"}
+      }
+    },
+    "authority": {"$ref": "anti_amnesia_boot_receipt_v1.schema.json#/definitions/authority"},
+    "workspace": {"$ref": "anti_amnesia_boot_receipt_v1.schema.json#/definitions/workspace"},
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "content_sha256", "size_bytes", "entry_count", "envelope_sha256"],
+      "properties": {
+        "kind": {"type": ["string", "null"], "enum": ["ZIP", "DIRECTORY", null]},
+        "content_sha256": {
+          "anyOf": [
+            {"type": "null"},
+            {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          ]
+        },
+        "size_bytes": {"type": ["integer", "null"], "minimum": 0},
+        "entry_count": {"type": ["integer", "null"], "minimum": 0},
+        "envelope_sha256": {
+          "anyOf": [
+            {"type": "null"},
+            {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          ]
+        }
+      }
+    },
+    "semantic_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "work_order_id",
+        "work_order_sha256",
+        "base_state_sha256",
+        "permission_policy_sha256",
+        "role",
+        "case_id"
+      ],
+      "properties": {
+        "work_order_id": {"type": ["string", "null"]},
+        "work_order_sha256": {"type": ["string", "null"]},
+        "base_state_sha256": {"type": ["string", "null"]},
+        "permission_policy_sha256": {"type": ["string", "null"]},
+        "role": {"type": ["string", "null"]},
+        "case_id": {"type": ["string", "null"]}
+      }
+    },
+    "git_verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "verified", "baseline_head", "final_head", "final_tree", "diff_paths"],
+      "properties": {
+        "required": {"type": ["boolean", "null"]},
+        "verified": {"type": "boolean"},
+        "baseline_head": {"type": ["string", "null"]},
+        "final_head": {"type": ["string", "null"]},
+        "final_tree": {"type": ["string", "null"]},
+        "diff_paths": {"type": "array"}
+      }
+    },
+    "delta_verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "paths", "permitted"],
+      "properties": {
+        "count": {"type": "integer", "minimum": 0},
+        "paths": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "permitted": {"type": "boolean"}
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "effect_class", "reasons"],
+      "properties": {
+        "required": {"type": "boolean"},
+        "effect_class": {"type": ["string", "null"], "enum": ["REVERSIBLE", "COMPENSATABLE", "IRREVERSIBLE", null]},
+        "reasons": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
+      }
+    },
+    "checks": {
+      "type": "array",
+      "items": {"$ref": "anti_amnesia_boot_receipt_v1.schema.json#/definitions/check"}
+    },
+    "errors": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "warnings": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "outcome": {
+      "enum": ["WOULD_ACCEPT", "WOULD_ACCEPT_WITH_WARNINGS", "PENDING_HUMAN_APPROVAL", "WOULD_HOLD"]
+    },
+    "status": {
+      "enum": ["SHADOW_ACCEPTABLE", "SHADOW_ACCEPTABLE_WITH_WARNINGS", "SHADOW_PENDING_HUMAN_APPROVAL", "SHADOW_HOLD"]
+    },
+    "closed": {"const": false},
+    "enforced": {"const": false},
+    "live_state_reads_via_runtime_api": {"const": false},
+    "live_state_modified": {"const": false},
+    "r63_authority_replaced": {"const": false},
+    "writes_performed": {"type": "array", "maxItems": 0},
+    "can_trade": {"const": false},
+    "capital_permission": {"const": "DENY"}
+  }
+}

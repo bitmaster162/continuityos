@@ -1,0 +1,69 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "gate": {
+      "const": "ANTI_AMNESIA_GATE_V1"
+    },
+    "mode": {
+      "const": "SHADOW"
+    },
+    "schema": {
+      "const": "ANTI_AMNESIA_RETURN_V1_2"
+    },
+    "semantic_return_v1_1": {
+      "type": "object"
+    },
+    "session_context_binding": {
+      "additionalProperties": false,
+      "properties": {
+        "session_context_ack_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "session_context_binding_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "session_context_challenge_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "session_context_verdict_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "session_context_verdict_status": {
+          "const": "SESSION_CONTEXT_PASS"
+        },
+        "session_input_manifest_file_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "session_input_manifest_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_input_manifest_file_sha256",
+        "session_input_manifest_sha256",
+        "session_context_binding_id",
+        "session_context_challenge_sha256",
+        "session_context_ack_sha256",
+        "session_context_verdict_sha256",
+        "session_context_verdict_status"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema",
+    "gate",
+    "mode",
+    "semantic_return_v1_1",
+    "session_context_binding"
+  ],
+  "title": "Anti-Amnesia Return v1.2",
+  "type": "object"
+}

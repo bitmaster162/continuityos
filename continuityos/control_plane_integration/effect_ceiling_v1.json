@@ -1,0 +1,22 @@
+{
+  "schema": "continuityos.github_control_plane_integration.effect_ceiling/v1",
+  "authority_generation": "R63",
+  "terminal": "MERGE_CANDIDATE_ELIGIBLE",
+  "semantic": "proposal-only",
+  "effects": {
+    "force_push": false,
+    "merge_executed": false,
+    "auto_merge": false,
+    "deployment": false,
+    "current_state_apply": false,
+    "r63_apply": false,
+    "registry_apply": false,
+    "wallet_access": false,
+    "order_execution": false,
+    "trading": false,
+    "can_trade": false,
+    "capital_permission": "DENY",
+    "deploy_permission": "DENY",
+    "self_application": false
+  }
+}

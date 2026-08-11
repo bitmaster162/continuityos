@@ -6,7 +6,10 @@ Everything local, single file, zero external services.
 """
 from __future__ import annotations
 import sqlite3, json, time, struct, os, threading
+from pathlib import Path
 from typing import List, Optional, Dict, Any
+
+from .current_effect_boundary import assert_current_effect_allowed, effective_read_only
 
 def _now() -> float:
     return time.time()
@@ -18,7 +21,30 @@ def unpack_vec(b: bytes) -> List[float]:
     return list(struct.unpack("<%df" % (len(b) // 4), b))
 
 class Store:
-    def __init__(self, path: str = "continuityos.db"):
+    def __init__(self, path: str = "continuityos.db", *, read_only: bool = False):
+        self._lock = threading.RLock()
+        read_only = effective_read_only(read_only)
+        self.read_only = bool(read_only)
+        if read_only:
+            if path == ":memory:":
+                raise ValueError("read-only Store requires an existing file")
+            normalized = os.path.normcase(
+                os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+            )
+            self.path = normalized
+            uri = Path(normalized).as_uri() + "?mode=ro"
+            self.con = sqlite3.connect(
+                uri,
+                uri=True,
+                check_same_thread=False,
+            )
+            self.con.row_factory = sqlite3.Row
+            self.con.execute("PRAGMA query_only=ON")
+            self.fts = self.con.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='items_fts'"
+            ).fetchone() is not None
+            return
         self.path = path
         d = os.path.dirname(os.path.abspath(path))
         os.makedirs(d, exist_ok=True)
@@ -27,7 +53,6 @@ class Store:
         # crash resilience for the memory DB.
         self.con = sqlite3.connect(path, check_same_thread=False)
         self.con.row_factory = sqlite3.Row
-        self._lock = threading.RLock()
         try:
             self.con.execute("PRAGMA journal_mode=WAL")
             self.con.execute("PRAGMA synchronous=NORMAL")
@@ -68,12 +93,14 @@ class Store:
     def add(self, text: str, namespace: str = "default",
             tags: Optional[List[str]] = None, meta: Optional[Dict[str, Any]] = None,
             vec: Optional[List[float]] = None, key: Optional[str] = None) -> int:
+        assert_current_effect_allowed("memory.store.add")
         tags = tags or []; meta = meta or {}
         ts = _now()
         with self._lock:
             return self._add_locked(text, namespace, tags, meta, vec, ts, key)
 
     def _add_locked(self, text, namespace, tags, meta, vec, ts, key=None):
+        assert_current_effect_allowed("memory.store.add")
         version = 0
         if key is not None:
             row = self.con.execute("SELECT MAX(version) v FROM items WHERE namespace=? AND key=?", (namespace, key)).fetchone()
@@ -106,16 +133,20 @@ class Store:
 
     def update_meta(self, rid: int, meta: Dict[str, Any]) -> None:
         """Rewrite an item's meta JSON (used by bi-temporal supersede; text stays immutable)."""
-        self.con.execute("UPDATE items SET meta=?, updated_at=? WHERE id=?",
-                         (json.dumps(meta, ensure_ascii=False), _now(), rid))
-        self.con.commit()
+        assert_current_effect_allowed("memory.store.update_meta")
+        with self._lock:
+            self.con.execute("UPDATE items SET meta=?, updated_at=? WHERE id=?",
+                             (json.dumps(meta, ensure_ascii=False), _now(), rid))
+            self.con.commit()
 
     def delete(self, rid: int) -> bool:
-        self.con.execute("DELETE FROM items WHERE id=?", (rid,))
-        if self.fts:
-            self.con.execute("INSERT INTO items_fts(items_fts,rowid,text,tags,namespace) "
-                             "VALUES('delete',?, '', '', '')", (rid,))
-        self.con.commit()
+        assert_current_effect_allowed("memory.store.delete")
+        with self._lock:
+            self.con.execute("DELETE FROM items WHERE id=?", (rid,))
+            if self.fts:
+                self.con.execute("INSERT INTO items_fts(items_fts,rowid,text,tags,namespace) "
+                                 "VALUES('delete',?, '', '', '')", (rid,))
+            self.con.commit()
         return True
 
     def namespaces(self) -> List[Dict[str, Any]]:

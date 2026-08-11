@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "continuityos.work_admission.delta_receipt/v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "status",
+    "outcome",
+    "checks",
+    "changed_files",
+    "live_state_modified",
+    "can_trade",
+    "capital_permission",
+    "self_application",
+    "admission_binding_sha256",
+    "admission_receipt_sha256",
+    "validation_receipt_sha256"
+  ],
+  "properties": {
+    "schema": {
+      "const": "continuityos.work_admission.delta_receipt/v1"
+    },
+    "status": {
+      "enum": [
+        "WORK_DELTA_PASS",
+        "WORK_DELTA_HOLD",
+        "WORK_DELTA_REVISE"
+      ]
+    },
+    "outcome": {
+      "enum": [
+        "WOULD_ALLOW_CANDIDATE_TRANSPORT",
+        "WOULD_HOLD"
+      ]
+    },
+    "checks": {
+      "type": "array"
+    },
+    "changed_files": {
+      "type": "array"
+    },
+    "live_state_modified": {
+      "const": false
+    },
+    "can_trade": {
+      "const": false
+    },
+    "capital_permission": {
+      "const": "DENY"
+    },
+    "self_application": {
+      "const": false
+    },
+    "admission_binding_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "admission_receipt_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "validation_receipt_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

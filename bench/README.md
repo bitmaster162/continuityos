@@ -17,11 +17,22 @@ zero-dep HashingEmbedder** (no API keys, deterministic):
 - **Latency** p50/p95 and **external token cost** (0 — fully local).
 
 All numbers are measured at run time and written to `bench_results.json`. We do
-**not** publish a LoCoMo/LongMemEval leaderboard number — see
-`HANDOFF/COMPETITIVE_LANDSCAPE_AND_BENCHMARKS_20260705.md` for why the category's
-headline scores are actively disputed (Zep 84% → 58.44% → 75.14%). Canon: ship
-honest numbers.
+**not** publish a current LoCoMo/LongMemEval leaderboard number because the dataset
+and a checksum-bound raw result are not shipped in this repository. Canon: ship
+only reproducible numbers.
 
 Last local run (default embedder, 170-memory corpus):
 keyword recall@1 96.7% · paraphrase recall@1 30% · knowledge-update 95% ·
-temporal as-of 100% · recall p50 ~4 ms · 0 external tokens.
+temporal as-of 100% · recall p50 11.008 ms · 0 external tokens. Latency is
+hardware/load dependent; `bench_results.json` is the machine-readable receipt.
+
+## Governance regression corpus
+
+```bash
+python -m bench.continuitybench
+```
+
+This command checks 30 hand-labeled decisions plus eight obfuscated examples and exits non-zero
+on a mismatch; CI runs it. It is a regression floor for the explicitly mediated paths, not proof
+of mandatory interception, out-of-distribution detection, compliance, or production safety. See
+[`BUILD_GATE_STATUS.md`](../BUILD_GATE_STATUS.md) for the current measured result and open holds.

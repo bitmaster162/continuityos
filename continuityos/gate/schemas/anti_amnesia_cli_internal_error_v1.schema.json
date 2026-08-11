@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ANTI_AMNESIA_CLI_INTERNAL_ERROR_V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "gate",
+    "mode",
+    "command",
+    "error_type",
+    "outcome",
+    "enforced",
+    "live_state_modified",
+    "r63_authority_replaced",
+    "writes_performed",
+    "can_trade",
+    "capital_permission"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "enum": ["ANTI_AMNESIA_CLI_INTERNAL_ERROR_V1"]
+    },
+    "gate": {"type": "string", "enum": ["ANTI_AMNESIA_GATE_V1"]},
+    "mode": {"type": "string", "enum": ["SHADOW"]},
+    "command": {
+      "type": "string",
+      "enum": ["boot", "close", "unknown"]
+    },
+    "error_type": {"type": "string", "minLength": 1},
+    "outcome": {"type": "string", "enum": ["WOULD_HOLD"]},
+    "enforced": {"type": "boolean", "enum": [false]},
+    "live_state_modified": {"type": "boolean", "enum": [false]},
+    "r63_authority_replaced": {"type": "boolean", "enum": [false]},
+    "writes_performed": {"type": "array", "maxItems": 0},
+    "can_trade": {"type": "boolean", "enum": [false]},
+    "capital_permission": {"type": "string", "enum": ["DENY"]}
+  }
+}

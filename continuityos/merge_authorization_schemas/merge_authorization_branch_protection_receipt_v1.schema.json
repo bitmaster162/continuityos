@@ -1,0 +1,62 @@
+{
+  "$id": "continuityos.merge_authorization.branch_protection_receipt/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "base_head": {
+      "type": "string"
+    },
+    "base_tree": {
+      "type": "string"
+    },
+    "branch": {
+      "type": "string"
+    },
+    "deletion_allowed": {
+      "const": false
+    },
+    "force_push_allowed": {
+      "const": false
+    },
+    "provider": {
+      "const": "GITHUB"
+    },
+    "readback": {
+      "const": true
+    },
+    "repository": {
+      "type": "string"
+    },
+    "required_approvals": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "required_checks": {
+      "type": "array"
+    },
+    "schema": {
+      "const": "continuityos.merge_authorization.branch_protection_receipt/v1"
+    },
+    "visibility": {
+      "enum": [
+        "PRIVATE",
+        "PUBLIC"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "provider",
+    "readback",
+    "repository",
+    "branch",
+    "visibility",
+    "base_head",
+    "base_tree",
+    "force_push_allowed",
+    "deletion_allowed",
+    "required_checks",
+    "required_approvals"
+  ],
+  "type": "object"
+}

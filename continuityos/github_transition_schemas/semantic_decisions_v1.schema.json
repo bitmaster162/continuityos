@@ -1,0 +1,83 @@
+{
+  "$id": "continuityos.memory_promotion.semantic_decisions/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "authority_generation": {
+      "const": "R63"
+    },
+    "closure_receipt_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "global_gates": {
+      "type": "object"
+    },
+    "human_irreversible_approval": {
+      "const": false
+    },
+    "memory_candidate_authority": {
+      "const": "NON_AUTHORITATIVE_CANDIDATE"
+    },
+    "promotion_decision": {
+      "enum": [
+        "APPROVE_PROMOTION_CANDIDATE",
+        "HOLD"
+      ]
+    },
+    "schema": {
+      "const": "continuityos.memory_promotion.semantic_decisions/v1"
+    },
+    "self_application": {
+      "const": false
+    },
+    "slots": {
+      "items": {
+        "properties": {
+          "gpt_semantic_verdict": {
+            "enum": [
+              "ACCEPT",
+              "PASS_WITH_CONDITIONS",
+              "HOLD",
+              "REVISE",
+              "REJECT"
+            ]
+          },
+          "slot": {
+            "enum": [
+              "CODEX-01",
+              "CODEX-02",
+              "CODEX-03",
+              "CODEX-04",
+              "CODEX-05",
+              "CODEX-06",
+              "CODEX-07",
+              "CODEX-08",
+              "WORK"
+            ]
+          }
+        },
+        "required": [
+          "slot",
+          "gpt_semantic_verdict"
+        ],
+        "type": "object"
+      },
+      "maxItems": 9,
+      "minItems": 9,
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema",
+    "closure_receipt_sha256",
+    "authority_generation",
+    "memory_candidate_authority",
+    "promotion_decision",
+    "human_irreversible_approval",
+    "global_gates",
+    "slots",
+    "self_application"
+  ],
+  "type": "object"
+}

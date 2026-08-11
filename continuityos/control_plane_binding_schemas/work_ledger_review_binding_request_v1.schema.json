@@ -1,0 +1,34 @@
+{
+  "$id": "continuityos.work_ledger_review_binding.request/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "authority_generation": {
+      "const": "R63"
+    },
+    "bindings": {
+      "type": "object"
+    },
+    "candidate": {
+      "type": "object"
+    },
+    "effects": {
+      "type": "object"
+    },
+    "schema": {
+      "const": "continuityos.work_ledger_review_binding.request/v1"
+    },
+    "task_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "authority_generation",
+    "task_id",
+    "candidate",
+    "bindings",
+    "effects"
+  ],
+  "type": "object"
+}

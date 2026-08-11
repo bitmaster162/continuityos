@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "continuityos.work_validation.evidence_verification/v1",
+  "type": "object",
+  "required": [
+    "schema", "generated_at_utc", "status", "checks", "effect",
+    "live_state_modified", "writes_performed", "can_trade",
+    "capital_permission", "deploy_permission", "self_application"
+  ],
+  "properties": {
+    "schema": {"const": "continuityos.work_validation.evidence_verification/v1"},
+    "generated_at_utc": {"type": "string"},
+    "status": {
+      "enum": [
+        "WORK_VALIDATION_EVIDENCE_PASS",
+        "WORK_VALIDATION_EVIDENCE_HOLD",
+        "WORK_VALIDATION_EVIDENCE_REVISE"
+      ]
+    },
+    "checks": {"type": "array"},
+    "effect": {"const": "VERIFY_ONLY_NO_WRITE"},
+    "live_state_modified": {"const": false},
+    "writes_performed": {"type": "array", "maxItems": 0},
+    "can_trade": {"const": false},
+    "capital_permission": {"const": "DENY"},
+    "deploy_permission": {"const": "DENY"},
+    "self_application": {"const": false}
+  },
+  "additionalProperties": true
+}

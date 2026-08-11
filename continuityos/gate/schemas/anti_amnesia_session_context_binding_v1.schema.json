@@ -1,0 +1,132 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "authority_generation": {
+      "const": "R63",
+      "type": "string"
+    },
+    "base_challenge": {
+      "additionalProperties": false,
+      "properties": {
+        "challenge_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "challenge_id",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "binding_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "ceilings": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted_truth_owner": {
+          "const": "CONTROL_CENTER",
+          "type": "string"
+        },
+        "can_trade": {
+          "const": false,
+          "type": "boolean"
+        },
+        "capital_permission": {
+          "const": "DENY",
+          "type": "string"
+        },
+        "content_acceptance": {
+          "const": "NOT_PERFORMED",
+          "type": "string"
+        },
+        "context_is_projection_only": {
+          "const": true,
+          "type": "boolean"
+        },
+        "deploy_permission": {
+          "const": "DENY",
+          "type": "string"
+        },
+        "may_dispatch_codex": {
+          "const": false,
+          "type": "boolean"
+        },
+        "self_application": {
+          "const": false,
+          "type": "boolean"
+        },
+        "state_apply": {
+          "const": "DISABLED",
+          "type": "string"
+        }
+      },
+      "required": [
+        "accepted_truth_owner",
+        "context_is_projection_only",
+        "content_acceptance",
+        "state_apply",
+        "may_dispatch_codex",
+        "can_trade",
+        "capital_permission",
+        "deploy_permission",
+        "self_application"
+      ],
+      "type": "object"
+    },
+    "gate": {
+      "const": "ANTI_AMNESIA_GATE_V1",
+      "type": "string"
+    },
+    "mode": {
+      "const": "SHADOW",
+      "type": "string"
+    },
+    "schema": {
+      "const": "ANTI_AMNESIA_SESSION_CONTEXT_BINDING_V1",
+      "type": "string"
+    },
+    "session_input_manifest": {
+      "additionalProperties": false,
+      "properties": {
+        "file_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "manifest_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "schema": {
+          "const": "ANTI_AMNESIA_SESSION_INPUT_MANIFEST_V1",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "file_sha256",
+        "manifest_sha256"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema",
+    "binding_id",
+    "gate",
+    "mode",
+    "authority_generation",
+    "base_challenge",
+    "session_input_manifest",
+    "ceilings"
+  ],
+  "title": "Anti-Amnesia Session Context Binding v1",
+  "type": "object"
+}

@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ANTI_AMNESIA_COLD_START_SPEC_V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "authority_generation", "work_order_id", "role", "case_id",
+    "goal", "accepted_decisions", "rejected_alternatives", "allowed_changes",
+    "forbidden_actions", "immutable_decisions", "git_baseline", "next_action",
+    "terminal_condition", "effect_ceiling", "may_dispatch_codex", "can_trade",
+    "capital_permission"
+  ],
+  "properties": {
+    "schema": {"const": "ANTI_AMNESIA_COLD_START_SPEC_V1"},
+    "authority_generation": {"const": "R63"},
+    "work_order_id": {"type": "string", "minLength": 1},
+    "role": {"type": "string", "pattern": "^[A-Z][A-Z0-9-]{0,63}$"},
+    "case_id": {"type": ["string", "null"]},
+    "goal": {"type": "string", "minLength": 1},
+    "accepted_decisions": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "rejected_alternatives": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "allowed_changes": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "forbidden_actions": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "immutable_decisions": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "git_baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "branch", "head", "tree", "porcelain"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "branch": {"type": "string", "minLength": 1},
+        "head": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "tree": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "porcelain": {"const": ""}
+      }
+    },
+    "next_action": {"type": "string", "minLength": 1},
+    "terminal_condition": {"type": "string", "minLength": 1},
+    "effect_ceiling": {"enum": ["READ_ONLY", "REVERSIBLE_LOCAL_IMPLEMENTATION", "COMPENSATABLE_HUMAN_APPROVAL", "IRREVERSIBLE_HUMAN_APPROVAL"]},
+    "may_dispatch_codex": {"const": false},
+    "can_trade": {"const": false},
+    "capital_permission": {"const": "DENY"}
+  }
+}

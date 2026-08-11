@@ -1,4 +1,85 @@
+## Unreleased — Merge Execution Receipt Gate v1
+
+- Add a verify-only gate for one exact externally executed GitHub merge.
+- Bind the result to exact authorization bytes, subject SHA, nonce, PR, merge commit,
+  base branch, branch protection, visibility and one-time authorization consumption.
+- Require a transparent two-parent merge commit and reject force-push, auto-merge,
+  authorization reuse, effect widening and provider contradictions.
+- Preserve `R63`, `can_trade=false`, `capital_permission=DENY`, and
+  `deploy_permission=DENY`; the gate never executes the merge.
+
+## Unreleased — Completion Truth, Ledger/Review Binding and Merge Authorization v1
+
+- Add a physical evidence-state vector from design through acceptance.
+- Add exact immutable Work Ledger ↔ Candidate Review binding with review recomputation.
+- Add proposal-only one-time merge authorization bound to GitHub protection, PR checks/approvals, rollback evidence and one exact Robert decision.
+- Preserve R63 and all no-trade/no-deploy/no-apply ceilings.
+
+## Unreleased — Windows Focused Validation Fix R13.2
+
+- Inspect raw ZIP central-directory names before Windows separator normalization.
+- Construct the backslash-path security fixture byte-identically on Windows and POSIX.
+- Reconcile output-limit events after fast subprocess exit so truncation cannot report PASS.
+- Write canonical Work Ledger rewrite fixtures as exact LF bytes on every platform.
+- No GitHub push, merge, deployment, R63/current-state/registry apply, wallet, order or trading path added.
+
+## Unreleased — GitHub Control-Plane Integration v1
+
+- Reconcile the sibling Work Validation Evidence, Work Ledger and GitHub Candidate Review branches into one linear candidate history.
+- Preserve all three CLI surfaces and schema packages in the built distribution.
+- Add integration documentation and smoke tests that prevent silent omission of any lifecycle gate.
+- Keep merge, deployment, R63/current-state/registry apply and trading effects out of scope.
+
+
+## Unreleased — Work Validation Evidence Gate v1
+
+- Add deterministic execution of exact admitted validation argv vectors without a shell.
+- Persist raw stdout/stderr bytes outside the repository with per-command timeout and output budgets.
+- Add independent manifest/READY verification that recomputes every raw-output hash.
+- Add `raw_evidence_required` admission policy and bind verified evidence into `verify-delta`.
+- Reject direct network/install command vectors when the admitted policy denies those effects.
+- Add four packaged schemas, examples, documentation and adversarial tests.
+
+## Unreleased — GitHub Work Ledger v1
+
+- Add a canonical JSONL, SHA-256-chained lifecycle for admitted GitHub work:
+  admission, verified delta, authenticated transport, GPT semantic review and
+  terminal close/reject.
+- Add immutable successor-file operations (`init`, `append-delta`,
+  `append-transport`, `append-semantic`, `finalize`) plus effect-free `verify`
+  and `project` commands.
+- Bind exact admission/delta/transport/semantic receipt bytes, candidate and
+  remote HEAD/tree, GitHub Actions, actor roles, R63 and the full DENY effect
+  ceiling.
+- Reject duplicate receipt replay, terminal extension, self-acceptance,
+  transport/Actions drift, non-canonical JSONL and hidden extra receipt fields.
+- Add four bundled JSON schemas, documentation and adversarial lifecycle tests.
+- Harden successor provenance with `verify-extension`, symlink-parent rejection
+  and separate unconditional versus conditional integration eligibility.
+- Document that actor-role fields are content bindings; external receipt hashes
+  and Git commits remain the identity/provenance anchors.
+
+## Unreleased — GitHub Candidate Review Gate v1
+
+- Add a proposal-only post-transport review gate that binds exact Work Admission and Work Delta receipts to remote candidate HEAD/tree, required GitHub Actions runs, secret-scan evidence and an exact semantic review decision.
+- HOLD on remote base drift, pending CI, missing required PR evidence or an explicit semantic hold; REVISE on failed/wrong-head CI, forbidden effects, visibility changes, secret leakage, self-review violations, unresolved P0/P1 findings or invalid PR state.
+- PASS emits only `MERGE_CANDIDATE_ELIGIBLE`; the gate cannot push, create/merge a PR, deploy, apply R63/current state/registry, record human approval or trade.
+- Add four packaged JSON Schemas, examples, documentation and adversarial tests.
+
+
+## Unreleased — GitHub Work Admission Gate v1
+
+- Add effect-free pre-work admission binding for exact task, session capsule, Git baseline, candidate branch, path scope and effect ceiling.
+- Add post-work delta verification for linear ancestry, changed paths, resource budgets and exact test receipts.
+- Add four bundled JSON schemas, examples, documentation and adversarial tests.
+- Harden cross-platform path handling, bounded input sizes and validation-command
+  execution: Windows-reserved names, shell carriers, inline shell syntax and
+  PowerShell `-Command`/`-EncodedCommand` are rejected.
+- Clarify that repository visibility is policy-bound at admission and physically
+  proven only by the authenticated GitHub transition receipt.
+
 # Changelog
+
 
 All notable changes to **ContinuityOS** are documented in this file.
 
@@ -65,6 +146,13 @@ migrate history in, export rules out, meter usage, and let cognitive layers buil
   so `pip install -e .` succeeds; project version corrected to `0.9.0` (was mislabeled `0.8.8`).
 
 ## [Unreleased]
+
+### Added
+- **GitHub Transition Gate v1 / Memory Promotion Gate v1** — deterministic, effect-free verification of strict host-closure ZIP/SHA/READY returns, exact task/terminal binding, nine-slot CODEX/WORK recovery, manifest coverage, GitHub visibility/HEAD/tree readback, no-force/no-merge and secret-boundary receipts. The separate promotion evaluator binds GPT semantic decisions to the exact closure receipt bytes and can emit only `PROMOTION_CANDIDATE_ELIGIBLE` or `PROMOTION_HOLD`; it never applies R63/current state, merges, deploys or trades.
+- **Anti-Amnesia semantic close v1.2 (read-only)** — binds an audit/research/transport/content return to the exact canonical `SESSION_INPUT_MANIFEST`, controller-pinned session-context challenge, exact ACK and independently replayed `SESSION_CONTEXT_PASS` verdict. It rejects implementation tasks, Git mutation, proposed state deltas and every live/external effect while Common Operational Context remains `READ_ONLY`.
+- **`continuity-context prepare|verify` / Common Operational Context v1** — deterministic, capsule-bound and checkpoint-bound read-only context packs from Common Operational Memory. Immutable/quiescent SQLite reads, explicit selection policy, fail-closed count/byte budgets, aggregate-only broker summaries and exact byte verification preserve R63, Control Center truth ownership and all DENY effect ceilings.
+- **`continuity-memory` / Common Operational Memory v1** — shadow-only local SQLite WAL ledger for append-only operational events, bi-temporal evidence-bound claims, authority-bound decisions, broker custody imports, checkpoints and deterministic replay projections. UPDATE/DELETE are blocked by schema triggers and unknown broker status text never upgrades custody to verified. DriveFS/network paths are rejected; broker content remains `UNREVIEWED` and `NOT_APPLIED`; no state-apply API exists.
+- **`continuity cold-start prepare|verify`** — deterministic fresh-session continuity challenge. The controller creates a candidate-only session capsule plus a hidden expected `BOOT_ACK`, pins the challenge SHA-256, and exact-compares the fresh agent response. Any material mismatch blocks release; no live state is applied.
 
 ### v0.7.1 — DevOps integration fixes
 
@@ -142,3 +230,9 @@ governance Gate, MCP server, CLI, HTTP API, and Docker packaging.
 
 [Unreleased]: https://github.com/continuityos/continuityos/compare/v0.7.0...HEAD
 [0.7.0]: https://github.com/continuityos/continuityos/releases/tag/v0.7.0
+
+### R12 validation evidence hardening
+
+- Require `DISPOSABLE_CLONE_REQUIRED` whenever raw validation evidence is mandatory.
+- Bind candidate and evidence paths to admitted host prefixes.
+- Replace post-hoc output-file polling with hard-bounded pipe capture.

@@ -1,0 +1,38 @@
+{
+  "schema": "continuityos.merge_execution.policy/v1",
+  "authority_generation": "R63",
+  "purpose": "verify one exact externally executed merge without performing or applying it",
+  "required_upstream": {
+    "merge_authorization": "MERGE_AUTHORIZATION_PASS",
+    "authorization_outcome": "MERGE_EXECUTION_MAY_BE_REQUESTED_ONCE"
+  },
+  "supported_merge_method": "MERGE_COMMIT",
+  "required_readbacks": [
+    "pull_request",
+    "merge_commit",
+    "base_branch",
+    "branch_protection",
+    "authorization_consumption"
+  ],
+  "verified_terminal": "MERGE_EXECUTION_VERIFIED",
+  "verified_outcome": "MERGE_RESULT_PROVEN",
+  "effect": "VERIFY_ONLY_EXTERNAL_MERGE_OBSERVED",
+  "effects": {
+    "force_push": false,
+    "merge": false,
+    "pull_request_merge": false,
+    "auto_merge": false,
+    "deployment": false,
+    "registry_apply": false,
+    "current_state_apply": false,
+    "r63_apply": false,
+    "trading": false,
+    "wallet_access": false,
+    "order_execution": false,
+    "external_message": false,
+    "self_application": false,
+    "can_trade": false,
+    "capital_permission": "DENY",
+    "deploy_permission": "DENY"
+  }
+}

@@ -1,0 +1,314 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ANTI_AMNESIA_BOOT_RECEIPT_V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "gate",
+    "mode",
+    "command",
+    "authority",
+    "workspace",
+    "binding",
+    "checks",
+    "errors",
+    "warnings",
+    "outcome",
+    "status",
+    "enforced",
+    "live_state_reads_via_runtime_api",
+    "live_state_modified",
+    "r63_authority_replaced",
+    "writes_performed",
+    "can_trade",
+    "capital_permission"
+  ],
+  "properties": {
+    "schema": {"type": "string", "enum": ["ANTI_AMNESIA_BOOT_RECEIPT_V1"]},
+    "gate": {"type": "string", "enum": ["ANTI_AMNESIA_GATE_V1"]},
+    "mode": {"type": "string", "enum": ["SHADOW"]},
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "role", "case_id"],
+      "properties": {
+        "name": {"type": "string", "enum": ["boot"]},
+        "role": {"type": "string"},
+        "case_id": {"type": ["string", "null"]}
+      }
+    },
+    "authority": {"$ref": "#/definitions/authority"},
+    "workspace": {"$ref": "#/definitions/workspace"},
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "case"],
+      "properties": {
+        "role": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "json_pointer",
+            "record_sha256",
+            "state",
+            "lane",
+            "authority_status"
+          ],
+          "properties": {
+            "id": {"type": ["string", "null"]},
+            "json_pointer": {"type": ["string", "null"]},
+            "record_sha256": {
+              "anyOf": [
+                {"type": "null"},
+                {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+              ]
+            },
+            "state": {"type": ["string", "null"]},
+            "lane": {"type": ["string", "null"]},
+            "authority_status": {
+              "type": "string",
+              "enum": ["UNRESOLVED", "EXACT_R63_ROLE"]
+            }
+          }
+        },
+        "case": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["requested", "status", "authoritative", "matched_field"],
+          "properties": {
+            "requested": {"type": ["string", "null"]},
+            "status": {
+              "type": "string",
+              "enum": [
+                "NOT_REQUESTED",
+                "EXACT_STRUCTURED_MATCH",
+                "CLI_ASSERTED_NON_AUTHORITY",
+                "CONFLICT"
+              ]
+            },
+            "authoritative": {"type": "boolean"},
+            "matched_field": {"type": ["string", "null"]}
+          }
+        }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "items": {"$ref": "#/definitions/check"}
+    },
+    "errors": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string"}
+    },
+    "warnings": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string"}
+    },
+    "outcome": {
+      "type": "string",
+      "enum": ["WOULD_ALLOW", "WOULD_ALLOW_WITH_WARNINGS", "WOULD_HOLD"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["SHADOW_READY", "SHADOW_READY_WITH_WARNINGS", "SHADOW_HOLD"]
+    },
+    "enforced": {"type": "boolean", "enum": [false]},
+    "live_state_reads_via_runtime_api": {"type": "boolean", "enum": [false]},
+    "live_state_modified": {"type": "boolean", "enum": [false]},
+    "r63_authority_replaced": {"type": "boolean", "enum": [false]},
+    "writes_performed": {"type": "array", "maxItems": 0},
+    "can_trade": {"type": "boolean", "enum": [false]},
+    "capital_permission": {"type": "string", "enum": ["DENY"]}
+  },
+  "definitions": {
+    "nullableHashBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["logical_path", "size_bytes", "sha256", "verified"],
+      "properties": {
+        "logical_path": {"type": ["string", "null"]},
+        "size_bytes": {"type": ["integer", "null"], "minimum": 0},
+        "sha256": {
+          "anyOf": [
+            {"type": "null"},
+            {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          ]
+        },
+        "verified": {"type": "boolean"}
+      }
+    },
+    "descriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "logical_path",
+        "size_bytes",
+        "sha256",
+        "verified"
+      ],
+      "properties": {
+        "name": {"type": "string"},
+        "logical_path": {"type": ["string", "null"]},
+        "size_bytes": {"type": ["integer", "null"], "minimum": 0},
+        "sha256": {
+          "anyOf": [
+            {"type": "null"},
+            {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          ]
+        },
+        "verified": {"type": "boolean"}
+      }
+    },
+    "ready": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logical_path",
+        "size_bytes",
+        "sha256",
+        "status",
+        "verified"
+      ],
+      "properties": {
+        "logical_path": {"type": ["string", "null"]},
+        "size_bytes": {"type": ["integer", "null"], "minimum": 0},
+        "sha256": {
+          "anyOf": [
+            {"type": "null"},
+            {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          ]
+        },
+        "status": {"type": ["string", "null"]},
+        "verified": {"type": "boolean"}
+      }
+    },
+    "effectCeiling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "auto_dispatch",
+        "auto_accept",
+        "self_application",
+        "push",
+        "deploy",
+        "external_messages",
+        "can_trade",
+        "capital_permission"
+      ],
+      "properties": {
+        "auto_dispatch": {"type": "boolean", "enum": [false]},
+        "auto_accept": {"type": "boolean", "enum": [false]},
+        "self_application": {"type": "boolean", "enum": [false]},
+        "push": {"type": "string", "enum": ["DENY"]},
+        "deploy": {"type": "string", "enum": ["DENY"]},
+        "external_messages": {"type": "string"},
+        "can_trade": {"type": "boolean", "enum": [false]},
+        "capital_permission": {"type": "string", "enum": ["DENY"]}
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generation",
+        "relation",
+        "pointer",
+        "descriptors",
+        "ready",
+        "effect_ceiling"
+      ],
+      "properties": {
+        "generation": {"type": ["string", "null"]},
+        "relation": {
+          "type": "string",
+          "enum": ["ADVISORY_ONLY_R63_REMAINS_AUTHORITATIVE"]
+        },
+        "pointer": {"$ref": "#/definitions/nullableHashBinding"},
+        "descriptors": {
+          "type": "array",
+          "items": {"$ref": "#/definitions/descriptor"}
+        },
+        "ready": {"$ref": "#/definitions/ready"},
+        "effect_ceiling": {"$ref": "#/definitions/effectCeiling"}
+      }
+    },
+    "workspaceFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["logical_path", "size_bytes", "sha256"],
+      "properties": {
+        "logical_path": {"type": "string"},
+        "size_bytes": {"type": "integer", "minimum": 0},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "read_order",
+        "files",
+        "latest_checkpoint_id",
+        "state_checkpoint_match",
+        "project_count",
+        "open_loop_count",
+        "active_open_loop_ids",
+        "active_open_loops",
+        "active_open_loops_digest",
+        "transaction_journal_present",
+        "context_digest"
+      ],
+      "properties": {
+        "read_order": {"type": "array", "items": {"type": "string"}},
+        "files": {
+          "type": "array",
+          "items": {"$ref": "#/definitions/workspaceFile"}
+        },
+        "latest_checkpoint_id": {"type": ["string", "null"]},
+        "state_checkpoint_match": {"type": "boolean"},
+        "project_count": {"type": ["integer", "null"], "minimum": 0},
+        "open_loop_count": {"type": ["integer", "null"], "minimum": 0},
+        "active_open_loop_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "active_open_loops": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "title", "status", "next_action"],
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "title": {"type": "string", "minLength": 1},
+              "status": {"type": "string", "minLength": 1},
+              "next_action": {"type": ["string", "null"]}
+            }
+          }
+        },
+        "active_open_loops_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "transaction_journal_present": {"type": "boolean"},
+        "context_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["check_id", "status", "code"],
+      "properties": {
+        "check_id": {"type": "string"},
+        "status": {"type": "string", "enum": ["PASS", "WARN", "FAIL"]},
+        "code": {"type": "string"}
+      }
+    }
+  }
+}

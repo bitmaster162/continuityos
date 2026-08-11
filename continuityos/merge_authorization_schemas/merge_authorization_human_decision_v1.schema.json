@@ -1,0 +1,54 @@
+{
+  "$id": "continuityos.merge_authorization.human_decision/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "actor_id": {
+      "const": "ROBERT"
+    },
+    "authorization_subject_sha256": {
+      "type": "string"
+    },
+    "consumed": {
+      "const": false
+    },
+    "decision": {
+      "const": "APPROVE_MERGE_CANDIDATE"
+    },
+    "effects": {
+      "type": "object"
+    },
+    "expires_at_utc": {
+      "type": "string"
+    },
+    "issued_at_utc": {
+      "type": "string"
+    },
+    "nonce": {
+      "type": "string"
+    },
+    "role": {
+      "const": "SOVEREIGN"
+    },
+    "schema": {
+      "const": "continuityos.merge_authorization.human_decision/v1"
+    },
+    "self_application": {
+      "const": false
+    }
+  },
+  "required": [
+    "schema",
+    "actor_id",
+    "role",
+    "decision",
+    "authorization_subject_sha256",
+    "nonce",
+    "issued_at_utc",
+    "expires_at_utc",
+    "consumed",
+    "self_application",
+    "effects"
+  ],
+  "type": "object"
+}

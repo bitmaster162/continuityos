@@ -1,0 +1,207 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ANTI_AMNESIA_SESSION_CAPSULE_V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "challenge_id",
+    "authority_generation",
+    "role",
+    "active_case",
+    "case_binding",
+    "work_order_id",
+    "role_state",
+    "role_lane",
+    "workspace_context_digest",
+    "current_pointer_sha256",
+    "latest_checkpoint_id",
+    "active_open_loop_ids",
+    "goal",
+    "accepted_decisions",
+    "rejected_alternatives",
+    "allowed_changes",
+    "forbidden_actions",
+    "immutable_decisions",
+    "git_baseline",
+    "next_action",
+    "terminal_condition",
+    "effect_ceiling",
+    "may_dispatch_codex",
+    "can_trade",
+    "capital_permission",
+    "boot_status",
+    "boot_outcome",
+    "boot_warnings"
+  ],
+  "properties": {
+    "schema": {
+      "const": "ANTI_AMNESIA_SESSION_CAPSULE_V1"
+    },
+    "challenge_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "authority_generation": {
+      "const": "R63"
+    },
+    "role": {
+      "type": "string"
+    },
+    "active_case": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "case_binding": {
+      "enum": [
+        "NOT_REQUESTED",
+        "EXACT_STRUCTURED_MATCH"
+      ]
+    },
+    "work_order_id": {
+      "type": "string"
+    },
+    "role_state": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "role_lane": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "workspace_context_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "current_pointer_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "latest_checkpoint_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "active_open_loop_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "goal": {
+      "type": "string"
+    },
+    "accepted_decisions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "rejected_alternatives": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "allowed_changes": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "forbidden_actions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "immutable_decisions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "git_baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "branch",
+        "head",
+        "tree",
+        "porcelain"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "branch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "head": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40,64}$"
+        },
+        "tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40,64}$"
+        },
+        "porcelain": {
+          "const": ""
+        }
+      }
+    },
+    "next_action": {
+      "type": "string"
+    },
+    "terminal_condition": {
+      "type": "string"
+    },
+    "effect_ceiling": {
+      "type": "string"
+    },
+    "may_dispatch_codex": {
+      "const": false
+    },
+    "can_trade": {
+      "const": false
+    },
+    "capital_permission": {
+      "const": "DENY"
+    },
+    "boot_status": {
+      "enum": [
+        "SHADOW_READY",
+        "SHADOW_READY_WITH_WARNINGS"
+      ]
+    },
+    "boot_outcome": {
+      "enum": [
+        "WOULD_ALLOW",
+        "WOULD_ALLOW_WITH_WARNINGS"
+      ]
+    },
+    "boot_warnings": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

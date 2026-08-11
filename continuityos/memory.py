@@ -79,8 +79,8 @@ def _valid(meta: Dict[str, Any], created_at: float, as_of: Optional[float],
 class Memory:
     def __init__(self, path: str = "continuityos.db",
                  embedder: Optional[Callable[[str], List[float]]] = None,
-                 semantic_weight: float = 0.6):
-        self.store = Store(path)
+                 semantic_weight: float = 0.6, *, read_only: bool = False):
+        self.store = Store(path, read_only=read_only)
         if embedder is None:
             import os as _os
             if not _os.environ.get("CONTINUITYOS_SILENCE_EMBED_WARN"):

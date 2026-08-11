@@ -1,0 +1,123 @@
+{
+  "schema": "continuityos.work_admission.request/v1",
+  "authority_generation": "R63",
+  "task": {
+    "task_id": "CONTINUITYOS_GITHUB_WORK_ADMISSION_GATE_V1",
+    "task_body_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "terminal_condition": "Candidate delta verified; stop without merge or deployment."
+  },
+  "repository": {
+    "owner": "bitmaster162",
+    "name": "continuityos",
+    "remote_url": "https://github.com/bitmaster162/continuityos.git",
+    "visibility": "PRIVATE",
+    "visibility_change": false,
+    "base_branch": "gpt/github-transition-gate-v1",
+    "base_head": "bc0e21aae3eec1719cc83d6bfefe1f17b1641c93",
+    "base_tree": "87cc3bf4453dc1d87d8b39905024576052a09ea3",
+    "candidate_branch": "gpt/github-work-admission-gate-v1",
+    "default_branch": "main",
+    "remote_readback_mode": "REQUIRED",
+    "existing_candidate_head": null
+  },
+  "scope": {
+    "allowed_paths": [
+      "continuityos/gate/work_admission.py",
+      "continuityos/work_admission_schemas",
+      "tests/test_work_admission_gate_v1.py",
+      "docs/GITHUB_WORK_ADMISSION_GATE_V1.md",
+      "examples/work_admission_v1",
+      "pyproject.toml",
+      "CHANGELOG.md"
+    ],
+    "forbidden_paths": [
+      ".github/workflows"
+    ],
+    "max_changed_files": 20,
+    "max_added_bytes": 300000,
+    "max_commits": 4,
+    "allow_new_files": true,
+    "allow_deletions": false,
+    "allow_binary_files": false,
+    "allow_archive_files": false
+  },
+  "effects": {
+    "worktree_write": true,
+    "test_execution": true,
+    "local_commit": true,
+    "candidate_push": false,
+    "workflow_changes": false,
+    "force_push": false,
+    "merge": false,
+    "pull_request_merge": false,
+    "deployment": false,
+    "registry_apply": false,
+    "current_state_apply": false,
+    "r63_apply": false,
+    "trading": false,
+    "wallet_access": false,
+    "order_execution": false,
+    "external_message": false,
+    "self_application": false,
+    "can_trade": false,
+    "capital_permission": "DENY",
+    "deploy_permission": "DENY"
+  },
+  "session": {
+    "required_role": "GPT",
+    "capsule_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "validation": {
+    "required_commands": [
+      {
+        "id": "focused",
+        "argv": [
+          "python",
+          "-m",
+          "pytest",
+          "-q",
+          "tests/test_work_admission_gate_v1.py"
+        ],
+        "cwd": "repo",
+        "kind": "FOCUSED",
+        "timeout_seconds": 900,
+        "max_stdout_bytes": 8388608,
+        "max_stderr_bytes": 8388608
+      },
+      {
+        "id": "full",
+        "argv": [
+          "python",
+          "-m",
+          "pytest",
+          "-q"
+        ],
+        "cwd": "repo",
+        "kind": "FULL_SUITE",
+        "timeout_seconds": 1800,
+        "max_stdout_bytes": 8388608,
+        "max_stderr_bytes": 8388608
+      }
+    ],
+    "network_access": "DENY",
+    "dependency_install": "DENY",
+    "max_full_suite_runs": 2,
+    "max_install_attempts": 0,
+    "raw_evidence_required": true,
+    "continue_on_failure": false,
+    "max_total_output_bytes": 33554432
+  },
+  "evidence": {
+    "accepted_parent_terminal": "WINDOWS_SEMANTIC_CLOSE_V1_2_R9_3_PASS",
+    "accepted_parent_receipt_sha256": "b66302d25b6b74fabdd4c0e8962773f909ffbac868f3caedc6a8c2d110a136e1"
+  },
+  "workspace": {
+    "mode": "DISPOSABLE_CLONE_REQUIRED",
+    "allowed_root_prefixes": [
+      "D:/GITHUB_WORKSPACE"
+    ],
+    "forbidden_root_prefixes": [
+      "C:/PROJECTS"
+    ]
+  }
+}

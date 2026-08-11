@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "continuityos.work_semantic_decision/v1",
+  "title": "ContinuityOS Work Semantic Decision v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "authority_generation", "task_id", "admission_binding_sha256",
+    "delta_receipt_sha256", "transport_receipt_sha256", "candidate", "reviewer",
+    "verdict", "conditions", "content_status", "apply_status", "effects"
+  ],
+  "properties": {
+    "schema": {"const": "continuityos.work_semantic_decision/v1"},
+    "authority_generation": {"const": "R63"},
+    "task_id": {"type": "string", "minLength": 3, "maxLength": 128},
+    "admission_binding_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "delta_receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "transport_receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["head", "tree"],
+      "properties": {
+        "head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    "reviewer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "id"],
+      "properties": {
+        "role": {"const": "GPT_CONTROLLER"},
+        "id": {"const": "GPT"}
+      }
+    },
+    "verdict": {"enum": ["ACCEPT", "PASS_WITH_CONDITIONS", "HOLD", "REVISE", "REJECT"]},
+    "conditions": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {"type": "string", "minLength": 1, "maxLength": 4096}
+    },
+    "content_status": {"const": "REVIEWED"},
+    "apply_status": {"const": "NOT_APPLIED"},
+    "effects": {"type": "object"}
+  }
+}
