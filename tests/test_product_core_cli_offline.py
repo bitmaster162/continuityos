@@ -51,9 +51,44 @@ def test_default_core_cos_never_constructs_fastembed(monkeypatch, tmp_path):
     assert db.exists()
 
 
+def test_offline_aliases_never_construct_fastembed(monkeypatch, tmp_path):
+    _unbound(monkeypatch)
+    calls = []
+
+    class ForbiddenFastEmbed:
+        def __init__(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            raise AssertionError("FastEmbed must not be constructed by offline aliases")
+
+    monkeypatch.setattr(embedders, "FastEmbedEmbedder", ForbiddenFastEmbed)
+    for index, mode in enumerate(("hash", "HASHING", " offline ", "LOCAL")):
+        monkeypatch.setenv("CONTINUITYOS_EMBEDDER", mode)
+        db = tmp_path / f"offline-{index}.db"
+        rc = current_entrypoints.cos_main(["--db", str(db), "remember", mode])
+        assert rc == 0
+        assert db.exists()
+
+    assert calls == []
+
+
+def test_offline_policy_restores_fastembed_constructor(monkeypatch, tmp_path):
+    _unbound(monkeypatch)
+    monkeypatch.delenv("CONTINUITYOS_EMBEDDER", raising=False)
+
+    class SentinelFastEmbed:
+        pass
+
+    monkeypatch.setattr(embedders, "FastEmbedEmbedder", SentinelFastEmbed)
+    db = tmp_path / "restore.db"
+
+    rc = current_entrypoints.cos_main(["--db", str(db), "remember", "restore marker"])
+
+    assert rc == 0
+    assert embedders.FastEmbedEmbedder is SentinelFastEmbed
+
+
 def test_fastembed_requires_explicit_opt_in(monkeypatch, tmp_path):
     _unbound(monkeypatch)
-    monkeypatch.setenv("CONTINUITYOS_EMBEDDER", "fast")
     calls = []
 
     class FakeFastEmbed:
@@ -64,13 +99,14 @@ def test_fastembed_requires_explicit_opt_in(monkeypatch, tmp_path):
             return [1.0, 0.0, 0.0]
 
     monkeypatch.setattr(embedders, "FastEmbedEmbedder", FakeFastEmbed)
-    db = tmp_path / "memory.db"
+    for index, mode in enumerate(("fast", " FASTEMBED ")):
+        monkeypatch.setenv("CONTINUITYOS_EMBEDDER", mode)
+        db = tmp_path / f"fast-{index}.db"
+        rc = current_entrypoints.cos_main(["--db", str(db), "remember", mode])
+        assert rc == 0
+        assert db.exists()
 
-    rc = current_entrypoints.cos_main(["--db", str(db), "remember", "fast marker"])
-
-    assert rc == 0
-    assert len(calls) == 1
-    assert db.exists()
+    assert len(calls) == 2
 
 
 def test_unknown_embedder_mode_holds_before_db_open(monkeypatch, tmp_path, capsys):
@@ -112,6 +148,19 @@ def test_bound_r64_blocks_before_fastembed_opt_in(monkeypatch, capsys):
     assert value["authority_generation"] == "R64"
     assert value["legacy_fallback"] is False
     assert value["effects"]["network_effect"] is False
+
+
+def test_bound_r64_precedes_unknown_embedder_policy(monkeypatch, capsys):
+    _bound(monkeypatch)
+    monkeypatch.setenv("CONTINUITYOS_EMBEDDER", "unknown-provider")
+
+    rc = current_entrypoints.cos_main(["remember", "blocked"])
+
+    assert rc == 3
+    value = json.loads(capsys.readouterr().out)
+    assert value["terminal"] == "CURRENT_ENTRYPOINT_HOLD"
+    assert value["authority_generation"] == "R64"
+    assert value["legacy_fallback"] is False
 
 
 def test_product_help_documents_offline_default_and_fast_opt_in(monkeypatch, capsys):
