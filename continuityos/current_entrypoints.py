@@ -207,6 +207,10 @@ def _status_args(args: Sequence[str]) -> list[str]:
     return _product_args(args, "status")
 
 
+def _demo_args(args: Sequence[str]) -> list[str]:
+    return _product_args(args, "demo")
+
+
 def cos_main(argv: Sequence[str] | None = None) -> int:
     args = _args(argv)
     command = _command("cos", args)
@@ -226,12 +230,19 @@ def cos_main(argv: Sequence[str] | None = None) -> int:
                 return int(status_main(_status_args(_args(passed))) or 0)
 
             return routed
+        if command == "demo":
+            from .demo import main as demo_main
+
+            def routed(passed: Sequence[str] | None = None) -> int:
+                return int(demo_main(_demo_args(_args(passed))) or 0)
+
+            return routed
         from .cli import main
         return main
 
     # Deliberately route product commands through _dispatch. A verified R64 current
-    # session therefore keeps the same READ_ONLY HOLD and cannot use `cos connect`
-    # or `cos status` as a sibling-entrypoint escape hatch.
+    # session therefore keeps the same READ_ONLY HOLD and cannot use `cos connect`,
+    # `cos status`, or `cos demo` as a sibling-entrypoint escape hatch.
     return _dispatch("cos", args, load)
 
 
