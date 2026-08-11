@@ -5,6 +5,7 @@ import json
 from continuityos import current_entrypoints
 from continuityos import embedders
 from continuityos import wizard
+import continuityos.cli as legacy_cli
 
 
 def _unbound(monkeypatch) -> None:
@@ -15,6 +16,7 @@ def _isolated_setup_paths(monkeypatch, tmp_path):
     home = tmp_path / "home"
     monkeypatch.setattr(wizard, "HOME", home)
     monkeypatch.setattr(wizard, "STATE_FILE", home / "setup_state.json")
+    monkeypatch.setattr(wizard, "ENV_FILE", home / ".env")
     monkeypatch.setattr(wizard, "DASH_FILE", home / "continuityos_dashboard.html")
     monkeypatch.setattr(wizard, "_INTERACTIVE", False)
     return home
@@ -69,10 +71,15 @@ def test_cos_setup_fastembed_requires_explicit_opt_in(monkeypatch, tmp_path):
     assert db.exists()
 
 
-def test_cos_setup_unknown_embedder_holds_before_setup_writes(monkeypatch, tmp_path, capsys):
+def test_cos_setup_unknown_embedder_holds_before_legacy_cli_or_setup_writes(monkeypatch, tmp_path, capsys):
     _unbound(monkeypatch)
     home = _isolated_setup_paths(monkeypatch, tmp_path)
     monkeypatch.setenv("CONTINUITYOS_EMBEDDER", "surprise-provider")
+    monkeypatch.setattr(
+        legacy_cli,
+        "main",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy CLI must not run")),
+    )
     db = tmp_path / "must-not-exist.db"
 
     rc = current_entrypoints.cos_main(["--db", str(db), "setup", "--quick"])
@@ -85,6 +92,7 @@ def test_cos_setup_unknown_embedder_holds_before_setup_writes(monkeypatch, tmp_p
     assert value["reason"] == "UNSUPPORTED_EMBEDDER_MODE"
     assert value["command"] == "setup"
     assert value["requested"] == "surprise-provider"
+    assert value["effects"]["legacy_entrypoint_called"] is False
     assert value["effects"]["network_effect"] is False
     assert value["effects"]["filesystem_write"] is False
     assert value["effects"]["memory_write"] is False
