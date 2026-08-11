@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from continuityos import current_entrypoints
+from continuityos.continuity import Continuity
 from continuityos.memory import Memory
 import continuityos.updater as updater
 
@@ -10,7 +11,8 @@ import continuityos.updater as updater
 def _db(tmp_path):
     path = tmp_path / "memory.db"
     memory = Memory(str(path))
-    memory.remember("offline boot marker", namespace="facts")
+    continuity = Continuity(memory=memory)
+    continuity.add_canon("offline boot marker")
     return path
 
 
