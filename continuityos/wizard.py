@@ -27,6 +27,9 @@ from .memory import Memory
 
 HOME = Path(os.path.expanduser("~/.continuityos"))
 STATE_FILE = HOME / "setup_state.json"
+# Compatibility-only public module constant retained for R28 containment callers/tests.
+# Product setup no longer writes provider secrets or an onboarding .env file.
+ENV_FILE = HOME / ".env"
 DASH_FILE = HOME / "continuityos_dashboard.html"
 
 
