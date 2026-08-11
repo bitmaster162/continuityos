@@ -2,19 +2,54 @@
 
 ## What is MCP?
 
-Model Context Protocol (MCP) is Anthropic's open standard for connecting AI assistants to external tools. ContinuityOS implements an MCP server that exposes 12 tools.
+Model Context Protocol (MCP) is an open protocol for connecting AI assistants to external tools and context providers. ContinuityOS ships an MCP stdio server. The authoritative tool inventory is the server's live `tools/list` response; do not pin documentation to a fixed tool count.
 
-## Connecting to Hermes Agent
+## Recommended v0.10 connection flow
 
-### Option A: CLI (recommended)
+Use the product connector first:
+
+```bash
+cos connect --status
+cos connect claude --dry-run
+cos connect claude --yes
+
+# Cursor uses the same managed flow:
+cos connect cursor --dry-run
+cos connect cursor --yes
+```
+
+The managed flow:
+
+- resolves the exact ContinuityOS memory DB;
+- previews the client config before writing;
+- preserves unrelated config keys;
+- records rollback state and backs up an existing config;
+- detects config drift between preview and write;
+- verifies MCP `initialize` after the write;
+- automatically rolls back if verification fails.
+
+Use `cos connect <client> --rollback` to revert the last managed Claude/Cursor change when the config has not drifted since the write.
+
+## Hermes Agent
+
+Hermes is guidance-only in v0.10; ContinuityOS does not silently edit its config format.
+
+```bash
+cos connect hermes
+```
+
+The command prints the exact `hermes mcp add ...` command for the resolved ContinuityOS server and DB.
+
+Manual fallback:
+
 ```bash
 hermes mcp add continuityos \
   --command "python" \
   --args "/path/to/mcp_bridge.py"
 ```
 
-### Option B: Config file
-Add to `config.yaml`:
+Or add to `config.yaml`:
+
 ```yaml
 mcp_servers:
   continuityos:
@@ -24,11 +59,19 @@ mcp_servers:
     enabled: true
 ```
 
-After adding, restart Hermes or run `/reset`. Tools appear as `mcp_continuityos_*`.
+After adding, restart Hermes or run `/reset`.
 
-## Connecting to Claude Desktop
+## Claude Desktop
 
-Add to `claude_desktop_config.json`:
+Recommended:
+
+```bash
+cos connect claude --dry-run
+cos connect claude --yes
+```
+
+Manual fallback uses the `mcpServers` object in `claude_desktop_config.json`:
+
 ```json
 {
   "mcpServers": {
@@ -40,12 +83,20 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
-## Connecting to Cursor
+## Cursor
 
-Add to `.cursor/mcp.json`:
+Recommended:
+
+```bash
+cos connect cursor --dry-run
+cos connect cursor --yes
+```
+
+Manual fallback for `.cursor/mcp.json` also uses `mcpServers`:
+
 ```json
 {
-  "servers": {
+  "mcpServers": {
     "continuityos": {
       "command": "python",
       "args": ["/path/to/mcp_bridge.py"]
@@ -54,38 +105,44 @@ Add to `.cursor/mcp.json`:
 }
 ```
 
-## Available Tools (12)
-
-| Tool | Description |
-|------|-------------|
-| `remember` | Store a fact in memory |
-| `recall` | Hybrid semantic + keyword search |
-| `context` | Ready-to-inject context block |
-| `forget` | Delete memory by ID |
-| `list_namespaces` | List all memory folders |
-| `checkpoint` | Close session with delta + next |
-| `handoff` | Serialize state for agent transfer |
-| `doctor` | Health check (8 invariants) |
-| `set_frontier` | Change active focus area |
-| `predict` | Digital twin: predict owner stance |
-| `alignment` | Check action against canon |
-| `preflight_action` | Gate: safety decision before action |
-
-## Cross-Platform Bridge
-
-`mcp_bridge.py` auto-detects the venv Python and launches the MCP server:
+## Generic MCP client
 
 ```bash
-python mcp_bridge.py    # Works on Windows, Linux, macOS
+cos connect generic-mcp
 ```
 
-The bridge passes `--db` to point at your memory database.
+ContinuityOS prints a version-correct `mcpServers` snippet instead of guessing a client-specific config path.
+
+## Available tools
+
+Ask the running server:
+
+```text
+initialize
+-> tools/list
+```
+
+The `tools/list` response is the source of truth for the installed version. Core capabilities include durable memory/recall plus continuity operations such as checkpoint, handoff, doctor, frontier management and governance-related checks; exact names may evolve between releases.
+
+## Cross-platform bridge fallback
+
+`mcp_bridge.py` auto-detects the environment and launches the MCP server:
+
+```bash
+python mcp_bridge.py
+```
+
+The bridge passes `--db` to point at the selected memory database.
 
 ## Verification
 
+Managed `cos connect` performs MCP initialization verification automatically after a config write.
+
+For a manual setup, you can probe the bridge directly:
+
 ```bash
-# Test MCP server responds
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | \
   python mcp_bridge.py
-# → {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05",...}}
 ```
+
+A successful response contains a JSON-RPC result object for request id `1`.

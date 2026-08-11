@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "continuityos"
 dynamic = ["version"]
-description = "Durable, hybrid (structural + semantic) memory for AI agents and humans. Local-first, zero external services. Guided `cos setup` wizard + Sim-OS. v0.9: import ChatGPT/Claude history, export rules to CLAUDE.md/AGENTS.md/Cursor, RaaS usage metering, monetization-map builder."
+description = "Local-first durable memory and continuity for AI agents: import history, resume work across sessions, connect MCP clients, and preserve explicit governance boundaries."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
