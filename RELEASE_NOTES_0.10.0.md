@@ -4,6 +4,8 @@ Status: **release candidate; not tagged or published**.
 
 This release turns the existing ContinuityOS memory/continuity stack into a clearer product workflow for switching AI sessions and MCP-capable clients without rebuilding context by hand.
 
+Start with [`docs/QUICKSTART_0.10.md`](docs/QUICKSTART_0.10.md).
+
 ## Product workflow
 
 ```bash
@@ -61,11 +63,13 @@ Both surfaces remain behind the same current-session containment used by product
 
 ## Documentation and metadata
 
-- README quick start now leads with setup/import/connect/status/demo/boot.
-- MCP guide uses `cos connect` as the recommended path.
-- Cursor manual fallback uses `mcpServers`.
-- MCP tool inventory is defined by the live `tools/list` response rather than a stale fixed count.
+- focused v0.10 quick start documents setup/import/connect/status/demo/boot;
+- MCP guide uses `cos connect` as the recommended path;
+- Cursor manual fallback uses `mcpServers`;
+- MCP tool inventory is defined by the live `tools/list` response rather than a stale fixed count;
 - package description reflects durable memory + cross-session continuity + MCP onboarding.
+
+The broad historical README is intentionally left byte-identical in this RC branch; the focused v0.10 onboarding lives in `docs/QUICKSTART_0.10.md` to avoid rewriting unrelated operator/control-plane documentation during release packaging.
 
 ## Compatibility
 
