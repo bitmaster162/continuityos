@@ -31,8 +31,8 @@ def _bound(monkeypatch) -> None:
     )
 
 
-def test_v010_canonical_version():
-    assert __version__ == "0.10.0"
+def test_v0101_canonical_version():
+    assert __version__ == "0.10.1"
 
 
 def test_cos_help_is_product_first_unbound(monkeypatch, capsys):
@@ -66,7 +66,7 @@ def test_cos_version_reports_canonical_package_version_unbound(monkeypatch, caps
     rc = current_entrypoints.cos_main(["--version"])
 
     assert rc == 0
-    assert capsys.readouterr().out.strip() == "continuityos 0.10.0"
+    assert capsys.readouterr().out.strip() == "continuityos 0.10.1"
 
 
 def test_cos_help_cannot_bypass_bound_r64(monkeypatch, capsys):
