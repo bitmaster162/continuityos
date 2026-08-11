@@ -12,12 +12,17 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import sqlite3
 import time
 from typing import Any, Mapping, Sequence
 
-from .db import open_existing_context, resolve_memory_db
+from .db import _fingerprint_connection, resolve_memory_db
 
 SCHEMA = "continuityos.product_status/v1"
+
+
+class _NonQuiescentMemory(RuntimeError):
+    pass
 
 
 def _effects() -> dict[str, object]:
@@ -55,6 +60,46 @@ def _age(seconds: float | None) -> str:
     return f"{value / 86400:.1f}d ago"
 
 
+def _json_value(raw: str, expected: type, default: Any) -> Any:
+    try:
+        value = json.loads(raw)
+    except Exception:
+        return default
+    return value if isinstance(value, expected) else default
+
+
+def _dump(con: sqlite3.Connection, namespace: str) -> list[dict[str, Any]]:
+    rows = con.execute(
+        "SELECT id,text,namespace,tags,meta FROM items "
+        "WHERE namespace=? AND vec IS NOT NULL ORDER BY id",
+        (namespace,),
+    ).fetchall()
+    return [
+        {
+            "id": row["id"],
+            "text": row["text"],
+            "namespace": row["namespace"],
+            "tags": _json_value(row["tags"], list, []),
+            "meta": _json_value(row["meta"], dict, {}),
+        }
+        for row in rows
+    ]
+
+
+def _frontiers(rows: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    latest: dict[str, Mapping[str, Any]] = {}
+    for row in rows:
+        meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+        tags = row.get("tags") if isinstance(row.get("tags"), list) else []
+        kind = meta.get("kind") or (tags[0] if tags else "parked")
+        ts = meta.get("ts", 0)
+        current = latest.get(str(kind))
+        current_meta = current.get("meta") if current and isinstance(current.get("meta"), dict) else {}
+        if current is None or ts >= current_meta.get("ts", 0):
+            latest[str(kind)] = row
+    return {kind: str(row.get("text", "")) for kind, row in latest.items()}
+
+
 def _checkpoint(last: Mapping[str, Any] | None, now: float) -> dict[str, Any] | None:
     if not last:
         return None
@@ -68,6 +113,102 @@ def _checkpoint(last: Mapping[str, Any] | None, now: float) -> dict[str, Any] | 
         "summary": meta.get("summary"),
         "next_action": meta.get("next"),
         "proof_present": bool(meta.get("proof")),
+    }
+
+
+def _sidecar_state(db_path: str) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for suffix in ("-wal", "-journal"):
+        path = db_path + suffix
+        try:
+            size = os.path.getsize(path)
+        except FileNotFoundError:
+            size = 0
+        result[suffix] = int(size)
+    return result
+
+
+def _immutable_snapshot(db_path: str) -> dict[str, Any]:
+    """Read one quiescent SQLite image with immutable=1 so status cannot create sidecars."""
+    before_sidecars = _sidecar_state(db_path)
+    if any(before_sidecars.values()):
+        raise _NonQuiescentMemory(f"non-empty SQLite sidecar present: {before_sidecars}")
+    before_stat = os.stat(db_path)
+
+    uri = Path(db_path).as_uri() + "?mode=ro&immutable=1"
+    con = sqlite3.connect(uri, uri=True, timeout=5.0)
+    con.row_factory = sqlite3.Row
+    try:
+        table = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='items'"
+        ).fetchone()
+        if table is None:
+            raise ValueError("memory database has no items table")
+        identity = _fingerprint_connection(con, db_path)
+        memory_count = int(con.execute("SELECT COUNT(*) c FROM items").fetchone()["c"])
+        namespace_rows = con.execute(
+            "SELECT namespace, COUNT(*) n FROM items GROUP BY namespace ORDER BY n DESC"
+        ).fetchall()
+        namespaces = [
+            {"namespace": row["namespace"], "count": row["n"]}
+            for row in namespace_rows
+        ]
+        canon = _dump(con, "canon")
+        frontier_rows = _dump(con, "frontier")
+        loops = _dump(con, "loop")
+        checkpoints = _dump(con, "checkpoint")
+    finally:
+        con.close()
+
+    after_stat = os.stat(db_path)
+    after_sidecars = _sidecar_state(db_path)
+    if any(after_sidecars.values()):
+        raise _NonQuiescentMemory(f"SQLite sidecar appeared during status read: {after_sidecars}")
+    if (before_stat.st_size, before_stat.st_mtime_ns) != (after_stat.st_size, after_stat.st_mtime_ns):
+        raise _NonQuiescentMemory("memory database changed during immutable status read")
+
+    frontiers = _frontiers(frontier_rows)
+    last = max(
+        checkpoints,
+        key=lambda row: (row.get("meta") or {}).get("ts", 0),
+        default=None,
+    )
+    now = time.time()
+    checkpoint = _checkpoint(last, now)
+
+    checks: list[dict[str, Any]] = []
+    def chk(ok: object, name: str, detail: str) -> None:
+        checks.append({"ok": bool(ok), "check": name, "detail": detail})
+
+    chk("cash" in frontiers, "cash_frontier_set", frontiers.get("cash", "— not set"))
+    chk("trunk" in frontiers, "trunk_set", frontiers.get("trunk", "— not set"))
+    chk(len(loops) <= 7, "open_loops_bounded", f"{len(loops)} open (max 7)")
+    if checkpoint:
+        age_h = float(checkpoint.get("age_seconds") or 0.0) / 3600
+        chk(age_h <= 48, "checkpoint_fresh", f"{age_h:.1f}h old")
+        chk(checkpoint.get("proof_present"), "has_proof", "proof present" if checkpoint.get("proof_present") else "— no proof")
+    else:
+        chk(False, "checkpoint_fresh", "no checkpoint yet")
+        chk(False, "has_proof", "no checkpoint yet")
+    chk(memory_count > 0, "memory_persists", f"{memory_count} memories")
+    chk(len(canon) > 0, "identity_persists", "canon present" if canon else "— no canon")
+    chk(len(loops) > 0, "purpose_persists", f"{len(loops)} open loop(s)")
+    passed = sum(1 for check in checks if check["ok"])
+
+    return {
+        "identity": identity,
+        "memory_count": memory_count,
+        "namespaces": namespaces,
+        "canon_count": len(canon),
+        "frontiers": frontiers,
+        "loops": loops,
+        "checkpoint": checkpoint,
+        "doctor": {
+            "healthy": passed == len(checks),
+            "passed": passed,
+            "total": len(checks),
+            "checks": checks,
+        },
     }
 
 
@@ -113,7 +254,21 @@ def collect(db: str | None = None) -> tuple[dict[str, Any], int]:
         }, 2)
 
     try:
-        context, identity = open_existing_context(db_path, source=resolved["source"])
+        snapshot = _immutable_snapshot(db_path)
+        clients = _client_statuses(db_path)
+    except _NonQuiescentMemory as exc:
+        return ({
+            "schema": SCHEMA,
+            "terminal": "COS_STATUS_HOLD",
+            "reason": "MEMORY_DB_NOT_QUIESCENT",
+            "memory": {
+                "state": "BUSY",
+                "path": db_path,
+                "source": resolved["source"],
+            },
+            "error": str(exc),
+            "effects": _effects(),
+        }, 3)
     except Exception as exc:
         return ({
             "schema": SCHEMA,
@@ -128,34 +283,10 @@ def collect(db: str | None = None) -> tuple[dict[str, Any], int]:
             "effects": _effects(),
         }, 2)
 
-    try:
-        now = time.time()
-        m = context.m
-        namespaces = m.namespaces()
-        memory_count = m.count()
-        loops = context.open_loops()
-        last = context.last_checkpoint()
-        checkpoint = _checkpoint(last, now)
-        doctor = context.doctor()
-        frontiers = context.frontiers()
-        canon_count = len(context._dump("canon"))
-        clients = _client_statuses(db_path)
-    except Exception as exc:
-        return ({
-            "schema": SCHEMA,
-            "terminal": "COS_STATUS_HOLD",
-            "reason": "STATUS_READ_FAILED",
-            "memory": {
-                "state": "ERROR",
-                "path": db_path,
-                "source": resolved["source"],
-            },
-            "error": f"{type(exc).__name__}: {exc}",
-            "effects": _effects(),
-        }, 2)
-    finally:
-        context.m.store.con.close()
-
+    doctor = snapshot["doctor"]
+    checkpoint = snapshot["checkpoint"]
+    loops = snapshot["loops"]
+    canon_count = snapshot["canon_count"]
     connected = sum(1 for client in clients if client.get("connected") is True)
     drifted = sum(1 for client in clients if client.get("drift") is True)
     configured = sum(1 for client in clients if client.get("configured") is True)
@@ -179,16 +310,17 @@ def collect(db: str | None = None) -> tuple[dict[str, Any], int]:
             "state": "READY",
             "path": _canon_path(db_path),
             "source": resolved["source"],
-            "count": memory_count,
-            "namespaces": namespaces,
-            "context_sha256": identity.get("context_sha256"),
+            "count": snapshot["memory_count"],
+            "namespaces": snapshot["namespaces"],
+            "context_sha256": snapshot["identity"].get("context_sha256"),
+            "snapshot_mode": "sqlite-immutable-quiescent",
         },
         "continuity": {
             "state": continuity_state,
             "passed": doctor.get("passed"),
             "total": doctor.get("total"),
             "checks": doctor.get("checks", []),
-            "frontiers": frontiers,
+            "frontiers": snapshot["frontiers"],
             "open_loop_count": len(loops),
             "open_loops": [
                 {"id": loop.get("id"), "text": loop.get("text")}
