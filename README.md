@@ -2,10 +2,28 @@
 
 [![tests](https://github.com/bitmaster162/continuityos/actions/workflows/ci.yml/badge.svg)](https://github.com/bitmaster162/continuityos/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/continuityos.svg)](https://pypi.org/project/continuityos/) ![Python](https://img.shields.io/badge/python-3.10%2B-blue) ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 
-[![PyPI](https://img.shields.io/pypi/v/continuityos)](https://pypi.org/project/continuityos/) [![Python](https://img.shields.io/pypi/pyversions/continuityos)](https://pypi.org/project/continuityos/) [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+**Durable local memory + continuity for AI agents and humans.** Import your existing AI history, preserve canon/checkpoints/open work, connect an MCP client, and resume in a fresh session without rebuilding context by hand.
 
+ContinuityOS v0.10 puts the product workflow first:
 
-> ## ContinuityOS — continuity engine + controlled governance runner
+```text
+install -> setup/import -> connect -> status -> fresh-session continuity proof -> resume
+```
+
+```bash
+pip install continuityos
+cos setup
+cos import ~/Downloads/chatgpt-export/conversations.json --extract
+cos connect claude --dry-run
+cos connect claude --yes
+cos status
+cos demo continuity
+cos boot
+```
+
+`cos connect` supports Claude and Cursor as managed configurations and emits guidance for Hermes and generic MCP clients. `cos status` is read-only. `cos demo continuity` uses an isolated temporary database and a separate Python process; it does not read or write your normal memory database.
+
+> ## Controlled governance runner
 >
 > Calls explicitly routed through `continuity run` or a correctly installed host hook receive a
 > decision — `ALLOW · WARN · HOLD · DENY · REQUIRE_CONFIRMATION · DRY_RUN_ONLY` — with reasons,
@@ -29,9 +47,6 @@
 
 ![ContinuityOS demo: bi-temporal recall and governance gate](docs/demo.gif)
 
-**Durable memory + continuity layer for AI agents and humans.** Local-first, with no required
-external service for the core memory path. Apache-2.0.
-
 The tested core combines **memory** (hybrid recall) with **continuity** (canon, frontiers, loops,
 checkpoints, doctor, handoff). The repository also contains experimental primitives: an
 authority-tagged multi-agent wrapper, a retrieval/keyword-based `Twin`, simulation helpers, and an
@@ -51,7 +66,7 @@ downloads can make outbound requests; there is no account requirement or product
 - **Agents forget.** Every new session starts cold. ContinuityOS persists context across sessions and tools.
 - **Hybrid recall.** Keyword-only memory misses paraphrases; pure-vector memory misses exact facts and structure. ContinuityOS blends both.
 - **Structure like folders.** Memories live in namespaces — `identity`, `projects`, `rules`, `facts`, `events`, `notes` (or your own) — so recall can be scoped and a human can browse it.
-- **For agents *and* humans.** Use it from your code, from the CLI, from an MCP-capable client (Claude Desktop / Claude Code), or over a tiny HTTP API.
+- **For agents *and* humans.** Use it from your code, from the CLI, from an MCP-capable client (Claude Desktop / Claude Code / Cursor / Hermes), or over a tiny HTTP API.
 - **Local-first & private.** Core is **stdlib-only** — no required dependencies, no services. Drop-in to anything.
 
 ---
@@ -73,7 +88,23 @@ Requires Python 3.10+.
 
 ## Quick start
 
-### From the CLI
+### Product workflow
+
+```bash
+cos --version
+cos setup
+cos import ~/Downloads/chatgpt-export/conversations.json --extract
+cos connect --status
+cos connect claude --dry-run
+cos connect claude --yes
+cos status
+cos demo continuity
+cos boot
+```
+
+Use `cos --help` for the product-first command map. For Cursor, replace `claude` with `cursor`. Hermes and `generic-mcp` return exact manual connection guidance instead of silently editing an unsupported config format.
+
+### Memory CLI
 
 ```bash
 cos remember "Robert prefers Apache-2.0 licenses" -n rules -t license
@@ -85,7 +116,7 @@ cos namespaces
 
 ### Common Operational Memory v1 (shadow-only)
 
-ContinuityOS now includes a separate evidence-bound operational ledger. It does not replace
+ContinuityOS includes a separate evidence-bound operational ledger. It does not replace
 Control Center current truth and cannot apply state changes:
 
 ```bash
@@ -157,9 +188,20 @@ for hit in m.recall("best grid setup", k=3):
 print(m.context("what do I know about grid trading?"))
 ```
 
-### As an MCP server (Claude Desktop / Claude Code)
+### Connect an MCP client
 
-ContinuityOS ships an MCP stdio server so an agent can `remember` and `recall` on its own. Add to your MCP client config:
+The recommended v0.10 path is the safe product connector:
+
+```bash
+cos connect --status
+cos connect claude --dry-run
+cos connect claude --yes
+# or: cursor / hermes / generic-mcp
+```
+
+Managed client writes are previewed first, preserve unrelated config keys, create rollback state, and verify MCP initialization after the write. See [docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md).
+
+Manual MCP configuration remains available as an advanced fallback:
 
 ```json
 {
@@ -173,9 +215,8 @@ ContinuityOS ships an MCP stdio server so an agent can `remember` and `recall` o
 ```
 
 Tools are reported by the MCP `tools/list` response; use that response as the version-correct inventory.
-Now the agent pulls relevant memory automatically before answering — and writes new facts back as it learns it.
 
-**Recommended:** use the cross-platform bridge instead of `cos serve`:
+**Cross-platform bridge fallback:**
 
 ```json
 {
@@ -257,267 +298,3 @@ c.checkpoint(summary="...", next_action="...", proof="path/to/artifact")
 print(c.doctor())     # anti-drift report
 print(c.handoff())    # resume-context block
 ```
-
-Over MCP the agent gets `checkpoint`, `handoff`, `doctor`, `set_frontier` tools too — so it maintains its own continuity, not just its recall.
-
----
-
-## Governance — devil's advocate, audit, gate
-
-ContinuityOS isn't just recall — it's the **governance & audit layer** for agent memory, built for
-the EU-AI-Act era (Article-12 queryable decision records), not the LoCoMo leaderboard.
-
-- **`cos advocate "<claim>"`** — a running **devil's advocate** that challenges a claim or action
-  against your own memory (contradictions, stale facts, missing evidence, canon conflicts,
-  overconfidence, dishonest omissions, irreversible actions) → verdict STOP / RECONSIDER / PROCEED.
-  Auto-gated at `checkpoint`/`close`/`boot`. Rubric in `ADVOCATE.md`.
-- **`cos audit [--devil]`** — memory inventory + invariants (append-only integrity, bi-temporal
-  ordering, canon, dangling pointers); emits an Article-12-style record.
-- **Governance preflight** — for actions explicitly routed through the runner or an installed hook, a decision
-  (ALLOW / WARN / HOLD / DENY / REQUIRE_CONFIRMATION / DRY_RUN_ONLY) with reasons, rollback plan, and
-  an append-only ledger.
-
-```bash
-cos advocate "All 150 bots are profitable and guaranteed to win"   # flags overconfidence + honesty
-cos audit --devil                                                   # invariants + adversarial pass
-```
-
----
-
-## How it works
-
-```
-            remember(text, namespace, tags)
-                        │
-                        ▼
-        ┌───────────────────────────────┐
-        │            Store               │   one local SQLite file
-        │  items  +  FTS5  +  vectors    │
-        └───────────────────────────────┘
-                        ▲
-          recall(query) │  HYBRID rank
-            ┌───────────┴───────────┐
-   structural / keyword       semantic / vector
-   (FTS5 + namespace)         (cosine over embeddings)
-            └───────────┬───────────┘
-                  blended score → top-k
-```
-
-- **Structural layer** — `namespace` (folder-like) + `tags` + FTS5 full-text index.
-- **Semantic layer** — each memory is embedded to an L2-normalized vector; recall ranks by cosine similarity.
-- **Hybrid score** — `semantic_weight · semantic + (1 − semantic_weight) · keyword` (tunable; default 0.6).
-- **Embeddings are pluggable** — the default `HashingEmbedder` is deterministic and fully offline (great for privacy and tests). For best semantic quality, pass any `str → list[float]` callable (e.g. a `sentence-transformers` model):
-
-  ```python
-  from sentence_transformers import SentenceTransformer
-  enc = SentenceTransformer("all-MiniLM-L6-v2")
-  m = Memory("memory.db", embedder=lambda t: enc.encode(t, normalize_embeddings=True).tolist())
-  ```
-
----
-
-## Privacy
-
-ContinuityOS core does not upload memory content. Memory is a local SQLite file; governance and
-metering can create additional local databases. `.gitignore` excludes common SQLite artifacts and
-downloaded benchmark data, but operators remain responsible for excluding their own import/export
-directories and secrets.
-
----
-
-## Governance boundary status
-
-ContinuityOS currently provides a deterministic decision engine, an argv-only controlled CLI
-runner, and opt-in host hooks. These are useful enforcement points **inside the paths that are
-actually wired to them**. The MCP `preflight_action` tool is advisory: exposing it does not force
-an agent's other tools through it. Raw shell access, a direct SDK call, or an unconfigured host can
-bypass the gate entirely.
-
-The ledger is append-only and hash-chained, with transactional concurrent appends, but it is not
-cryptographically signed or externally anchored. Local rollback is materialized by the controlled
-CLI immediately before approved execution for supported explicit file targets; advisory preflight
-responses do not claim that a snapshot already exists. These artifacts can support an audit, but
-they are not by themselves evidence of regulatory compliance. See [THREAT_MODEL.md](THREAT_MODEL.md)
-and [BUILD_GATE_STATUS.md](BUILD_GATE_STATUS.md).
-
-## Two-tier memory & cost-aware routing
-
-The strongest 2026 agents don't win on a bigger context window — they win on *how they handle the finiteness of context*. ContinuityOS implements the two-tier pattern Anthropic and OpenAI both converge on:
-
-- **Session memory** — the auto-compactible state of the current run (goal, live hypotheses, found IDs, tool outcomes, unresolved blockers). Carried forward instead of re-derived each turn.
-- **Long-term memory** — durable lessons, stable user preferences, recurring patterns, anti-patterns, domain facts. **One lesson per file; update the existing note, don't spawn duplicates** — the same discipline this repo's memory files follow.
-
-`context(query, k, max_tokens=…, compact=…)` packs the most relevant long-term memories until a token budget is hit, so recall stays cheap, and its output order is deterministic — which matters for **prompt-cache stability**.
-
-**Cache-friendly memory rules** (preserve the prompt-cache hash; cache miss = paying full price every turn):
-
-1. Never put volatile values (`datetime.now()`, random IDs, per-turn counters) in the system prompt or any cached prefix — they reset the cache every call. Put them in the body of the last user message.
-2. Keep tool definitions and the memory block in a **stable, sorted order** so the cached prefix is byte-identical across turns (`compact=True` + deterministic packing does this).
-3. Cache thresholds and provider behavior change; verify the current provider documentation before
-   relying on a minimum prefix size.
-4. To change instructions mid-run without busting the cache, inject a `role:"system"` message *into the history* rather than editing the cached system prompt.
-
-**Cost-aware routing.** `estimate_cost(text, model_id, output_tokens)` can compare a context block
-against the package's static `MODEL_REGISTRY`. Those entries are estimates, not a live price feed;
-verify provider pricing before a financial or routing decision.
-
-## Why continuity, not just memory
-
-ContinuityOS stores continuity state outside a model: canon, rules, bi-temporal facts, and decision
-checkpoints can be reloaded after a model or vendor change. `cos boot` reconstructs a context pack;
-it does **not** prove that the new model is the same agent or will reproduce prior behavior.
-
-## Sim-OS — closed-loop simulation on top of the memory core
-
-Beyond memory, ContinuityOS ships an experimental layer: [`continuityos/sim/`](continuityos/sim/)
-is a durable OODA-style loop with a mock simulation engine, risk scoring, loop detection, and local
-rollback hooks. It is designed to keep unverified results out of canon, but is not a sandbox or a
-guarantee against canon contamination.
-
-```bash
-cos sim --objective edge --iters 6      # run the closed loop (mock engine)
-```
-
-See [continuityos/sim/README.md](continuityos/sim/README.md) for the architecture.
-
-## Extension seams
-
-ContinuityOS is a memory + governance library, not a closed product. The [`Memory`](continuityos/memory.py)
-API, advisory governance preflight, and [`sim/`](continuityos/sim/) package are available extension
-seams. The in-repository Sim-OS/Pandora code is an experimental integration; no independent-user,
-retention, or production-dependency claim is made here without a linked receipt.
-
-## Honest limits (threat model)
-
-We'd rather tell you the edges than oversell. Full detail in [THREAT_MODEL.md](THREAT_MODEL.md).
-
-- **Installation is not interception.** Only the controlled runner and correctly installed hooks enforce a result. The MCP preflight tool is advisory, and direct/raw tools remain outside this boundary.
-- **The classifier is not an oracle.** It covers known shell/file/git patterns and validates typed paths where supplied. It does **not** understand arbitrary application logic or close the symlink/path TOCTOU gap between decision and execution.
-- **Rollback is narrow and local-only.** The v1 executor snapshots explicit regular-file, SQLite, and not-yet-existing file targets. Directories, symlinks, remote APIs, GitHub operations, messages, and transactions are not reversible through this module.
-- **The ledger is tamper-evident, not tamper-proof.** Concurrent appends are serialized, but there is no signature, separate writer identity, or external anchor.
-- **Default embedder is weak on purpose.** The zero-dependency `HashingEmbedder` is fast but semantically shallow. For real synonym/paraphrase recall install `continuityos[fast]` (ONNX, ~bge-small) or `[m2v]` (30MB static). We publish honest LoCoMo *retrieval* numbers in `BENCHMARKS.md` — not answer-graded marketing figures.
-- **Memory can go stale.** A fact true last week can be wrong today. Use bi-temporal `supersede()` / `recall(current_only=True)` so corrections hide stale facts instead of contradicting them. Don't hand an agent raw memory without the current-only filter for state-sensitive decisions.
-- **It asks for discipline.** Continuity relies on session-close rituals (`cos checkpoint`) and periodic `cos doctor`. Skip them and the store drifts toward a log dump. This is a feature (auditable thread), but it is real operator work.
-- **Prompt-cache hygiene.** If you inject memory into a system prompt, keep it deterministic — a dynamic value (e.g. `datetime.now()`) busts the cache and you pay full context cost every call. `context(..., compact=True)` returns cache-stable output; don't wrap it in per-call timestamps.
-
-Best fit today: **operators and teams that need auditable, governed continuity** (regulated internal ops, on-call/shift handoff, coding agents with rollback). Overkill if you just want Git-style backups and paste context by hand.
-
-## Status
-
-Package version: **v0.9.0**. Current test and governance-corpus results are recorded in
-[BUILD_GATE_STATUS.md](BUILD_GATE_STATUS.md); the CI workflow is the authoritative moving signal.
-
-
-## GitHub Transition Gate v1
-
-Verify a strict host-closure/GitHub-transport return without applying it:
-
-```bash
-continuity github-transition verify \
-  --zip RETURN.zip \
-  --sidecar RETURN.zip.sha256 \
-  --ready RETURN.zip.READY_FOR_SYNC.json \
-  --task-body-sha256 <controller-pinned-sha256>
-```
-
-The gate preserves exact producer terminals (including `REVISE`), verifies all
-nine CODEX/WORK slots, repository visibility and remote HEAD/tree readbacks, and
-rejects force-push, existing-default merge, secret/raw-evidence leakage and any
-state/deployment/trading effect.
-
-After GPT records semantic verdicts, evaluate a proposal-only memory candidate:
-
-```bash
-continuity memory-promotion evaluate \
-  --closure-receipt GITHUB_TRANSITION_RECEIPT.json \
-  --semantic-decisions SEMANTIC_DECISIONS.json
-```
-
-Even a successful result is only `PROMOTION_CANDIDATE_ELIGIBLE`; R63 and live
-state are not changed. See `docs/GITHUB_TRANSITION_GATE_V1.md`.
-
-## GitHub Work Admission Gate v1
-
-Before persistent code work, bind exact task bytes, session capsule, Git
-baseline, candidate branch, workspace, path scope, validation commands and
-effect ceiling:
-
-```bash
-continuity work-admission verify \
-  --request WORK_ADMISSION_REQUEST.json \
-  --work-order WORK_ORDER.md \
-  --session-capsule SESSION_CAPSULE.json \
-  --repo /path/to/disposable/clone \
-  --check-remote
-```
-
-After the candidate commit, ContinuityOS can execute the exact admitted test
-vectors itself and bind the actual stdout/stderr bytes:
-
-```bash
-continuity work-admission run-validation \
-  --admission-receipt WORK_ADMISSION_RECEIPT.json \
-  --admission-receipt-sha256 <SHA256> \
-  --repo /path/to/candidate \
-  --output-dir /outside/repo/validation-evidence
-
-continuity work-admission verify-validation \
-  --admission-receipt WORK_ADMISSION_RECEIPT.json \
-  --admission-receipt-sha256 <SHA256> \
-  --repo /path/to/candidate \
-  --evidence-dir /outside/repo/validation-evidence
-```
-
-Then verify linear Git ancestry, changed paths, file/byte/commit budgets, the
-validation receipt and independently rehashed raw evidence:
-
-```bash
-continuity work-admission verify-delta \
-  --admission-receipt WORK_ADMISSION_RECEIPT.json \
-  --admission-receipt-sha256 <SHA256> \
-  --validation-receipt /outside/repo/validation-evidence/WORK_VALIDATION_RECEIPT.json \
-  --validation-evidence-dir /outside/repo/validation-evidence \
-  --repo /path/to/candidate \
-  --check-remote
-```
-
-A pass authorizes only later candidate transport. The gates do not create a
-branch, push, merge, deploy, apply R63/current state, trade or use capital. See
-`docs/GITHUB_WORK_ADMISSION_GATE_V1.md` and
-`docs/GITHUB_WORK_VALIDATION_EVIDENCE_V1.md`.
-
-## GitHub Work Ledger v1
-
-Persist one admitted GitHub work run as an immutable receipt chain:
-
-```bash
-continuity work-ledger init --admission-receipt ADMISSION.json --out work-00.jsonl
-continuity work-ledger append-delta --ledger work-00.jsonl --delta-receipt DELTA.json --out work-01.jsonl
-continuity work-ledger append-transport --ledger work-01.jsonl --transport-receipt TRANSPORT.json --out work-02.jsonl
-continuity work-ledger append-semantic --ledger work-02.jsonl --semantic-decision GPT_DECISION.json --out work-03.jsonl
-continuity work-ledger finalize --ledger work-03.jsonl --out work-04.jsonl
-continuity work-ledger verify --ledger work-04.jsonl
-continuity work-ledger verify-extension --before work-03.jsonl --after work-04.jsonl
-```
-
-Each command creates a new successor ledger instead of mutating the input.
-Receipt hashes, candidate/remote HEAD and tree, GitHub Actions, GPT-only semantic
-review, R63 and all DENY effect ceilings are hash-chained. A closed ledger is
-only an integration candidate; it does not merge, deploy or apply state. See
-`docs/GITHUB_WORK_LEDGER_V1.md`.
-
-## Common Operational Context v1
-
-Create a bounded, evidence-bound context pack from a quiescent local Common
-Operational Memory database:
-
-```bash
-continuity-context prepare --db memory.db --capsule SESSION_CAPSULE.json \
-  --spec OPERATIONAL_CONTEXT_SPEC.json --out OPERATIONAL_CONTEXT.json
-continuity-context verify --db memory.db --capsule SESSION_CAPSULE.json \
-  --spec OPERATIONAL_CONTEXT_SPEC.json --context OPERATIONAL_CONTEXT.json
-```
-
-The bridge is shadow-only, reads SQLite immutably, rejects a non-empty WAL, fails
-closed on budget overflow, and never applies state. See
-`docs/COMMON_OPERATIONAL_CONTEXT_V1.md`.
