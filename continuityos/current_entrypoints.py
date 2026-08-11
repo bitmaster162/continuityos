@@ -37,7 +37,7 @@ Start here:
   connect [client]         connect Claude, Cursor, Hermes, or a generic MCP client
   status                   read-only product health and continuity status
   demo continuity          prove fresh-process continuity on an isolated temporary DB
-  boot                     print handoff + doctor + update/advocate readiness
+  boot                     offline handoff + doctor; --check-updates opts into PyPI
 
 Core memory:
   remember | find | recall | namespaces | extract
@@ -53,6 +53,8 @@ Useful commands:
   cos connect claude --dry-run
   cos status --json
   cos demo continuity --json
+  cos boot
+  cos boot --check-updates
   cos --version
 
 Product commands are routed through the same current-session containment boundary as
@@ -244,6 +246,10 @@ def _demo_args(args: Sequence[str]) -> list[str]:
     return _product_args(args, "demo")
 
 
+def _boot_args(args: Sequence[str]) -> list[str]:
+    return _product_args(args, "boot")
+
+
 def _help_main(argv: Sequence[str] | None = None) -> int:
     print(PRODUCT_HELP.rstrip())
     return 0
@@ -286,6 +292,13 @@ def cos_main(argv: Sequence[str] | None = None) -> int:
 
             def routed(passed: Sequence[str] | None = None) -> int:
                 return int(demo_main(_demo_args(_args(passed))) or 0)
+
+            return routed
+        if command == "boot":
+            from .boot import main as boot_main
+
+            def routed(passed: Sequence[str] | None = None) -> int:
+                return int(boot_main(_boot_args(_args(passed))) or 0)
 
             return routed
         from .cli import main
