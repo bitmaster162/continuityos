@@ -1,3 +1,4 @@
+from importlib import metadata
 from pathlib import Path
 import re
 
@@ -19,8 +20,22 @@ CANONICAL_APACHE_2_CLAUSES = (
 )
 
 
+def _license_text() -> str:
+    if LICENSE_FILE.is_file():
+        return LICENSE_FILE.read_text(encoding="utf-8")
+
+    dist = metadata.distribution("continuityos")
+    candidates = [
+        entry
+        for entry in (dist.files or ())
+        if str(entry).replace("\\", "/").endswith(".dist-info/licenses/LICENSE")
+    ]
+    assert len(candidates) == 1, "installed wheel must contain exactly one dist-info/licenses/LICENSE"
+    return Path(dist.locate_file(candidates[0])).read_text(encoding="utf-8")
+
+
 def test_apache_2_license_text_is_not_truncated():
-    text = LICENSE_FILE.read_text(encoding="utf-8")
+    text = _license_text()
 
     assert text.startswith("                                 Apache License\n")
     assert "Version 2.0, January 2004" in text
@@ -34,5 +49,11 @@ def test_apache_2_license_text_is_not_truncated():
 
 
 def test_project_metadata_declares_apache_2_spdx_identity():
-    text = PYPROJECT_FILE.read_text(encoding="utf-8")
-    assert re.search(r'(?m)^license\s*=\s*"Apache-2\.0"\s*$', text)
+    if PYPROJECT_FILE.is_file():
+        text = PYPROJECT_FILE.read_text(encoding="utf-8")
+        assert re.search(r'(?m)^license\s*=\s*"Apache-2\.0"\s*$', text)
+        return
+
+    package_metadata = metadata.metadata("continuityos")
+    assert package_metadata["License-Expression"] == "Apache-2.0"
+    assert set(package_metadata.get_all("License-File") or ()) >= {"LICENSE", "NOTICE"}
