@@ -29,13 +29,17 @@ def _is_same_path(left: str, right: str | Path) -> bool:
     return os.path.normcase(os.path.realpath(left)) == os.path.normcase(os.path.realpath(str(right)))
 
 
-def test_status_reads_existing_memory_without_writes(tmp_path, monkeypatch):
+def test_status_reads_existing_memory_without_writes_or_sidecars(tmp_path, monkeypatch):
     db = _ready_db(tmp_path)
     claude = tmp_path / "claude.json"
     cursor = tmp_path / "cursor.json"
     monkeypatch.setenv("CONTINUITYOS_CLAUDE_CONFIG", str(claude))
     monkeypatch.setenv("CONTINUITYOS_CURSOR_CONFIG", str(cursor))
     before = db.read_bytes()
+    wal = Path(str(db) + "-wal")
+    journal = Path(str(db) + "-journal")
+    assert not wal.exists() or wal.stat().st_size == 0
+    assert not journal.exists() or journal.stat().st_size == 0
 
     value, code = status.collect(str(db))
 
@@ -44,6 +48,7 @@ def test_status_reads_existing_memory_without_writes(tmp_path, monkeypatch):
     assert value["state"] == "READY"
     assert value["memory"]["state"] == "READY"
     assert value["memory"]["count"] == 5
+    assert value["memory"]["snapshot_mode"] == "sqlite-immutable-quiescent"
     assert _is_same_path(value["memory"]["path"], db)
     assert value["continuity"]["state"] == "HEALTHY"
     assert value["continuity"]["open_loop_count"] == 1
@@ -55,8 +60,26 @@ def test_status_reads_existing_memory_without_writes(tmp_path, monkeypatch):
     assert value["effects"]["memory_write"] is False
     assert value["effects"]["subprocess_execution"] is False
     assert db.read_bytes() == before
+    assert not wal.exists() or wal.stat().st_size == 0
+    assert not journal.exists() or journal.stat().st_size == 0
     assert not claude.exists()
     assert not cursor.exists()
+
+
+def test_status_nonquiescent_db_holds_instead_of_ignoring_wal(tmp_path):
+    db = _ready_db(tmp_path)
+    wal = Path(str(db) + "-wal")
+    wal.write_bytes(b"synthetic-active-wal")
+    before = db.read_bytes()
+
+    value, code = status.collect(str(db))
+
+    assert code == 3
+    assert value["terminal"] == "COS_STATUS_HOLD"
+    assert value["reason"] == "MEMORY_DB_NOT_QUIESCENT"
+    assert value["memory"]["state"] == "BUSY"
+    assert db.read_bytes() == before
+    assert wal.read_bytes() == b"synthetic-active-wal"
 
 
 def test_status_missing_db_holds_without_creating_it(tmp_path):
