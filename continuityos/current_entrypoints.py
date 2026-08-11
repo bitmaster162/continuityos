@@ -27,6 +27,39 @@ from .current_runtime_cli import current_binding_from_env
 
 SCHEMA = "continuityos.current_entrypoint_containment/v1"
 
+PRODUCT_HELP = """usage: cos [--db DB] <command> [options]
+
+ContinuityOS — local-first durable memory + continuity for AI agents and humans.
+
+Start here:
+  setup                    guided local onboarding
+  import <path>            import ChatGPT/Claude/Gemini/Grok/Mistral/Perplexity history
+  connect [client]         connect Claude, Cursor, Hermes, or a generic MCP client
+  status                   read-only product health and continuity status
+  demo continuity          prove fresh-process continuity on an isolated temporary DB
+  boot                     print handoff + doctor + update/advocate readiness
+
+Core memory:
+  remember | find | recall | namespaces | extract
+
+Continuity:
+  canon | frontier | loop | checkpoint | doctor | handoff | close | rules | scan
+
+Advanced / operator surfaces:
+  serve | api | alignment | advocate | audit | bus | epoch | scout | ledger | sim
+
+Useful commands:
+  cos connect --status
+  cos connect claude --dry-run
+  cos status --json
+  cos demo continuity --json
+  cos --version
+
+Product commands are routed through the same current-session containment boundary as
+legacy commands. In a verified READ_ONLY current session they HOLD instead of bypassing
+authority controls.
+"""
+
 
 def _effects() -> dict[str, object]:
     return {
@@ -211,11 +244,29 @@ def _demo_args(args: Sequence[str]) -> list[str]:
     return _product_args(args, "demo")
 
 
+def _help_main(argv: Sequence[str] | None = None) -> int:
+    print(PRODUCT_HELP.rstrip())
+    return 0
+
+
+def _version_main(argv: Sequence[str] | None = None) -> int:
+    from ._version import __version__
+
+    print(f"continuityos {__version__}")
+    return 0
+
+
 def cos_main(argv: Sequence[str] | None = None) -> int:
     args = _args(argv)
     command = _command("cos", args)
+    top_help = args in (["-h"], ["--help"])
+    top_version = args == ["--version"]
 
     def load():
+        if top_help:
+            return _help_main
+        if top_version:
+            return _version_main
         if command == "connect":
             from .connect import main as connect_main
 
@@ -240,9 +291,9 @@ def cos_main(argv: Sequence[str] | None = None) -> int:
         from .cli import main
         return main
 
-    # Deliberately route product commands through _dispatch. A verified R64 current
-    # session therefore keeps the same READ_ONLY HOLD and cannot use `cos connect`,
-    # `cos status`, or `cos demo` as a sibling-entrypoint escape hatch.
+    # Deliberately route product commands, top-level help and version through _dispatch.
+    # A verified R64 current session therefore keeps the same READ_ONLY HOLD and cannot
+    # use discoverability/version surfaces as a sibling-entrypoint escape hatch.
     return _dispatch("cos", args, load)
 
 
