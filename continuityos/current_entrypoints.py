@@ -179,11 +179,45 @@ def _dispatch(
     return _hold(surface, command, verdict)
 
 
+def _connect_args(args: Sequence[str]) -> list[str]:
+    """Strip the outer ``cos connect`` framing while preserving top-level --db."""
+    values = list(args)
+    db_arg: str | None = None
+    if values[:1] == ["--db"]:
+        if len(values) < 3:
+            return values
+        db_arg = values[1]
+        values = values[2:]
+    elif values and values[0].startswith("--db="):
+        db_arg = values[0].split("=", 1)[1]
+        values = values[1:]
+
+    if values[:1] == ["connect"]:
+        values = values[1:]
+    if db_arg is not None and not any(v == "--db" or v.startswith("--db=") for v in values):
+        values = ["--db", db_arg, *values]
+    return values
+
+
 def cos_main(argv: Sequence[str] | None = None) -> int:
+    args = _args(argv)
+    command = _command("cos", args)
+
     def load():
+        if command == "connect":
+            from .connect import main as connect_main
+
+            def routed(passed: Sequence[str] | None = None) -> int:
+                return int(connect_main(_connect_args(_args(passed))) or 0)
+
+            return routed
         from .cli import main
         return main
-    return _dispatch("cos", argv, load)
+
+    # Deliberately route through _dispatch even for the new product command.
+    # A verified R64 current session therefore keeps the same READ_ONLY HOLD and
+    # cannot use `cos connect` as a sibling-entrypoint escape hatch.
+    return _dispatch("cos", args, load)
 
 
 def operational_memory_main(argv: Sequence[str] | None = None) -> int:
