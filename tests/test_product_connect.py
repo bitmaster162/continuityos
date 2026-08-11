@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from continuityos import connect
@@ -37,7 +38,8 @@ def test_dry_run_writes_nothing(tmp_path, capsys):
     assert not config.exists()
     receipt = json.loads(capsys.readouterr().out)
     assert receipt["terminal"] == "COS_CONNECT_DRY_RUN_PASS"
-    assert receipt["patched_config"]["mcpServers"]["continuityos"]["args"][-1] == str(db.resolve())
+    actual_db = receipt["patched_config"]["mcpServers"]["continuityos"]["args"][-1]
+    assert os.path.normcase(actual_db) == os.path.normcase(str(db.resolve()))
 
 
 def test_write_preserves_unrelated_config_and_backup(tmp_path, monkeypatch, capsys):
