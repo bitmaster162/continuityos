@@ -179,8 +179,8 @@ def _dispatch(
     return _hold(surface, command, verdict)
 
 
-def _connect_args(args: Sequence[str]) -> list[str]:
-    """Strip the outer ``cos connect`` framing while preserving top-level --db."""
+def _product_args(args: Sequence[str], command: str) -> list[str]:
+    """Strip an outer ``cos <product-command>`` while preserving top-level --db."""
     values = list(args)
     db_arg: str | None = None
     if values[:1] == ["--db"]:
@@ -192,11 +192,19 @@ def _connect_args(args: Sequence[str]) -> list[str]:
         db_arg = values[0].split("=", 1)[1]
         values = values[1:]
 
-    if values[:1] == ["connect"]:
+    if values[:1] == [command]:
         values = values[1:]
     if db_arg is not None and not any(v == "--db" or v.startswith("--db=") for v in values):
         values = ["--db", db_arg, *values]
     return values
+
+
+def _connect_args(args: Sequence[str]) -> list[str]:
+    return _product_args(args, "connect")
+
+
+def _status_args(args: Sequence[str]) -> list[str]:
+    return _product_args(args, "status")
 
 
 def cos_main(argv: Sequence[str] | None = None) -> int:
@@ -211,12 +219,19 @@ def cos_main(argv: Sequence[str] | None = None) -> int:
                 return int(connect_main(_connect_args(_args(passed))) or 0)
 
             return routed
+        if command == "status":
+            from .status import main as status_main
+
+            def routed(passed: Sequence[str] | None = None) -> int:
+                return int(status_main(_status_args(_args(passed))) or 0)
+
+            return routed
         from .cli import main
         return main
 
-    # Deliberately route through _dispatch even for the new product command.
-    # A verified R64 current session therefore keeps the same READ_ONLY HOLD and
-    # cannot use `cos connect` as a sibling-entrypoint escape hatch.
+    # Deliberately route product commands through _dispatch. A verified R64 current
+    # session therefore keeps the same READ_ONLY HOLD and cannot use `cos connect`
+    # or `cos status` as a sibling-entrypoint escape hatch.
     return _dispatch("cos", args, load)
 
 
