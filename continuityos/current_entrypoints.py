@@ -26,6 +26,11 @@ from .current_runtime import verify_current_runtime_binding
 from .current_runtime_cli import current_binding_from_env
 
 SCHEMA = "continuityos.current_entrypoint_containment/v1"
+EMBEDDER_POLICY_SCHEMA = "continuityos.product.embedder_policy/v1"
+EMBEDDER_ENV = "CONTINUITYOS_EMBEDDER"
+_DEFAULT_EMBEDDER_MODES = {"", "hash", "hashing", "offline", "local"}
+_FAST_EMBEDDER_MODES = {"fast", "fastembed"}
+_LEGACY_NO_SHARED_MEMORY_COMMANDS = {None, "setup", "sim", "serve", "api", "update", "usage"}
 
 PRODUCT_HELP = """usage: cos [--db DB] <command> [options]
 
@@ -41,6 +46,8 @@ Start here:
 
 Core memory:
   remember | find | recall | namespaces | extract
+  default embedder: local HashingEmbedder (no model/network path)
+  opt in to FastEmbed: CONTINUITYOS_EMBEDDER=fast
 
 Continuity:
   canon | frontier | loop | checkpoint | doctor | handoff | close | rules | scan
@@ -262,6 +269,62 @@ def _version_main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
+def _embedder_policy_hold(command: str | None, mode: str) -> int:
+    _emit(
+        {
+            "schema": EMBEDDER_POLICY_SCHEMA,
+            "terminal": "COS_EMBEDDER_POLICY_HOLD",
+            "reason": "UNSUPPORTED_EMBEDDER_MODE",
+            "command": command,
+            "environment_variable": EMBEDDER_ENV,
+            "requested": mode,
+            "allowed": ["hash", "fast"],
+            "effects": _effects(),
+        }
+    )
+    return 2
+
+
+def _legacy_cos_loader(command: str | None) -> Callable[[Sequence[str] | None], int | None]:
+    """Return the legacy CLI with an explicit offline-first embedder policy.
+
+    Historical ``continuityos.cli`` tries FastEmbed before falling back to the local
+    HashingEmbedder. The packaged ``cos`` surface must not construct optional model
+    providers unless the operator explicitly opts in. Mask that one constructor only
+    for the duration of an ordinary legacy shared-memory invocation.
+    """
+    if command in _LEGACY_NO_SHARED_MEMORY_COMMANDS:
+        from .cli import main
+        return main
+
+    mode = os.environ.get(EMBEDDER_ENV, "").strip().lower()
+    if mode in _FAST_EMBEDDER_MODES:
+        from .cli import main
+        return main
+    if mode not in _DEFAULT_EMBEDDER_MODES:
+        def hold(argv: Sequence[str] | None = None) -> int:
+            return _embedder_policy_hold(command, mode)
+        return hold
+
+    def offline_main(argv: Sequence[str] | None = None) -> int:
+        from . import embedders
+
+        original = embedders.FastEmbedEmbedder
+
+        class _OfflineFastEmbed:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                raise RuntimeError("FastEmbed disabled by offline-first cos policy")
+
+        embedders.FastEmbedEmbedder = _OfflineFastEmbed
+        try:
+            from .cli import main
+            return int(main(_args(argv)) or 0)
+        finally:
+            embedders.FastEmbedEmbedder = original
+
+    return offline_main
+
+
 def cos_main(argv: Sequence[str] | None = None) -> int:
     args = _args(argv)
     command = _command("cos", args)
@@ -301,8 +364,7 @@ def cos_main(argv: Sequence[str] | None = None) -> int:
                 return int(boot_main(_boot_args(_args(passed))) or 0)
 
             return routed
-        from .cli import main
-        return main
+        return _legacy_cos_loader(command)
 
     # Deliberately route product commands, top-level help and version through _dispatch.
     # A verified R64 current session therefore keeps the same READ_ONLY HOLD and cannot
