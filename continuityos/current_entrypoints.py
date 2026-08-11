@@ -30,7 +30,7 @@ EMBEDDER_POLICY_SCHEMA = "continuityos.product.embedder_policy/v1"
 EMBEDDER_ENV = "CONTINUITYOS_EMBEDDER"
 _DEFAULT_EMBEDDER_MODES = {"", "hash", "hashing", "offline", "local"}
 _FAST_EMBEDDER_MODES = {"fast", "fastembed"}
-_LEGACY_NO_SHARED_MEMORY_COMMANDS = {None, "setup", "sim", "serve", "api", "update", "usage"}
+_LEGACY_NO_SHARED_MEMORY_COMMANDS = {None, "sim", "serve", "api", "update", "usage"}
 
 PRODUCT_HELP = """usage: cos [--db DB] <command> [options]
 
