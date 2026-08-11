@@ -6,7 +6,6 @@ from pathlib import Path
 
 from continuityos import current_entrypoints
 from continuityos import demo
-from continuityos import product_entrypoints
 
 
 def _controlled_root(tmp_path: Path, monkeypatch) -> Path:
@@ -39,6 +38,8 @@ def test_continuity_demo_recovers_in_fresh_process_and_cleans(tmp_path, monkeypa
     assert all(value["recovered"]["checks"].values())
     assert value["temporary_path_removed"] is True
     assert value["effects"]["temporary_cleanup_pass"] is True
+    assert value["effects"]["ephemeral_filesystem_write"] is True
+    assert value["effects"]["ephemeral_memory_write"] is True
     assert value["effects"]["user_memory_read"] is False
     assert value["effects"]["user_memory_write"] is False
     assert value["effects"]["network_effect"] is False
@@ -78,7 +79,7 @@ def test_demo_subprocess_failure_still_cleans_temp_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(
         demo,
         "_probe_process",
-        lambda *args, **kwargs: {"ok": False, "reason": "TEST_PROBE_FAILURE"},
+        lambda *args, **kwargs: {"ok": False, "started": False, "reason": "TEST_PROBE_FAILURE"},
     )
 
     value, code = demo.run_continuity()
@@ -87,6 +88,9 @@ def test_demo_subprocess_failure_still_cleans_temp_dir(tmp_path, monkeypatch):
     assert value["terminal"] == "COS_DEMO_CONTINUITY_HOLD"
     assert value["reason"] == "FRESH_PROCESS_RECOVERY_FAILED"
     assert value["temporary_path_removed"] is True
+    assert value["effects"]["ephemeral_filesystem_write"] is True
+    assert value["effects"]["ephemeral_memory_write"] is True
+    assert value["effects"]["subprocess_execution"] is False
     assert not root.exists()
 
 
@@ -101,12 +105,17 @@ def test_demo_rejects_user_db_argument_before_ephemeral_write(tmp_path, monkeypa
     monkeypatch.setattr(demo, "run_continuity", forbidden_run)
     monkeypatch.setattr(current_entrypoints, "current_binding_from_env", lambda env: (None, []))
 
-    rc = product_entrypoints.cos_main(["--db", str(user_db), "demo", "continuity", "--json"])
+    rc = current_entrypoints.cos_main(["--db", str(user_db), "demo", "continuity", "--json"])
 
     assert rc == 2
     value = json.loads(capsys.readouterr().out)
     assert value["terminal"] == "COS_DEMO_CONTINUITY_HOLD"
     assert value["reason"] == "USER_DB_ARGUMENT_NOT_ALLOWED"
+    assert value["effects"]["ephemeral_filesystem_write"] is False
+    assert value["effects"]["ephemeral_memory_write"] is False
+    assert value["effects"]["subprocess_execution"] is False
+    assert value["effects"]["user_memory_read"] is False
+    assert value["effects"]["user_memory_write"] is False
     assert user_db.read_bytes() == before
 
 
@@ -120,7 +129,7 @@ def test_cos_demo_routes_unbound(monkeypatch):
     monkeypatch.setattr(demo, "main", fake_demo)
     monkeypatch.setattr(current_entrypoints, "current_binding_from_env", lambda env: (None, []))
 
-    rc = product_entrypoints.cos_main(["demo", "continuity", "--json"])
+    rc = current_entrypoints.cos_main(["demo", "continuity", "--json"])
 
     assert rc == 7
     assert seen["argv"] == ["continuity", "--json"]
@@ -153,20 +162,11 @@ def test_cos_demo_cannot_bypass_bound_r64_session(monkeypatch):
         ),
     )
 
-    assert product_entrypoints.cos_main(["demo", "continuity", "--json"]) == 3
+    assert current_entrypoints.cos_main(["demo", "continuity", "--json"]) == 3
     assert called["demo"] is False
 
 
-def test_non_demo_cos_commands_delegate_to_existing_router(monkeypatch):
-    seen = {}
-
-    def fake_existing(argv=None):
-        seen["argv"] = list(argv or [])
-        return 11
-
-    monkeypatch.setattr(current_entrypoints, "cos_main", fake_existing)
-
-    rc = product_entrypoints.cos_main(["status", "--json"])
-
-    assert rc == 11
-    assert seen["argv"] == ["status", "--json"]
+def test_product_arg_routing_preserves_existing_connect_and_status_helpers():
+    assert current_entrypoints._connect_args(["connect", "claude", "--dry-run"]) == ["claude", "--dry-run"]
+    assert current_entrypoints._status_args(["status", "--json"]) == ["--json"]
+    assert current_entrypoints._demo_args(["demo", "continuity", "--json"]) == ["continuity", "--json"]
