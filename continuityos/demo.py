@@ -21,6 +21,7 @@ from typing import Any, Mapping, Sequence
 
 from .continuity import Continuity
 from .db import context_identity
+from .embed import HashingEmbedder
 from .memory import Memory
 
 SCHEMA = "continuityos.product_demo_continuity/v1"
@@ -36,16 +37,22 @@ PROOF_TEXT = "fresh-process continuity demo"
 FACT_KEY = "continuity-demo-marker"
 
 
-def _effects(*, cleanup_pass: bool | None = None) -> dict[str, object]:
+def _effects(
+    *,
+    ephemeral_filesystem_write: bool = False,
+    ephemeral_memory_write: bool = False,
+    subprocess_execution: bool = False,
+    cleanup_pass: bool | None = None,
+) -> dict[str, object]:
     return {
-        "ephemeral_filesystem_write": True,
-        "ephemeral_memory_write": True,
+        "ephemeral_filesystem_write": bool(ephemeral_filesystem_write),
+        "ephemeral_memory_write": bool(ephemeral_memory_write),
         "user_memory_read": False,
         "user_memory_write": False,
         "client_config_write": False,
         "network_effect": False,
         "external_model_call": False,
-        "subprocess_execution": True,
+        "subprocess_execution": bool(subprocess_execution),
         "server_started": False,
         "deployment": False,
         "agent_dispatch": False,
@@ -58,12 +65,17 @@ def _effects(*, cleanup_pass: bool | None = None) -> dict[str, object]:
     }
 
 
-def _hold(reason: str, *, error: str | None = None, cleanup_pass: bool | None = None) -> dict[str, Any]:
+def _hold(
+    reason: str,
+    *,
+    error: str | None = None,
+    effects: Mapping[str, object] | None = None,
+) -> dict[str, Any]:
     value: dict[str, Any] = {
         "schema": SCHEMA,
         "terminal": "COS_DEMO_CONTINUITY_HOLD",
         "reason": reason,
-        "effects": _effects(cleanup_pass=cleanup_pass),
+        "effects": dict(effects or _effects()),
     }
     if error:
         value["error"] = error
@@ -82,8 +94,14 @@ def _fact_text(marker: str) -> str:
     return f"Continuity demo marker: {marker}"
 
 
+def _memory(path: str | Path, *, read_only: bool = False) -> Memory:
+    # Pass the zero-dependency embedder explicitly so the proof emits no optional
+    # dependency warning to stderr.  The demo is about persistence, not embedding quality.
+    return Memory(str(path), embedder=HashingEmbedder(), read_only=read_only)
+
+
 def _write_demo_state(db_path: Path, marker: str) -> dict[str, Any]:
-    m = Memory(str(db_path))
+    m = _memory(db_path)
     c = Continuity(memory=m)
     try:
         canon_id = c.add_canon(CANON_TEXT)
@@ -94,9 +112,12 @@ def _write_demo_state(db_path: Path, marker: str) -> dict[str, Any]:
         checkpoint_id = c.checkpoint(summary=SUMMARY_TEXT, next_action=NEXT_ACTION, proof=PROOF_TEXT)
         memory_count = m.count()
         # The demo owns this temporary DB, so explicitly checkpoint its WAL before
-        # closing the writer.  The fresh process can then prove recovery from the
-        # durable main database file without relying on the parent's open handle.
+        # closing the writer.  A non-zero first field means SQLite could not fully
+        # checkpoint; that is a failed durability proof, not something to hide.
         wal = m.store.con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        wal_values = list(wal) if wal is not None else None
+        if not wal_values or int(wal_values[0]) != 0:
+            raise RuntimeError(f"temporary WAL checkpoint did not quiesce: {wal_values!r}")
         return {
             "canon_id": canon_id,
             "fact_id": fact_id,
@@ -105,7 +126,7 @@ def _write_demo_state(db_path: Path, marker: str) -> dict[str, Any]:
             "loop_id": loop_id,
             "checkpoint_id": checkpoint_id,
             "memory_count": memory_count,
-            "wal_checkpoint": list(wal) if wal is not None else None,
+            "wal_checkpoint": wal_values,
         }
     finally:
         m.store.con.close()
@@ -121,7 +142,7 @@ def _probe(db_path: str, marker: str) -> tuple[dict[str, Any], int]:
         }, 2)
 
     try:
-        m = Memory(str(path), read_only=True)
+        m = _memory(path, read_only=True)
         c = Continuity(memory=m)
     except Exception as exc:
         return ({
@@ -215,6 +236,7 @@ def _probe_process(db_path: Path, marker: str, *, timeout: float = 20.0) -> dict
     except Exception as exc:
         return {
             "ok": False,
+            "started": isinstance(exc, subprocess.TimeoutExpired),
             "reason": "FRESH_PROCESS_START_FAILED",
             "error": f"{type(exc).__name__}: {exc}",
             "command": command,
@@ -225,6 +247,7 @@ def _probe_process(db_path: Path, marker: str, *, timeout: float = 20.0) -> dict
     except Exception as exc:
         return {
             "ok": False,
+            "started": True,
             "reason": "FRESH_PROCESS_OUTPUT_INVALID",
             "returncode": completed.returncode,
             "stdout": completed.stdout[-4000:],
@@ -240,6 +263,7 @@ def _probe_process(db_path: Path, marker: str, *, timeout: float = 20.0) -> dict
     )
     return {
         "ok": ok,
+        "started": True,
         "reason": "FRESH_PROCESS_PASS" if ok else "FRESH_PROCESS_FAIL",
         "returncode": completed.returncode,
         "probe": value,
@@ -250,7 +274,20 @@ def _probe_process(db_path: Path, marker: str, *, timeout: float = 20.0) -> dict
 
 def run_continuity(*, timeout: float = 20.0) -> tuple[dict[str, Any], int]:
     marker = secrets.token_hex(16)
-    root = Path(tempfile.mkdtemp(prefix="continuityos-demo-"))
+    filesystem_write = False
+    memory_write = False
+    subprocess_execution = False
+
+    try:
+        root = Path(tempfile.mkdtemp(prefix="continuityos-demo-"))
+    except Exception as exc:
+        return (_hold(
+            "TEMPORARY_DIRECTORY_CREATE_FAILED",
+            error=f"{type(exc).__name__}: {exc}",
+            effects=_effects(),
+        ), 2)
+
+    filesystem_write = True
     db_path = root / "demo_memory.db"
     value: dict[str, Any] | None = None
     code = 2
@@ -258,12 +295,14 @@ def run_continuity(*, timeout: float = 20.0) -> tuple[dict[str, Any], int]:
 
     try:
         try:
+            memory_write = True
             written = _write_demo_state(db_path, marker)
             db_sha256 = _sha256_file(db_path)
         except Exception as exc:
             value = _hold("DEMO_STATE_WRITE_FAILED", error=f"{type(exc).__name__}: {exc}")
         else:
             fresh = _probe_process(db_path, marker, timeout=timeout)
+            subprocess_execution = bool(fresh.get("started"))
             if not fresh.get("ok"):
                 value = _hold(
                     "FRESH_PROCESS_RECOVERY_FAILED",
@@ -288,7 +327,6 @@ def run_continuity(*, timeout: float = 20.0) -> tuple[dict[str, Any], int]:
                         "passed": probe.get("passed"),
                         "total": probe.get("total"),
                     },
-                    "effects": _effects(cleanup_pass=None),
                 }
                 code = 0
     finally:
@@ -298,9 +336,15 @@ def run_continuity(*, timeout: float = 20.0) -> tuple[dict[str, Any], int]:
             cleanup_error = f"{type(exc).__name__}: {exc}"
 
     cleanup_pass = not root.exists()
+    effects = _effects(
+        ephemeral_filesystem_write=filesystem_write,
+        ephemeral_memory_write=memory_write,
+        subprocess_execution=subprocess_execution,
+        cleanup_pass=cleanup_pass,
+    )
     if value is None:
-        value = _hold("DEMO_INTERNAL_ERROR", cleanup_pass=cleanup_pass)
-    value["effects"] = _effects(cleanup_pass=cleanup_pass)
+        value = _hold("DEMO_INTERNAL_ERROR", effects=effects)
+    value["effects"] = effects
     value["temporary_path_removed"] = cleanup_pass
     if cleanup_error:
         value["cleanup_error"] = cleanup_error
@@ -365,7 +409,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(values)
 
     if args.forbidden_db is not None:
-        value = _hold("USER_DB_ARGUMENT_NOT_ALLOWED", cleanup_pass=True)
+        value = _hold("USER_DB_ARGUMENT_NOT_ALLOWED", effects=_effects(cleanup_pass=True))
         code = 2
     else:
         value, code = run_continuity(timeout=max(1.0, args.timeout))
