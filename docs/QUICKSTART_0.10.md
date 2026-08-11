@@ -113,6 +113,20 @@ It does not resolve, read or write the normal user memory database and does not 
 cos boot
 ```
 
+`cos boot` is offline-first. The default path reads local durable state with the dependency-free local embedder, prints the handoff and doctor result, and does not perform a PyPI update check or initialize an optional model provider.
+
+If you explicitly want to allow a network update check during boot:
+
+```bash
+cos boot --check-updates
+```
+
+That opt-in path may contact PyPI and update the local updater cache. The standalone explicit alternative remains:
+
+```bash
+cos update --check
+```
+
 The daily loop is:
 
 ```text
