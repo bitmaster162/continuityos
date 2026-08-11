@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -166,7 +167,8 @@ def collect(db: str | None = None) -> tuple[dict[str, Any], int]:
         mcp_state = "NOT_CONNECTED"
 
     continuity_state = "HEALTHY" if doctor.get("healthy") else "ATTENTION"
-    governance_state = "ARMED" if canon_count > 0 else "UNCONFIGURED"
+    advocate_available = importlib.util.find_spec("continuityos.advocate") is not None
+    governance_state = "ARMED" if canon_count > 0 and advocate_available else "UNCONFIGURED"
     next_action = checkpoint.get("next_action") if checkpoint else None
 
     value = {
@@ -209,7 +211,7 @@ def collect(db: str | None = None) -> tuple[dict[str, Any], int]:
         "governance": {
             "state": governance_state,
             "canon_count": canon_count,
-            "advocate_available": True,
+            "advocate_available": advocate_available,
         },
         "effects": _effects(),
     }
