@@ -25,7 +25,7 @@ Requires Python 3.10+. The core package is stdlib-only. The default `HashingEmbe
 For an exact install of the current release:
 
 ```bash
-pip install continuityos==0.10.2
+pip install continuityos==0.10.3
 ```
 
 ### 2. Run the canonical onboarding
@@ -125,7 +125,7 @@ cos namespaces
 Exact semantic-key lookup is also available:
 
 ```bash
-cos remember "Current release is 0.10.2" -n facts -K current-release
+cos remember "Current release is 0.10.3" -n facts -K current-release
 cos find facts current-release
 ```
 
@@ -558,7 +558,7 @@ The bridge is shadow-only, reads SQLite immutably, rejects a non-empty WAL, fail
 
 ## Status
 
-Current package release: **v0.10.2**.
+Current package release: **v0.10.3**.
 
 The current test and governance-corpus results are recorded in [BUILD_GATE_STATUS.md](BUILD_GATE_STATUS.md); CI is the authoritative moving signal for repository validation.
 
