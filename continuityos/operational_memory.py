@@ -220,6 +220,7 @@ def _normalize_physical_status(value: Any) -> str:
         "READY_FOR_BROKER_PUBLICATION": "HASH_VERIFIED",
         "PHYSICAL_ACCEPTANCE_PASS": "PHYSICALLY_ACCEPTED",
         "ACCEPTED": "PHYSICALLY_ACCEPTED",
+        "DELIVERY_VERIFIED": "PHYSICALLY_ACCEPTED",
     }
     normalized = aliases.get(raw, raw)
     if normalized in PHYSICAL_STATUSES:
