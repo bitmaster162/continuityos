@@ -29,12 +29,16 @@ class SubprocessJsonRunner:
             raise BenchError("runner command is empty")
         # Arm identity is deliberately NOT forwarded to the provider process.
         # The model-visible request may differ only through its frozen personal_context payload.
-        payload = json.dumps(request, ensure_ascii=False, sort_keys=True)
+        # ASCII-escaped JSON plus explicit UTF-8 pipes makes the transport deterministic on
+        # Windows even when the frozen prompt contains characters outside cp1252/OEM code pages.
+        payload = json.dumps(request, ensure_ascii=True, sort_keys=True)
         try:
             proc = subprocess.run(
                 list(self.command),
                 input=payload,
                 text=True,
+                encoding="utf-8",
+                errors="strict",
                 capture_output=True,
                 timeout=self.timeout_seconds,
                 check=False,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Mapping
@@ -45,6 +46,7 @@ def _strip_fence(text: str) -> str:
 
 def call_openai_compatible(request_obj: Mapping[str, Any]) -> Mapping[str, Any]:
     api_key = _env("SCT_OPENAI_COMPAT_API_KEY", required=True)
+    pre_call_delay = float(_env("SCT_OPENAI_COMPAT_PRECALL_DELAY_SECONDS", default="0"))
     base_url = _env("SCT_OPENAI_COMPAT_BASE_URL", default="https://api.openai.com/v1").rstrip("/")
     timeout = float(_env("SCT_OPENAI_COMPAT_TIMEOUT_SECONDS", default="120"))
     model = request_obj.get("model")
@@ -54,7 +56,10 @@ def call_openai_compatible(request_obj: Mapping[str, Any]) -> Mapping[str, Any]:
     if not isinstance(messages, list) or not messages:
         raise ProviderContractError("request messages missing")
 
-    body: dict[str, Any] = {"model": model, "messages": messages}
+    body: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+    }
     temperature = request_obj.get("temperature")
     if temperature is not None:
         body["temperature"] = temperature
@@ -82,10 +87,17 @@ def call_openai_compatible(request_obj: Mapping[str, Any]) -> Mapping[str, Any]:
         headers=headers,
         method="POST",
     )
+    # Explicit fixed pacing is allowed; it is not a retry. This keeps one-shot calls
+    # under provider free-tier RPM limits without wrapping the runner in PowerShell.
+    if pre_call_delay > 0:
+        time.sleep(pre_call_delay)
+
     try:
         with urllib.request.urlopen(http_req, timeout=timeout) as resp:
             raw = resp.read()
     except urllib.error.HTTPError as exc:
+        # Never echo request headers or secrets. Provider body is truncated and may still
+        # contain provider diagnostics, not SCT personal context.
         provider_body = exc.read().decode("utf-8", "replace")[:500]
         raise ProviderContractError(f"provider HTTP {exc.code}: {provider_body}") from exc
     except (urllib.error.URLError, TimeoutError) as exc:
@@ -110,9 +122,12 @@ def main() -> int:
         if not isinstance(request_obj, Mapping):
             raise ProviderContractError("stdin request must be a JSON object")
         result = call_openai_compatible(request_obj)
-        sys.stdout.write(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        # ASCII escaping keeps stdout safe across Windows code pages; json.loads restores
+        # the original Unicode values in the SCT parent process.
+        sys.stdout.write(json.dumps(result, ensure_ascii=True, sort_keys=True))
         return 0
     except Exception as exc:
+        # Generic subprocess contract: errors on stderr, never secret values.
         sys.stderr.write(f"SCT_PROVIDER_ERROR: {exc}\n")
         return 2
 

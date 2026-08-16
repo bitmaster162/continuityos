@@ -27,57 +27,61 @@ def _run_distribution_dryrun(*, runner, cases: int, provider: str, model: str, m
     distributions = []
     with tempfile.TemporaryDirectory(prefix="sct-dryrun-") as tmp:
         store = SQLiteEvidenceStore(Path(tmp) / "dryrun.db")
-        arena = ProspectiveArena(store)
-        for i in range(cases):
-            cid = f"VOID-{i+1:03d}"
-            options = ["A", "B", "C"]
-            # B/C contexts are intentionally close in byte length to exercise the real parity gate.
-            b_ctx = f"profile-{i:02d}-" + ("x" * 80)
-            c_ctx = f"twin-{i:02d}-" + ("y" * 81)
-            inputs = build_standard_inputs(
-                scenario=f"Synthetic unresolved choice {i}: choose exactly one of A, B, C.",
-                options=options,
-                provider=provider,
-                model=model,
-                model_version=model_version,
-                static_profile=b_ctx,
-                sct_state=c_ctx,
-                permitted_history="",
-                token_budget=512,
-                temperature=0.0,
-                reasoning="fixed",
-                frozen_at=1000.0 + i,
-            )
-            arena.open_case(
-                case_id=cid,
-                situation=f"Synthetic unresolved choice {i}: choose exactly one of A, B, C.",
-                options=options,
-                inputs=inputs,
-                cluster={
-                    "project_id": f"dryrun-{i%3}",
-                    "domain_id": "synthetic",
-                    "time_epoch": "VOID",
-                    "decision_family": "distribution_dryrun",
-                },
-                assistant_influence="NONE",
-                frozen_at=1000.0 + i,
-            )
-            preds = arena.predict_with_runner(cid, runner)
-            actual = ("A", "B", "C")[i % 3]
-            arena.reveal(cid, actual, decided_at=2000.0 + i)
-            scores = arena.score(cid)
-            arena.void_case(cid, reason)
-            distributions.append(
-                {
-                    "case_id": cid,
-                    "actual": actual,
-                    "probabilities": {a: dict(p.option_probabilities) for a, p in preds.items()},
-                    "scores": scores,
-                }
-            )
-        void_count = sum(1 for e in store.query(kind="CASE_VOIDED"))
-        verified = store.verify()
-        store.close()
+        try:
+            arena = ProspectiveArena(store)
+            for i in range(cases):
+                cid = f"VOID-{i+1:03d}"
+                options = ["A", "B", "C"]
+                # B/C contexts are intentionally close in byte length to exercise the real parity gate.
+                b_ctx = f"profile-{i:02d}-" + ("x" * 80)
+                c_ctx = f"twin-{i:02d}-" + ("y" * 81)
+                inputs = build_standard_inputs(
+                    scenario=f"Synthetic unresolved choice {i}: choose exactly one of A, B, C.",
+                    options=options,
+                    provider=provider,
+                    model=model,
+                    model_version=model_version,
+                    static_profile=b_ctx,
+                    sct_state=c_ctx,
+                    permitted_history="",
+                    token_budget=512,
+                    temperature=0.0,
+                    reasoning="fixed",
+                    frozen_at=1000.0 + i,
+                )
+                arena.open_case(
+                    case_id=cid,
+                    situation=f"Synthetic unresolved choice {i}: choose exactly one of A, B, C.",
+                    options=options,
+                    inputs=inputs,
+                    cluster={
+                        "project_id": f"dryrun-{i%3}",
+                        "domain_id": "synthetic",
+                        "time_epoch": "VOID",
+                        "decision_family": "distribution_dryrun",
+                    },
+                    assistant_influence="NONE",
+                    frozen_at=1000.0 + i,
+                )
+                preds = arena.predict_with_runner(cid, runner)
+                actual = ("A", "B", "C")[i % 3]
+                arena.reveal(cid, actual, decided_at=2000.0 + i)
+                scores = arena.score(cid)
+                arena.void_case(cid, reason)
+                distributions.append(
+                    {
+                        "case_id": cid,
+                        "actual": actual,
+                        "probabilities": {a: dict(p.option_probabilities) for a, p in preds.items()},
+                        "scores": scores,
+                    }
+                )
+            void_count = sum(1 for e in store.query(kind="CASE_VOIDED"))
+            verified = store.verify()
+        finally:
+            # Required on Windows: TemporaryDirectory cannot remove an open SQLite file
+            # after a fail-closed provider exception.
+            store.close()
 
     vectors = [arm_probs for row in distributions for arm_probs in row["probabilities"].values()]
     uniform_count = sum(1 for p in vectors if not _nondegenerate(p))
