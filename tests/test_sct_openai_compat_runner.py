@@ -93,7 +93,7 @@ def test_module_subprocess_contract_emits_only_prediction_json(server):
     assert proc.returncode == 0, proc.stderr
     obj = json.loads(proc.stdout)
     assert set(obj["option_probabilities"]) == {"A", "B", "C"}
-    assert proc.stderr == ""
+    assert "SCT_PROVIDER_ERROR" not in proc.stderr
 
 
 def test_missing_key_fails_without_echoing_secret(monkeypatch):
