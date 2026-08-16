@@ -7,7 +7,7 @@ import pytest
 
 from sct.bench.arena import ProspectiveArena
 from sct.bench.envelope import build_standard_inputs
-from sct.dryrun import run_void_distribution_dryrun
+from sct.dryrun import run_void_distribution_dryrun, run_real_model_void_dryrun
 from sct.epoch import amendment_v2_manifest, ensure_epoch_amended
 from sct.report import epoch_score_report
 from sct.runner.provider import FixtureRunner, SubprocessJsonRunner
@@ -112,6 +112,7 @@ def test_mandatory_distribution_dryrun_is_10_to_20_void_cases():
     assert out["valid_cases"] == 0
     assert out["store_verify_ok"] is True
     assert out["all_probability_vectors_non_degenerate"] is True
+    assert out["satisfies_real_model_gate"] is False
 
 
 def test_subprocess_runner_is_one_shot_json(tmp_path):
@@ -119,6 +120,8 @@ def test_subprocess_runner_is_one_shot_json(tmp_path):
     script.write_text(
         "import json,sys\n"
         "x=json.load(sys.stdin)\n"
+        "assert 'arm' not in x and 'request' not in x\n"
+        "assert x == {'x': 1}\n"
         "print(json.dumps({'option_probabilities': {'A': 0.6, 'B': 0.4}, 'would_escalate': False}))\n",
         encoding="utf-8",
     )
@@ -166,3 +169,43 @@ def test_opportunity_ids_are_sequential_and_never_silently_dropped(tmp_path):
     ids = [e.payload["opportunity_id"] for e in store.query(kind="OPPORTUNITY_REGISTERED")]
     assert ids[0].endswith("-001")
     assert ids[1].endswith("-002")
+
+
+def test_real_model_dryrun_transport_uses_same_frozen_request_shape(tmp_path):
+    script = tmp_path / "real_runner.py"
+    script.write_text(
+        "import json,sys\n"
+        "req=json.load(sys.stdin)\n"
+        "assert 'arm' not in req and 'request' not in req\n"
+        "payload=json.loads(req['messages'][1]['content'])\n"
+        "opts=payload['options']\n"
+        "probs={opts[0]:0.5, opts[1]:0.3, opts[2]:0.2}\n"
+        "print(json.dumps({'option_probabilities': probs, 'reasons':['provider'], 'change_conditions':[], 'would_escalate':False}))\n",
+        encoding="utf-8",
+    )
+    runner = SubprocessJsonRunner([sys.executable, "-S", str(script)])
+    out = run_real_model_void_dryrun(
+        runner=runner, cases=10, provider="test-provider", model="real-seam-test",
+        model_version="v1", runner_command_sha256="0"*64,
+    )
+    assert out["cases"] == 10
+    assert out["prediction_vectors"] == 30
+    assert out["schema_transport_pass"] is True
+    assert out["satisfies_real_model_gate"] is True
+    assert out["operator_attestation_required"] is True
+    assert out["valid_cases"] == 0
+
+
+def test_cli_requires_explicit_assistant_influence():
+    from sct.cli import build_parser
+    parser = build_parser()
+    base = [
+        "case", "open", "--id", "c", "--situation", "A/B", "--option", "A", "--option", "B",
+        "--provider", "p", "--model", "m", "--model-version", "v",
+        "--static-profile-file", "p.txt", "--sct-state-file", "s.txt",
+        "--domain-id", "d", "--time-epoch", "t", "--decision-family", "f",
+    ]
+    with pytest.raises(SystemExit):
+        parser.parse_args(base)
+    args = parser.parse_args(base + ["--assistant-influence", "NONE"])
+    assert args.assistant_influence == "NONE"

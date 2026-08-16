@@ -8,7 +8,7 @@ import sys
 
 from .bench.arena import ProspectiveArena
 from .bench.envelope import build_standard_inputs
-from .dryrun import run_void_distribution_dryrun
+from .dryrun import run_void_distribution_dryrun, run_real_model_void_dryrun
 from .epoch import amendment_v2_manifest, ensure_epoch_amended
 from .errors import SctError
 from .report import epoch_score_report
@@ -47,6 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("doctor")
     sub.add_parser("verify")
     sub.add_parser("dry-run")
+    real = sub.add_parser("real-model-dry-run")
+    real.add_argument("--cases", type=int, default=12)
+    real.add_argument("--provider", required=True)
+    real.add_argument("--model", required=True)
+    real.add_argument("--model-version", required=True)
+    real.add_argument("--runner", nargs=argparse.REMAINDER, required=True)
 
     case = sub.add_parser("case")
     cs = case.add_subparsers(dest="case_cmd", required=True)
@@ -68,6 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
     op.add_argument("--domain-id", required=True)
     op.add_argument("--time-epoch", required=True)
     op.add_argument("--decision-family", required=True)
+    op.add_argument("--assistant-influence", choices=["NONE", "ADVICE_GIVEN", "INCLINATION_DISCLOSED", "UNKNOWN"], required=True)
 
     pred = cs.add_parser("predict")
     pred.add_argument("case_id")
@@ -98,6 +105,16 @@ def main(argv=None) -> int:
             return _json(result, exit_code=0 if result["ok"] else 2)
         if args.cmd == "dry-run":
             return _json(run_void_distribution_dryrun())
+        if args.cmd == "real-model-dry-run":
+            if not args.runner:
+                raise SctError("--runner requires an executable and optional arguments")
+            import hashlib
+            command_sha = hashlib.sha256("\0".join(args.runner).encode("utf-8")).hexdigest()
+            runner = SubprocessJsonRunner(args.runner)
+            return _json(run_real_model_void_dryrun(
+                runner=runner, cases=args.cases, provider=args.provider, model=args.model,
+                model_version=args.model_version, runner_command_sha256=command_sha,
+            ))
         if args.cmd == "case" and args.case_cmd == "open":
             _ensure_amendment(store)
             inputs = build_standard_inputs(
@@ -125,7 +142,7 @@ def main(argv=None) -> int:
                     "time_epoch": args.time_epoch,
                     "decision_family": args.decision_family,
                 },
-                assistant_influence="NONE",
+                assistant_influence=args.assistant_influence,
             )
             requests = arena.requests(args.id)
             return _json({"ok": True, "case": case, "request_hashes": {a: __import__("sct.canon", fromlist=["sha256_obj"]).sha256_obj(r) for a, r in requests.items()}})

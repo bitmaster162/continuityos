@@ -27,7 +27,9 @@ class SubprocessJsonRunner:
     def predict(self, request: Mapping[str, Any], *, arm: str) -> Mapping[str, Any]:
         if not self.command:
             raise BenchError("runner command is empty")
-        payload = json.dumps({"arm": arm, "request": request}, ensure_ascii=False, sort_keys=True)
+        # Arm identity is deliberately NOT forwarded to the provider process.
+        # The model-visible request may differ only through its frozen personal_context payload.
+        payload = json.dumps(request, ensure_ascii=False, sort_keys=True)
         try:
             proc = subprocess.run(
                 list(self.command),
