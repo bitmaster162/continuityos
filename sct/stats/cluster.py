@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from collections import defaultdict
@@ -14,7 +13,13 @@ def inferential_gate(*, n_cases: int, n_clusters: int) -> dict[str, Any]:
         failures.append("n<100")
     if n_clusters < 6:
         failures.append("K<6")
-    return {"allowed": not failures, "n_cases": n_cases, "n_clusters": n_clusters, "failures": failures}
+    return {
+        "allowed": not failures,
+        "n_cases": n_cases,
+        "n_clusters": n_clusters,
+        "failures": failures,
+        "semantics": "MINIMUM_INFERENCE_ADMISSION_FLOOR_NOT_POWER_OR_INDEPENDENCE_PROOF",
+    }
 
 
 def _cluster_means(rows: Iterable[Mapping[str, Any]], metric: str) -> tuple[int, dict[str, float]]:
@@ -41,6 +46,14 @@ def paired_cluster_randomization(
     seed: int = 20260817,
     monte_carlo: int = 100000,
 ) -> dict[str, Any]:
+    """Cluster sign-flip sensitivity calculation.
+
+    The legacy function name is retained for API compatibility. SCT observes both
+    B and C on every enrolled case; there is no randomized treatment assignment.
+    Therefore this is not design-based randomization inference. Its p-value is
+    interpretable only under the preregistered null invariance assumption that
+    cluster-mean paired deltas are exchangeable under sign reversal.
+    """
     n, cluster_means = _cluster_means(rows, metric)
     vals = list(cluster_means.values())
     k = len(vals)
@@ -72,6 +85,9 @@ def paired_cluster_randomization(
         "p_value": p_value,
         "method": method,
         "seed": seed,
+        "design_based_randomization": False,
+        "null_invariance_assumption": "CLUSTER_MEAN_PAIRED_DELTAS_EXCHANGEABLE_UNDER_SIGN_REVERSAL",
+        "interpretation": "SIGN_FLIP_SENSITIVITY_UNDER_SYMMETRY_NOT_RANDOM_ASSIGNMENT_INFERENCE",
     }
 
 
