@@ -1,0 +1,20 @@
+{
+  "amendment_id": "EPOCH_001_AMENDMENT_V2",
+  "can_execute": false,
+  "changes": [
+    "full_probability_vectors",
+    "multiclass_brier_and_log_loss",
+    "shared_abc_envelope",
+    "payload_parity_budget",
+    "pre_reveal_cluster_metadata",
+    "sct_namespace_rebinding",
+    "fixed_cluster_analysis_plan"
+  ],
+  "epoch_id": "SCT-LIVE-EPOCH-001",
+  "execution_authority": "NONE",
+  "manifest_sha256": "5a65523bc4598900cd8cc896cc874c97b79277e4d39570ec3ea5a33bbbb514bc",
+  "parent_commit": "60f7558c13cb15a6ebac858747629ad1147852f6",
+  "parent_tree": "50e10dffed773144c4c5b16788ffad10f839bf6e",
+  "schema": "sct.epoch-amendment/v2",
+  "valid_live_n_at_amendment": 0
+}
