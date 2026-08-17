@@ -68,6 +68,8 @@ def r12_precase_manifest(*, parent_commit: str, parent_tree: str, r11_receipt_sh
         "r11_failed_cases": 15,
         "valid_live_n_at_amendment": 0,
         "changes": [
+            "prediction_schema_v3_tie_nullable",
+            "scorer_v2_unique_argmax",
             "unique_argmax_top1_tie_policy",
             "brier_skill_confirmatory_primary",
             "accuracy_and_log_loss_descriptive_secondary",
