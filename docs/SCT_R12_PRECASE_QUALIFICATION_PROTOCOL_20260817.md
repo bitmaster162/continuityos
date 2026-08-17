@@ -17,7 +17,8 @@ threshold after the fact.
 
 ## P0 protocol changes
 
-1. Top-1 accuracy requires a unique argmax. A tie has no predicted winner and counts as
+1. Prediction persistence is versioned as `sct.prediction/v3` and scoring as `sct.score/v2`.
+   Top-1 accuracy requires a unique argmax. A tie has no predicted winner and counts as
    incorrect for top-1 accuracy. Full-vector Brier/log-loss remain defined.
 2. Confirmatory primary endpoint is paired multiclass Brier skill, C minus B.
    Top-1 accuracy and bounded log-loss are descriptive secondary endpoints.
