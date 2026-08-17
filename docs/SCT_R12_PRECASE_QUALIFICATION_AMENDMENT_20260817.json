@@ -2,6 +2,8 @@
   "amendment_id": "SCT_R12_PRECASE_QUALIFICATION",
   "can_execute": false,
   "changes": [
+    "prediction_schema_v3_tie_nullable",
+    "scorer_v2_unique_argmax",
     "unique_argmax_top1_tie_policy",
     "brier_skill_confirmatory_primary",
     "accuracy_and_log_loss_descriptive_secondary",
@@ -12,7 +14,7 @@
   ],
   "epoch_id": "SCT-LIVE-EPOCH-001",
   "execution_authority": "NONE",
-  "manifest_sha256": "a46fc02ae4ad4427c1c39ffa2dd9fb2b439672f64bbe3839efa09a7d897f25f1",
+  "manifest_sha256": "30f6dd03b0d79ff2912e319f9ae5dcb293d0ea1edc8f145642fae30cb86d825e",
   "parent_commit": "13256bae2395a514287ccb1685b24b249f087373",
   "parent_tree": "1393fe4efe2873b27194d628a1325c9b474899dd",
   "r11_completed_cases": 5,
