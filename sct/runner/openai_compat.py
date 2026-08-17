@@ -120,12 +120,14 @@ def call_openai_compatible(request_obj: Mapping[str, Any]) -> Mapping[str, Any]:
     # OpenRouter-specific opt-in: keep one API call per prediction while allowing
     # OpenRouter to fail over among endpoints hosting the same exact model. When JSON
     # mode is used, require providers to support the request parameters rather than
-    # silently ignoring response_format. This is routing inside one provider request,
-    # not an SCT retry/reroll, and arm identity is still never forwarded.
+    # silently ignoring response_format. The zero-price ceiling makes paid fallback
+    # impossible even if routing metadata changes. This is routing inside one provider
+    # request, not an SCT retry/reroll, and arm identity is still never forwarded.
     if _enabled(_env("SCT_OPENROUTER_REQUIRE_PARAMETERS", default="0")):
         body["provider"] = {
             "require_parameters": True,
             "allow_fallbacks": True,
+            "max_price": {"prompt": 0, "completion": 0},
         }
 
     headers = {
