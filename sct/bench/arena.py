@@ -11,7 +11,7 @@ from ..errors import BenchError
 from ..store.protocol import EvidenceStore
 from .envelope import BASELINES, FrozenContestantInput, assert_parity, render_request
 from .predict import build_prediction, Prediction
-from .score import score_distribution
+from .score import SCORER_VERSION, score_distribution
 
 
 class ProspectiveArena:
@@ -272,7 +272,7 @@ class ProspectiveArena:
                         "arm": arm,
                         "cluster_key": case.payload["cluster_key"],
                         **result,
-                        "scorer_version": "sct.score/v1",
+                        "scorer_version": SCORER_VERSION,
                     },
                 )
         return out
