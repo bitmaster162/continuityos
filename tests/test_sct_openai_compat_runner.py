@@ -12,7 +12,8 @@ import pytest
 from sct.runner.openai_compat import call_openai_compatible
 from sct.runner.provider import (
     ProviderHTTP429Error,
-    ProviderResponseContractError,
+    ProviderResponseMalformedJsonError,
+    ProviderResponseTruncatedError,
     SubprocessJsonRunner,
 )
 
@@ -86,6 +87,13 @@ def _request():
     }
 
 
+def _runner():
+    return SubprocessJsonRunner(
+        command=(sys.executable, "-m", "sct.runner.openai_compat"),
+        timeout_seconds=10,
+    )
+
+
 def test_openai_compatible_runner_calls_exact_endpoint_without_arm(server):
     out = call_openai_compatible(_request())
     assert out["option_probabilities"]["A"] == pytest.approx(.41)
@@ -131,12 +139,8 @@ def test_embedded_http200_provider_429_is_exposed_as_typed_429(server):
             }
         ]
     }
-    runner = SubprocessJsonRunner(
-        command=(sys.executable, "-m", "sct.runner.openai_compat"),
-        timeout_seconds=10,
-    )
     with pytest.raises(ProviderHTTP429Error) as caught:
-        runner.predict(_request(), arm="generic")
+        _runner().predict(_request(), arm="generic")
     detail = str(caught.value)
     assert "provider HTTP 429" in detail
     assert "provider_name=NVIDIA" in detail
@@ -144,7 +148,7 @@ def test_embedded_http200_provider_429_is_exposed_as_typed_429(server):
     assert "MUST_NOT_BE_EXPOSED" not in detail
 
 
-def test_non_json_content_reports_safe_shape_not_raw_content(server):
+def test_non_json_content_is_typed_malformed_without_raw_content(server):
     secretish_output = "analysis before object SECRET_OUTPUT {\"option_probabilities\":{}}"
     _Handler.response_payload = {
         "choices": [
@@ -154,17 +158,30 @@ def test_non_json_content_reports_safe_shape_not_raw_content(server):
             }
         ]
     }
-    runner = SubprocessJsonRunner(
-        command=(sys.executable, "-m", "sct.runner.openai_compat"),
-        timeout_seconds=10,
-    )
-    with pytest.raises(ProviderResponseContractError) as caught:
-        runner.predict(_request(), arm="sct")
+    with pytest.raises(ProviderResponseMalformedJsonError) as caught:
+        _runner().predict(_request(), arm="sct")
     detail = str(caught.value)
     assert "finish_reason='stop'" in detail
     assert "content_shape=other" in detail
     assert "content_chars=" in detail
     assert "SECRET_OUTPUT" not in detail
+
+
+def test_length_finish_reason_is_typed_truncated_without_raw_content(server):
+    _Handler.response_payload = {
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": '{"option_probabilities":'},
+                "finish_reason": "length",
+            }
+        ]
+    }
+    with pytest.raises(ProviderResponseTruncatedError) as caught:
+        _runner().predict(_request(), arm="profile_rag")
+    detail = str(caught.value)
+    assert "finish_reason='length'" in detail
+    assert "content_shape=object_like" in detail
+    assert "option_probabilities" not in detail
 
 
 def test_missing_key_fails_without_echoing_secret(monkeypatch):
