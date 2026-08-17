@@ -29,6 +29,18 @@ class ProviderResponseContractError(ProviderRunnerError):
     pass
 
 
+class ProviderResponseTruncatedError(ProviderResponseContractError):
+    """Provider stopped at its output limit before returning the JSON contract."""
+
+
+class ProviderResponseEmptyError(ProviderResponseContractError):
+    """Provider returned no model-visible content for a successful transport."""
+
+
+class ProviderResponseMalformedJsonError(ProviderResponseContractError):
+    """Provider returned content, but it was not exactly one valid JSON object."""
+
+
 class ProviderHTTP400Error(ProviderRunnerError):
     pass
 
@@ -102,12 +114,20 @@ def _typed_failure(stderr: str) -> ProviderRunnerError:
         return ProviderConfigurationError(detail)
     if "provider transport failure" in lower:
         return ProviderTransportError(detail)
-    if (
-        "response did not contain one json prediction object" in lower
-        or "provider prediction is not a json object" in lower
-        or "provider message content is not text" in lower
-    ):
+    if "response did not contain one json prediction object" in lower:
+        if "finish_reason='length'" in lower:
+            return ProviderResponseTruncatedError(detail)
+        if "content_shape=empty" in lower:
+            return ProviderResponseEmptyError(detail)
+        if "content_shape=" in lower:
+            return ProviderResponseMalformedJsonError(detail)
         return ProviderResponseContractError(detail)
+    if "provider prediction is not a json object" in lower:
+        return ProviderResponseMalformedJsonError(detail)
+    if "provider message content is not text" in lower:
+        return ProviderResponseContractError(detail)
+    if "provider response envelope is not json" in lower or "provider response envelope is not a json object" in lower:
+        return ProviderResponseMalformedJsonError(detail)
     return ProviderRunnerError(detail or "provider subprocess failed")
 
 
@@ -150,9 +170,9 @@ class SubprocessJsonRunner:
         try:
             data = json.loads(stdout)
         except json.JSONDecodeError as exc:
-            raise ProviderResponseContractError("provider stdout is not one JSON object") from exc
+            raise ProviderResponseMalformedJsonError("provider stdout is not one JSON object") from exc
         if not isinstance(data, Mapping):
-            raise ProviderResponseContractError("provider response must be a JSON object")
+            raise ProviderResponseMalformedJsonError("provider response must be a JSON object")
         return data
 
 
