@@ -106,13 +106,14 @@ def test_openai_compatible_runner_calls_exact_endpoint_without_arm(server):
     assert _Handler.seen["authorization"] == "Bearer secret-test-key"
 
 
-def test_openrouter_require_parameters_enables_same_model_fallback_routing(server, monkeypatch):
+def test_openrouter_require_parameters_enables_zero_price_same_model_fallback_routing(server, monkeypatch):
     monkeypatch.setenv("SCT_OPENROUTER_REQUIRE_PARAMETERS", "1")
     out = call_openai_compatible(_request())
     assert out["option_probabilities"]["A"] == pytest.approx(.41)
     assert _Handler.seen["body"]["provider"] == {
         "require_parameters": True,
         "allow_fallbacks": True,
+        "max_price": {"prompt": 0, "completion": 0},
     }
     assert _Handler.seen["body"]["response_format"] == {"type": "json_object"}
     assert "arm" not in _Handler.seen["body"]
