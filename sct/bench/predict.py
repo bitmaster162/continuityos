@@ -7,7 +7,7 @@ import math
 from ..canon import sha256_obj
 from ..errors import BenchError
 
-PREDICTION_SCHEMA = "sct.prediction/v2"
+PREDICTION_SCHEMA = "sct.prediction/v3"
 
 
 @dataclass(frozen=True)
