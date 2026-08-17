@@ -1,7 +1,7 @@
-
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -9,14 +9,25 @@ import sys
 from .bench.arena import ProspectiveArena
 from .bench.envelope import build_standard_inputs
 from .dryrun import run_void_distribution_dryrun, run_real_model_void_dryrun, run_real_model_pool_void_dryrun
-from .epoch import amendment_v2_manifest, ensure_epoch_amended
+from .epoch import amendment_v2_manifest, ensure_epoch_amended, r12_precase_manifest, ensure_r12_precase_amended
 from .errors import SctError
+from .qualification import (
+    authorize_case001_enrollment,
+    qualify_r12_pre_case_gate,
+    record_r12_qualification_pass,
+    require_r12_enrollment_authorized,
+    r12_enrollment_gate_status,
+    run_context_responsiveness_sentinel,
+    run_r12_stable_single_model_void_dryrun,
+)
 from .report import epoch_score_report
 from .runner.provider import SubprocessJsonRunner
 from .store.sqlite import SQLiteEvidenceStore
 
 PARENT_COMMIT = "60f7558c13cb15a6ebac858747629ad1147852f6"
 PARENT_TREE = "50e10dffed773144c4c5b16788ffad10f839bf6e"
+R12_PARENT_COMMIT = "13256bae2395a514287ccb1685b24b249f087373"
+R12_PARENT_TREE = "1393fe4efe2873b27194d628a1325c9b474899dd"
 
 
 def _store(path: str) -> SQLiteEvidenceStore:
@@ -27,6 +38,25 @@ def _read_text(path: str | None, *, default: str = "") -> str:
     if not path:
         return default
     return Path(path).expanduser().read_text(encoding="utf-8")
+
+
+def _read_json(path: str) -> dict:
+    value = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise SctError(f"JSON object required: {path}")
+    return value
+
+
+def _sha256_file(path: str) -> str:
+    return hashlib.sha256(Path(path).expanduser().read_bytes()).hexdigest()
+
+
+def _command_sha(command: list[str]) -> str:
+    return hashlib.sha256("\0".join(command).encode("utf-8")).hexdigest()
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(ch in "0123456789abcdefABCDEF" for ch in value)
 
 
 def _json(data, *, exit_code: int = 0) -> int:
@@ -47,6 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("doctor")
     sub.add_parser("verify")
     sub.add_parser("dry-run")
+
     real = sub.add_parser("real-model-dry-run")
     real.add_argument("--cases", type=int, default=12)
     real.add_argument("--provider", required=True)
@@ -60,6 +91,40 @@ def build_parser() -> argparse.ArgumentParser:
     pool.add_argument("--provider", required=True)
     pool.add_argument("--model", action="append", required=True)
     pool.add_argument("--runner", nargs=argparse.REMAINDER, required=True)
+
+    r12 = sub.add_parser("r12")
+    r12s = r12.add_subparsers(dest="r12_cmd", required=True)
+
+    amend = r12s.add_parser("amend")
+    amend.add_argument("--r11-receipt-sha256", required=True)
+
+    sentinel = r12s.add_parser("context-sentinel")
+    sentinel.add_argument("--provider", required=True)
+    sentinel.add_argument("--model", required=True)
+    sentinel.add_argument("--model-version", required=True)
+    sentinel.add_argument("--option", action="append")
+    sentinel.add_argument("--token-budget", type=int, default=512)
+    sentinel.add_argument("--temperature", type=float, default=0.0)
+    sentinel.add_argument("--reasoning", default="fixed")
+    sentinel.add_argument("--runner", nargs=argparse.REMAINDER, required=True)
+
+    stable = r12s.add_parser("stable-void")
+    stable.add_argument("--cases", type=int, default=12)
+    stable.add_argument("--provider", required=True)
+    stable.add_argument("--model", required=True)
+    stable.add_argument("--model-version", required=True)
+    stable.add_argument("--runner", nargs=argparse.REMAINDER, required=True)
+
+    qualify = r12s.add_parser("qualify")
+    qualify.add_argument("--void-receipt", required=True)
+    qualify.add_argument("--context-receipt", required=True)
+    qualify.add_argument("--operator-attestation", required=True)
+    qualify.add_argument("--operator-attestation-verified", action="store_true")
+
+    r12s.add_parser("status")
+
+    auth = r12s.add_parser("authorize-case001")
+    auth.add_argument("--approval", required=True)
 
     case = sub.add_parser("case")
     cs = case.add_subparsers(dest="case_cmd", required=True)
@@ -106,7 +171,13 @@ def main(argv=None) -> int:
             return _json({"ok": True, "db": str(store.path), "head": store.head().__dict__, "epoch_amendment": amendment})
         if args.cmd == "doctor":
             amendment = _ensure_amendment(store)
-            return _json({"ok": True, "capabilities": sorted(store.capabilities()), "verify": store.verify().__dict__, "epoch_amendment": amendment})
+            return _json({
+                "ok": True,
+                "capabilities": sorted(store.capabilities()),
+                "verify": store.verify().__dict__,
+                "epoch_amendment": amendment,
+                "r12": r12_enrollment_gate_status(store),
+            })
         if args.cmd == "verify":
             result = store.verify().__dict__
             return _json(result, exit_code=0 if result["ok"] else 2)
@@ -115,18 +186,14 @@ def main(argv=None) -> int:
         if args.cmd == "real-model-dry-run":
             if not args.runner:
                 raise SctError("--runner requires an executable and optional arguments")
-            import hashlib
-            command_sha = hashlib.sha256("\0".join(args.runner).encode("utf-8")).hexdigest()
             runner = SubprocessJsonRunner(args.runner)
             return _json(run_real_model_void_dryrun(
                 runner=runner, cases=args.cases, provider=args.provider, model=args.model,
-                model_version=args.model_version, runner_command_sha256=command_sha,
+                model_version=args.model_version, runner_command_sha256=_command_sha(args.runner),
             ))
         if args.cmd == "real-model-pool-dry-run":
             if not args.runner:
                 raise SctError("--runner requires an executable and optional arguments")
-            import hashlib
-            command_sha = hashlib.sha256("\0".join(args.runner).encode("utf-8")).hexdigest()
             runner = SubprocessJsonRunner(args.runner)
             result = run_real_model_pool_void_dryrun(
                 runner=runner,
@@ -134,11 +201,70 @@ def main(argv=None) -> int:
                 min_complete=args.min_complete,
                 provider=args.provider,
                 models=args.model,
-                runner_command_sha256=command_sha,
+                runner_command_sha256=_command_sha(args.runner),
             )
             return _json(result, exit_code=0 if result["satisfies_real_model_gate"] else 2)
+        if args.cmd == "r12" and args.r12_cmd == "amend":
+            if not _is_sha256(args.r11_receipt_sha256):
+                raise SctError("--r11-receipt-sha256 must be 64 hex characters")
+            manifest = r12_precase_manifest(
+                parent_commit=R12_PARENT_COMMIT,
+                parent_tree=R12_PARENT_TREE,
+                r11_receipt_sha256=args.r11_receipt_sha256.lower(),
+            )
+            recorded = ensure_r12_precase_amended(store, manifest)
+            return _json({"ok": True, "manifest": manifest, "recorded": recorded})
+        if args.cmd == "r12" and args.r12_cmd == "context-sentinel":
+            if not args.runner:
+                raise SctError("--runner requires an executable and optional arguments")
+            runner = SubprocessJsonRunner(args.runner)
+            result = run_context_responsiveness_sentinel(
+                runner=runner,
+                provider=args.provider,
+                model=args.model,
+                model_version=args.model_version,
+                options=args.option or ("A", "B", "C"),
+                token_budget=args.token_budget,
+                temperature=args.temperature,
+                reasoning=args.reasoning,
+            )
+            return _json(result, exit_code=0 if result["satisfies_context_responsiveness_gate"] else 2)
+        if args.cmd == "r12" and args.r12_cmd == "stable-void":
+            if not args.runner:
+                raise SctError("--runner requires an executable and optional arguments")
+            runner = SubprocessJsonRunner(args.runner)
+            result = run_r12_stable_single_model_void_dryrun(
+                runner=runner,
+                cases=args.cases,
+                provider=args.provider,
+                model=args.model,
+                model_version=args.model_version,
+                runner_command_sha256=_command_sha(args.runner),
+            )
+            return _json(result, exit_code=0 if result["phase1_transport_component_pass"] else 2)
+        if args.cmd == "r12" and args.r12_cmd == "qualify":
+            void_receipt = _read_json(args.void_receipt)
+            context_receipt = _read_json(args.context_receipt)
+            attestation_sha = _sha256_file(args.operator_attestation)
+            result = qualify_r12_pre_case_gate(
+                void_receipt,
+                context_receipt,
+                operator_attestation_sha256=attestation_sha,
+                operator_attestation_verified=args.operator_attestation_verified,
+            )
+            recorded = record_r12_qualification_pass(store, result) if result["scientific_pre_case_gate_pass"] else None
+            return _json(
+                {"qualification": result, "recorded": recorded, "r12": r12_enrollment_gate_status(store)},
+                exit_code=0 if result["scientific_pre_case_gate_pass"] else 2,
+            )
+        if args.cmd == "r12" and args.r12_cmd == "status":
+            return _json(r12_enrollment_gate_status(store))
+        if args.cmd == "r12" and args.r12_cmd == "authorize-case001":
+            recorded = authorize_case001_enrollment(store, approval_token=args.approval)
+            return _json({"ok": True, "recorded": recorded, "r12": r12_enrollment_gate_status(store)})
         if args.cmd == "case" and args.case_cmd == "open":
             _ensure_amendment(store)
+            r12_gate = require_r12_enrollment_authorized(store)
             inputs = build_standard_inputs(
                 scenario=args.situation,
                 options=args.option,
@@ -167,7 +293,15 @@ def main(argv=None) -> int:
                 assistant_influence=args.assistant_influence,
             )
             requests = arena.requests(args.id)
-            return _json({"ok": True, "case": case, "request_hashes": {a: __import__("sct.canon", fromlist=["sha256_obj"]).sha256_obj(r) for a, r in requests.items()}})
+            return _json({
+                "ok": True,
+                "case": case,
+                "r12_gate": r12_gate,
+                "request_hashes": {
+                    a: __import__("sct.canon", fromlist=["sha256_obj"]).sha256_obj(r)
+                    for a, r in requests.items()
+                },
+            })
         if args.cmd == "case" and args.case_cmd == "predict":
             if not args.runner:
                 raise SctError("--runner requires an executable and optional arguments")
