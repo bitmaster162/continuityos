@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from sct.bench.predict import validate_probability_response
-from sct.bench.score import score_distribution
+from sct.bench.predict import PREDICTION_SCHEMA, validate_probability_response
+from sct.bench.score import SCORER_VERSION, score_distribution
 from sct.epoch import r12_precase_manifest, ensure_r12_precase_amended
 from sct.qualification import (
     qualify_r12_pre_case_gate,
@@ -59,6 +59,8 @@ class StableVoidRunner:
 
 
 def test_top1_tie_has_no_lexicographic_winner():
+    assert PREDICTION_SCHEMA == "sct.prediction/v3"
+    assert SCORER_VERSION == "sct.score/v2"
     probs, predicted, confidence = validate_probability_response(
         ["B", "A"], {"option_probabilities": {"B": 0.5, "A": 0.5}}
     )
