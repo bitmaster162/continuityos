@@ -8,7 +8,7 @@ import sys
 
 from .bench.arena import ProspectiveArena
 from .bench.envelope import build_standard_inputs
-from .dryrun import run_void_distribution_dryrun, run_real_model_void_dryrun
+from .dryrun import run_void_distribution_dryrun, run_real_model_void_dryrun, run_real_model_pool_void_dryrun
 from .epoch import amendment_v2_manifest, ensure_epoch_amended
 from .errors import SctError
 from .report import epoch_score_report
@@ -53,6 +53,13 @@ def build_parser() -> argparse.ArgumentParser:
     real.add_argument("--model", required=True)
     real.add_argument("--model-version", required=True)
     real.add_argument("--runner", nargs=argparse.REMAINDER, required=True)
+
+    pool = sub.add_parser("real-model-pool-dry-run")
+    pool.add_argument("--cases", type=int, default=20)
+    pool.add_argument("--min-complete", type=int, default=10)
+    pool.add_argument("--provider", required=True)
+    pool.add_argument("--model", action="append", required=True)
+    pool.add_argument("--runner", nargs=argparse.REMAINDER, required=True)
 
     case = sub.add_parser("case")
     cs = case.add_subparsers(dest="case_cmd", required=True)
@@ -115,6 +122,21 @@ def main(argv=None) -> int:
                 runner=runner, cases=args.cases, provider=args.provider, model=args.model,
                 model_version=args.model_version, runner_command_sha256=command_sha,
             ))
+        if args.cmd == "real-model-pool-dry-run":
+            if not args.runner:
+                raise SctError("--runner requires an executable and optional arguments")
+            import hashlib
+            command_sha = hashlib.sha256("\0".join(args.runner).encode("utf-8")).hexdigest()
+            runner = SubprocessJsonRunner(args.runner)
+            result = run_real_model_pool_void_dryrun(
+                runner=runner,
+                cases=args.cases,
+                min_complete=args.min_complete,
+                provider=args.provider,
+                models=args.model,
+                runner_command_sha256=command_sha,
+            )
+            return _json(result, exit_code=0 if result["satisfies_real_model_gate"] else 2)
         if args.cmd == "case" and args.case_cmd == "open":
             _ensure_amendment(store)
             inputs = build_standard_inputs(
