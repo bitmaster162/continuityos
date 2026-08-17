@@ -37,6 +37,25 @@ threshold after the fact.
 8. A genuine operator/provider attestation hash plus an explicit provenance verification
    flag is required for final R12 scientific gate adjudication; a 64-hex string alone is
    not evidence of authenticity.
+9. Scientific PASS is persisted as `R12_QUALIFICATION_PASSED` with `case_001_authorized=false`.
+   It does not imply enrollment approval.
+10. Initial LIVE enrollment requires a separate exact owner token bound to the scientific
+    qualification digest. That event is `CASE001_ENROLLMENT_AUTHORIZED`, remains
+    `execution_authority=NONE`, and must be recorded before any LIVE case is frozen.
+11. The operator CLI exposes `r12 amend`, `context-sentinel`, `stable-void`, `qualify`,
+    `status`, and `authorize-case001`. `sct case open` fails closed unless the scientific
+    qualification and owner enrollment authorization are both present and hash-bound.
+
+## Operator sequence
+
+1. `sct r12 amend --r11-receipt-sha256 <R11_SHA256>`
+2. Run `sct r12 context-sentinel ...` on the chosen stable model/provider path and save the JSON receipt.
+3. Run `sct r12 stable-void ...` on the exact same provider/model/version and save the JSON receipt.
+4. Verify the genuine operator/provider attestation, then run `sct r12 qualify ... --operator-attestation-verified`.
+5. `sct r12 status` must show scientific PASS recorded while LIVE enrollment remains closed.
+6. Only after a separate owner decision, record the exact token
+   `APPROVE_SCT_CASE001:<qualification_sha256>` through `sct r12 authorize-case001`.
+7. Fresh-read Git/repository truth and valid LIVE n before Case #001 enrollment.
 
 ## Authority ceiling
 
