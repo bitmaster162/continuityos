@@ -44,6 +44,50 @@ def _strip_fence(text: str) -> str:
     return text
 
 
+def _safe_embedded_error(error: Any, *, finish_reason: Any = None) -> str | None:
+    """Return a bounded, non-prompt diagnostic for provider errors carried inside HTTP 200.
+
+    OpenRouter may return non-streaming upstream failures inside choices[0].error
+    with finish_reason='error'. The generic subprocess layer classifies failures by
+    the literal 'provider HTTP NNN' prefix, so preserve any embedded numeric code.
+    Never echo arbitrary metadata/raw provider payloads because this adapter is also
+    used for future LIVE requests that may contain personal context.
+    """
+    if isinstance(error, Mapping):
+        code = error.get("code")
+        message = str(error.get("message") or "provider returned embedded error")
+        message = " ".join(message.split())[:240]
+        metadata = error.get("metadata")
+        safe_bits: list[str] = []
+        if isinstance(metadata, Mapping):
+            for key in ("error_type", "provider_name", "limit_source"):
+                value = metadata.get(key)
+                if isinstance(value, (str, int, float, bool)):
+                    safe_bits.append(f"{key}={str(value)[:80]}")
+        suffix = ("; " + ", ".join(safe_bits)) if safe_bits else ""
+        try:
+            status = int(code)
+        except (TypeError, ValueError):
+            status = None
+        if status is not None and 100 <= status <= 599:
+            return f"provider HTTP {status}: embedded provider error: {message}{suffix}"
+        return f"provider embedded error: {message}{suffix}"
+    if finish_reason == "error":
+        return "provider embedded error: finish_reason=error"
+    return None
+
+
+def _content_shape(text: str) -> str:
+    stripped = text.lstrip()
+    if not stripped:
+        return "empty"
+    if stripped.startswith("{"):
+        return "object_like"
+    if stripped.startswith("```"):
+        return "fenced"
+    return "other"
+
+
 def call_openai_compatible(request_obj: Mapping[str, Any]) -> Mapping[str, Any]:
     api_key = _env("SCT_OPENAI_COMPAT_API_KEY", required=True)
     pre_call_delay = float(_env("SCT_OPENAI_COMPAT_PRECALL_DELAY_SECONDS", default="0"))
@@ -105,11 +149,43 @@ def call_openai_compatible(request_obj: Mapping[str, Any]) -> Mapping[str, Any]:
 
     try:
         envelope = json.loads(raw.decode("utf-8"))
-        content = envelope["choices"][0]["message"]["content"]
+    except json.JSONDecodeError as exc:
+        raise ProviderContractError("provider response envelope is not JSON") from exc
+    if not isinstance(envelope, Mapping):
+        raise ProviderContractError("provider response envelope is not a JSON object")
+
+    # Some OpenRouter upstream failures are transported in an HTTP-200 envelope.
+    top_error = _safe_embedded_error(envelope.get("error"))
+    if top_error:
+        raise ProviderContractError(top_error)
+
+    try:
+        choice = envelope["choices"][0]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ProviderContractError("provider response did not contain one JSON prediction object") from exc
+    if not isinstance(choice, Mapping):
+        raise ProviderContractError("provider response choice is not a JSON object")
+
+    embedded_error = _safe_embedded_error(choice.get("error"), finish_reason=choice.get("finish_reason"))
+    if embedded_error:
+        raise ProviderContractError(embedded_error)
+
+    try:
+        message = choice["message"]
+        if not isinstance(message, Mapping):
+            raise TypeError("message")
+        content = message["content"]
         text = _strip_fence(_content_text(content))
         result = json.loads(text)
-    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-        raise ProviderContractError("provider response did not contain one JSON prediction object") from exc
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        finish_reason = choice.get("finish_reason")
+        text_value = locals().get("text", "")
+        detail = (
+            "provider response did not contain one JSON prediction object "
+            f"(finish_reason={finish_reason!r}, content_chars={len(text_value)}, "
+            f"content_shape={_content_shape(text_value)})"
+        )
+        raise ProviderContractError(detail) from exc
     if not isinstance(result, Mapping):
         raise ProviderContractError("provider prediction is not a JSON object")
     return result
