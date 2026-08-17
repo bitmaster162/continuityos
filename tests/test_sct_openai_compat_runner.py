@@ -10,16 +10,25 @@ import threading
 import pytest
 
 from sct.runner.openai_compat import call_openai_compatible
+from sct.runner.provider import (
+    ProviderHTTP429Error,
+    ProviderResponseContractError,
+    SubprocessJsonRunner,
+)
+
+
+_DEFAULT_RESPONSE = json.dumps({
+    "option_probabilities": {"A": 0.41, "B": 0.34, "C": 0.25},
+    "reasons": ["mock real-provider contract"],
+    "change_conditions": [],
+    "would_escalate": False,
+})
 
 
 class _Handler(BaseHTTPRequestHandler):
     seen = None
-    response_content = json.dumps({
-        "option_probabilities": {"A": 0.41, "B": 0.34, "C": 0.25},
-        "reasons": ["mock real-provider contract"],
-        "change_conditions": [],
-        "would_escalate": False,
-    })
+    response_content = _DEFAULT_RESPONSE
+    response_payload = None
 
     def do_POST(self):
         n = int(self.headers["Content-Length"])
@@ -29,7 +38,9 @@ class _Handler(BaseHTTPRequestHandler):
             "body": body,
             "authorization": self.headers.get("Authorization"),
         }
-        payload = {"choices": [{"message": {"content": type(self).response_content}}]}
+        payload = type(self).response_payload
+        if payload is None:
+            payload = {"choices": [{"message": {"content": type(self).response_content}}]}
         raw = json.dumps(payload).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -43,6 +54,9 @@ class _Handler(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def server(monkeypatch):
+    _Handler.seen = None
+    _Handler.response_content = _DEFAULT_RESPONSE
+    _Handler.response_payload = None
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -54,6 +68,8 @@ def server(monkeypatch):
     finally:
         httpd.shutdown()
         thread.join(timeout=2)
+        _Handler.response_content = _DEFAULT_RESPONSE
+        _Handler.response_payload = None
 
 
 def _request():
@@ -94,6 +110,61 @@ def test_module_subprocess_contract_emits_only_prediction_json(server):
     obj = json.loads(proc.stdout)
     assert set(obj["option_probabilities"]) == {"A", "B", "C"}
     assert "SCT_PROVIDER_ERROR" not in proc.stderr
+
+
+def test_embedded_http200_provider_429_is_exposed_as_typed_429(server):
+    _Handler.response_payload = {
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": "partial output"},
+                "finish_reason": "error",
+                "error": {
+                    "code": 429,
+                    "message": "Provider temporarily rate limited",
+                    "metadata": {
+                        "error_type": "rate_limited",
+                        "provider_name": "NVIDIA",
+                        "limit_source": "upstream_provider_shared_pool",
+                        "raw": "MUST_NOT_BE_EXPOSED",
+                    },
+                },
+            }
+        ]
+    }
+    runner = SubprocessJsonRunner(
+        command=(sys.executable, "-m", "sct.runner.openai_compat"),
+        timeout_seconds=10,
+    )
+    with pytest.raises(ProviderHTTP429Error) as caught:
+        runner.predict(_request(), arm="generic")
+    detail = str(caught.value)
+    assert "provider HTTP 429" in detail
+    assert "provider_name=NVIDIA" in detail
+    assert "limit_source=upstream_provider_shared_pool" in detail
+    assert "MUST_NOT_BE_EXPOSED" not in detail
+
+
+def test_non_json_content_reports_safe_shape_not_raw_content(server):
+    secretish_output = "analysis before object SECRET_OUTPUT {\"option_probabilities\":{}}"
+    _Handler.response_payload = {
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": secretish_output},
+                "finish_reason": "stop",
+            }
+        ]
+    }
+    runner = SubprocessJsonRunner(
+        command=(sys.executable, "-m", "sct.runner.openai_compat"),
+        timeout_seconds=10,
+    )
+    with pytest.raises(ProviderResponseContractError) as caught:
+        runner.predict(_request(), arm="sct")
+    detail = str(caught.value)
+    assert "finish_reason='stop'" in detail
+    assert "content_shape=other" in detail
+    assert "content_chars=" in detail
+    assert "SECRET_OUTPUT" not in detail
 
 
 def test_missing_key_fails_without_echoing_secret(monkeypatch):
