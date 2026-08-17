@@ -20,6 +20,10 @@ def _env(name: str, *, required: bool = False, default: str | None = None) -> st
     return "" if value is None else value.strip()
 
 
+def _enabled(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _content_text(content: Any) -> str:
     if isinstance(content, str):
         return content.strip()
@@ -112,6 +116,17 @@ def call_openai_compatible(request_obj: Mapping[str, Any]) -> Mapping[str, Any]:
         body["max_tokens"] = min(token_budget, 1024)
     if _env("SCT_OPENAI_COMPAT_JSON_MODE", default="1") not in {"0", "false", "False"}:
         body["response_format"] = {"type": "json_object"}
+
+    # OpenRouter-specific opt-in: keep one API call per prediction while allowing
+    # OpenRouter to fail over among endpoints hosting the same exact model. When JSON
+    # mode is used, require providers to support the request parameters rather than
+    # silently ignoring response_format. This is routing inside one provider request,
+    # not an SCT retry/reroll, and arm identity is still never forwarded.
+    if _enabled(_env("SCT_OPENROUTER_REQUIRE_PARAMETERS", default="0")):
+        body["provider"] = {
+            "require_parameters": True,
+            "allow_fallbacks": True,
+        }
 
     headers = {
         "Authorization": f"Bearer {api_key}",
