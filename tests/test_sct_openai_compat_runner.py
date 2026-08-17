@@ -64,6 +64,7 @@ def server(monkeypatch):
     monkeypatch.setenv("SCT_OPENAI_COMPAT_API_KEY", "secret-test-key")
     monkeypatch.setenv("SCT_OPENAI_COMPAT_BASE_URL", f"http://127.0.0.1:{httpd.server_port}/v1")
     monkeypatch.setenv("SCT_OPENAI_COMPAT_JSON_MODE", "1")
+    monkeypatch.delenv("SCT_OPENROUTER_REQUIRE_PARAMETERS", raising=False)
     try:
         yield httpd
     finally:
@@ -100,8 +101,21 @@ def test_openai_compatible_runner_calls_exact_endpoint_without_arm(server):
     assert _Handler.seen["path"] == "/v1/chat/completions"
     assert _Handler.seen["body"]["model"] == "example/model"
     assert _Handler.seen["body"]["response_format"] == {"type": "json_object"}
+    assert "provider" not in _Handler.seen["body"]
     assert "arm" not in _Handler.seen["body"]
     assert _Handler.seen["authorization"] == "Bearer secret-test-key"
+
+
+def test_openrouter_require_parameters_enables_same_model_fallback_routing(server, monkeypatch):
+    monkeypatch.setenv("SCT_OPENROUTER_REQUIRE_PARAMETERS", "1")
+    out = call_openai_compatible(_request())
+    assert out["option_probabilities"]["A"] == pytest.approx(.41)
+    assert _Handler.seen["body"]["provider"] == {
+        "require_parameters": True,
+        "allow_fallbacks": True,
+    }
+    assert _Handler.seen["body"]["response_format"] == {"type": "json_object"}
+    assert "arm" not in _Handler.seen["body"]
 
 
 def test_module_subprocess_contract_emits_only_prediction_json(server):
