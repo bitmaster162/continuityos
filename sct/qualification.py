@@ -6,10 +6,13 @@ from .bench.envelope import build_standard_inputs, render_request
 from .bench.predict import validate_probability_response
 from .canon import sha256_obj
 from .dryrun import run_real_model_void_dryrun
+from .errors import EvidenceError
 
 R12_CONTEXT_SCHEMA = "sct.r12-context-responsiveness/v1"
 R12_VOID_SCHEMA = "sct.r12-stable-single-model-void/v1"
 R12_QUALIFICATION_SCHEMA = "sct.r12-precase-qualification/v1"
+R12_QUALIFIED_EVENT = "R12_QUALIFICATION_PASSED"
+R12_ENROLLMENT_AUTH_EVENT = "CASE001_ENROLLMENT_AUTHORIZED"
 
 
 def _clean_options(options: Sequence[str]) -> tuple[str, ...]:
@@ -241,6 +244,9 @@ def qualify_r12_pre_case_gate(
         "schema": R12_QUALIFICATION_SCHEMA,
         "scientific_pre_case_gate_pass": scientific_pass,
         "blockers": blockers,
+        "provider": void_receipt.get("provider"),
+        "model": void_receipt.get("model"),
+        "model_version": void_receipt.get("model_version"),
         "void_receipt_sha256": sha256_obj(dict(void_receipt)),
         "context_receipt_sha256": sha256_obj(dict(context_receipt)),
         "operator_attestation_sha256": operator_attestation_sha256 if _is_sha256(operator_attestation_sha256) else None,
@@ -260,3 +266,112 @@ def qualify_r12_pre_case_gate(
             "or grant execution authority."
         ),
     }
+
+
+def record_r12_qualification_pass(store, qualification: Mapping[str, Any]) -> dict[str, Any]:
+    """Persist a scientific R12 PASS while keeping enrollment and execution closed."""
+    if qualification.get("schema") != R12_QUALIFICATION_SCHEMA:
+        raise EvidenceError("R12 qualification schema mismatch")
+    if qualification.get("scientific_pre_case_gate_pass") is not True:
+        raise EvidenceError("R12 scientific gate has not passed")
+    if qualification.get("case_001_authorized") is not False:
+        raise EvidenceError("R12 qualification must not self-authorize Case #001")
+    if qualification.get("execution_authority") != "NONE":
+        raise EvidenceError("R12 qualification cannot grant execution authority")
+    if not list(store.query(kind="PRECASE_PROTOCOL_AMENDED")):
+        raise EvidenceError("R12 protocol amendment must be recorded before qualification")
+    if list(store.query(kind="CASE_FROZEN")):
+        raise EvidenceError("R12 qualification must be recorded before any LIVE case")
+    verify = store.verify()
+    if not verify.ok:
+        raise EvidenceError("Evidence Store verification failed before R12 qualification")
+
+    qualification_sha256 = sha256_obj(dict(qualification))
+    existing = list(store.query(kind=R12_QUALIFIED_EVENT))
+    if existing:
+        current = existing[-1].payload
+        if current.get("qualification_sha256") != qualification_sha256:
+            raise EvidenceError("different R12 qualification PASS already recorded")
+        return dict(current)
+
+    payload = {
+        "qualification_sha256": qualification_sha256,
+        "provider": qualification.get("provider"),
+        "model": qualification.get("model"),
+        "model_version": qualification.get("model_version"),
+        "void_receipt_sha256": qualification.get("void_receipt_sha256"),
+        "context_receipt_sha256": qualification.get("context_receipt_sha256"),
+        "operator_attestation_sha256": qualification.get("operator_attestation_sha256"),
+        "operator_attestation_verified": True,
+        "case_001_authorized": False,
+        "execution_authority": "NONE",
+        "can_execute": False,
+    }
+    store.append(R12_QUALIFIED_EVENT, payload)
+    return payload
+
+
+def r12_enrollment_gate_status(store) -> dict[str, Any]:
+    """Return deterministic admission state. Scientific PASS is necessary but not sufficient."""
+    qualifications = list(store.query(kind=R12_QUALIFIED_EVENT))
+    authorizations = list(store.query(kind=R12_ENROLLMENT_AUTH_EVENT))
+    qualification = qualifications[-1].payload if qualifications else None
+    authorization = authorizations[-1].payload if authorizations else None
+    qualification_sha256 = qualification.get("qualification_sha256") if qualification else None
+    bound = bool(
+        qualification
+        and authorization
+        and authorization.get("qualification_sha256") == qualification_sha256
+        and authorization.get("execution_authority") == "NONE"
+        and authorization.get("can_execute") is False
+    )
+    verify = store.verify()
+    return {
+        "scientific_pass_recorded": qualification is not None,
+        "qualification_sha256": qualification_sha256,
+        "owner_enrollment_authorization_recorded": authorization is not None,
+        "authorization_bound_to_qualification": bound,
+        "store_verify_ok": verify.ok,
+        "live_enrollment_allowed": bool(bound and verify.ok),
+        "execution_authority": "NONE",
+    }
+
+
+def authorize_case001_enrollment(store, *, approval_token: str) -> dict[str, Any]:
+    """Record explicit owner enrollment approval; this is not execution authority."""
+    status = r12_enrollment_gate_status(store)
+    qualification_sha256 = status.get("qualification_sha256")
+    if not status.get("scientific_pass_recorded") or not _is_sha256(qualification_sha256):
+        raise EvidenceError("R12 scientific PASS must be recorded before owner enrollment approval")
+    if list(store.query(kind="CASE_FROZEN")):
+        raise EvidenceError("Case #001 owner approval must be recorded before any LIVE case")
+    expected = f"APPROVE_SCT_CASE001:{qualification_sha256}"
+    if approval_token != expected:
+        raise EvidenceError("exact owner Case #001 approval token required")
+
+    existing = list(store.query(kind=R12_ENROLLMENT_AUTH_EVENT))
+    if existing:
+        current = existing[-1].payload
+        if current.get("qualification_sha256") != qualification_sha256:
+            raise EvidenceError("owner approval is bound to a different R12 qualification")
+        return dict(current)
+
+    payload = {
+        "qualification_sha256": qualification_sha256,
+        "approval_token_sha256": sha256_obj(approval_token),
+        "scope": "SCT_LIVE_EPOCH_001_ENROLLMENT",
+        "case_001_authorized": True,
+        "execution_authority": "NONE",
+        "can_execute": False,
+    }
+    store.append(R12_ENROLLMENT_AUTH_EVENT, payload)
+    return payload
+
+
+def require_r12_enrollment_authorized(store) -> dict[str, Any]:
+    status = r12_enrollment_gate_status(store)
+    if not status["live_enrollment_allowed"]:
+        raise EvidenceError(
+            "R12_PRECASE_ADMISSION_BLOCKED: scientific PASS plus exact owner Case #001 approval are required"
+        )
+    return status
