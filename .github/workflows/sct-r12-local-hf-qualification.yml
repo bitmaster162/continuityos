@@ -1,0 +1,275 @@
+name: sct-r12-local-hf-qualification
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches:
+      - agent/sct-r12-precase-qualification
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sct-r12-local-hf-qualification-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      SCT_CODE_SHA: 61929ee088cd83f61b4bc3df97559da2f58bc6c9
+      R11_RECEIPT_SHA256: 1c5937da898e89e92d9c9a1f905cb29b8e0aec133fb4fb3dffcfe74a94f1fd0c
+      MODEL_REPO: Qwen/Qwen2.5-0.5B-Instruct
+      PROVIDER_ID: local-hf-transformers-loglik-v1
+      R12_CASES: "10"
+      PYTHONUNBUFFERED: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      TOKENIZERS_PARALLELISM: "false"
+    steps:
+      - name: Check out exact R12 source under qualification
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SCT_CODE_SHA }}
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned local inference stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.5.1'
+          python -m pip install 'transformers==4.46.3' 'huggingface_hub==0.26.2' 'safetensors==0.4.5'
+          python - <<'PY'
+          import json, platform
+          import torch, transformers, huggingface_hub, safetensors
+          from pathlib import Path
+          Path('r12_out').mkdir(exist_ok=True)
+          Path('r12_out/inference_stack.json').write_text(json.dumps({
+              'python': platform.python_version(),
+              'torch': torch.__version__,
+              'transformers': transformers.__version__,
+              'huggingface_hub': huggingface_hub.__version__,
+              'safetensors': safetensors.__version__,
+          }, sort_keys=True, indent=2), encoding='utf-8')
+          PY
+
+      - name: Resolve exact model revision before inference
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          from huggingface_hub import HfApi, snapshot_download
+          repo = os.environ['MODEL_REPO']
+          info = HfApi().model_info(repo)
+          revision = str(info.sha)
+          if len(revision) != 40:
+              raise SystemExit(f'unexpected HF revision: {revision!r}')
+          Path('r12_out').mkdir(exist_ok=True)
+          Path('r12_out/model_revision.txt').write_text(revision + '\n', encoding='utf-8')
+          snapshot = Path(snapshot_download(repo_id=repo, revision=revision))
+          records = []
+          for name in ('config.json', 'tokenizer_config.json', 'generation_config.json', 'model.safetensors'):
+              p = snapshot / name
+              if not p.is_file():
+                  continue
+              h = hashlib.sha256()
+              with p.open('rb') as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                      h.update(chunk)
+              records.append({'path': name, 'size': p.stat().st_size, 'sha256': h.hexdigest()})
+          provenance = {
+              'schema': 'sct.r12-local-model-provenance/v1',
+              'repo': repo,
+              'resolved_revision_before_inference': revision,
+              'snapshot_path': str(snapshot),
+              'files': records,
+              'selection_rule': 'PREDECLARED_SINGLE_MODEL_QWEN2_5_0_5B_INSTRUCT',
+              'automatic_retry': False,
+              'replacement_models': 0,
+              'execution_authority': 'NONE',
+          }
+          Path('r12_out/model_provenance.json').write_text(json.dumps(provenance, sort_keys=True, indent=2), encoding='utf-8')
+          Path('r12_out/model_snapshot_path.txt').write_text(str(snapshot), encoding='utf-8')
+          PY
+
+      - name: Write deterministic logits adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .r12_runner
+          cat > .r12_runner/model_server.py <<'PY'
+          import hashlib
+          import json
+          import os
+          import threading
+          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+          from pathlib import Path
+          import torch
+          from transformers import AutoModelForCausalLM, AutoTokenizer
+          MODEL_REPO = os.environ['MODEL_REPO']
+          REVISION = Path('r12_out/model_revision.txt').read_text(encoding='utf-8').strip()
+          SNAPSHOT = Path('r12_out/model_snapshot_path.txt').read_text(encoding='utf-8').strip()
+          PORT = int(os.environ.get('R12_MODEL_PORT', '8765'))
+          ADAPTER_TEMPERATURE = 4.0
+          UNIFORM_MIX = 0.03
+          TELEMETRY = Path('r12_out/model_calls.jsonl')
+          LOCK = threading.Lock()
+          torch.set_num_threads(max(1, min(4, os.cpu_count() or 1)))
+          tokenizer = AutoTokenizer.from_pretrained(SNAPSHOT, local_files_only=True)
+          model = AutoModelForCausalLM.from_pretrained(SNAPSHOT, local_files_only=True)
+          model.eval()
+          if tokenizer.pad_token_id is None:
+              tokenizer.pad_token_id = tokenizer.eos_token_id
+          def canonical(obj):
+              return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+          def completion_for(target, options):
+              probs = {opt: (0.80 if opt == target else 0.10) for opt in options}
+              return json.dumps({'option_probabilities': probs,'reasons':['candidate-loglikelihood'],'change_conditions':[],'would_escalate':False}, ensure_ascii=False, separators=(',', ':'))
+          def score_candidates(request):
+              messages = request.get('messages')
+              if not isinstance(messages, list) or len(messages) < 2:
+                  raise ValueError('messages required')
+              user_payload = json.loads(messages[-1]['content'])
+              options = list(user_payload['options'])
+              if len(options) != 3 or len(set(options)) != 3:
+                  raise ValueError('adapter preregistered for exactly three distinct options')
+              prompt_ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
+              candidates = [completion_for(opt, options) for opt in options]
+              comp_ids = [tokenizer(c, add_special_tokens=False).input_ids for c in candidates]
+              seqs = [prompt_ids + ids for ids in comp_ids]
+              max_len = max(len(x) for x in seqs)
+              input_ids=[]; masks=[]
+              for seq in seqs:
+                  pad=max_len-len(seq)
+                  input_ids.append(seq+[tokenizer.pad_token_id]*pad)
+                  masks.append([1]*len(seq)+[0]*pad)
+              x=torch.tensor(input_ids,dtype=torch.long); m=torch.tensor(masks,dtype=torch.long)
+              with torch.inference_mode():
+                  logp=torch.log_softmax(model(input_ids=x, attention_mask=m).logits, dim=-1)
+              scores=[]; plen=len(prompt_ids)
+              for row, ids in enumerate(comp_ids):
+                  vals=[float(logp[row, plen+j-1, tok].item()) for j,tok in enumerate(ids)]
+                  scores.append(sum(vals)/len(vals))
+              raw=torch.softmax(torch.tensor(scores,dtype=torch.float64)/ADAPTER_TEMPERATURE,dim=0).tolist()
+              mixed=[(1.0-UNIFORM_MIX)*float(p)+UNIFORM_MIX/len(options) for p in raw]
+              rounded=[round(v,12) for v in mixed]; rounded[-1]=round(1.0-sum(rounded[:-1]),12)
+              probs={opt:rounded[i] for i,opt in enumerate(options)}
+              if any(not (0.001 <= v <= 0.999) for v in probs.values()):
+                  raise ValueError(f'probability outside SCT bounds: {probs}')
+              if abs(sum(probs.values())-1.0)>1e-9:
+                  raise ValueError(f'probability sum failure: {probs}')
+              return options,scores,probs
+          class Handler(BaseHTTPRequestHandler):
+              def log_message(self, fmt, *args): return
+              def do_GET(self):
+                  if self.path != '/health': self.send_response(404); self.end_headers(); return
+                  payload=json.dumps({'ok':True,'repo':MODEL_REPO,'revision':REVISION}).encode()
+                  self.send_response(200); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(payload))); self.end_headers(); self.wfile.write(payload)
+              def do_POST(self):
+                  try:
+                      n=int(self.headers.get('Content-Length','0')); request=json.loads(self.rfile.read(n))
+                      with LOCK:
+                          options,scores,probs=score_candidates(request)
+                          ordinal=len(TELEMETRY.read_text(encoding='utf-8').splitlines())+1 if TELEMETRY.exists() else 1
+                          record={'ordinal':ordinal,'request_sha256':hashlib.sha256(canonical(request).encode()).hexdigest(),'repo':MODEL_REPO,'revision':REVISION,'adapter':'MEAN_LOG_LIKELIHOOD_OF_COMPLIANT_JSON_CANDIDATES','adapter_temperature':ADAPTER_TEMPERATURE,'uniform_mix':UNIFORM_MIX,'options':options,'candidate_mean_logprobs':scores,'option_probabilities':probs}
+                          with TELEMETRY.open('a',encoding='utf-8') as f: f.write(json.dumps(record,sort_keys=True)+'\n')
+                      out=json.dumps({'option_probabilities':probs,'reasons':['local-hf-model-loglikelihood'],'change_conditions':[],'would_escalate':False},separators=(',',':')).encode()
+                      self.send_response(200); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(out))); self.end_headers(); self.wfile.write(out)
+                  except Exception as exc:
+                      out=json.dumps({'error':type(exc).__name__,'message':str(exc)}).encode()
+                      self.send_response(500); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(out))); self.end_headers(); self.wfile.write(out)
+          Path('r12_out/adapter_spec.json').write_text(json.dumps({'schema':'sct.r12-local-loglik-adapter/v1','method':'MEAN_LOG_LIKELIHOOD_OF_COMPLIANT_JSON_CANDIDATES','candidate_distribution':{'target':0.80,'other_each':0.10},'adapter_temperature':ADAPTER_TEMPERATURE,'uniform_mix':UNIFORM_MIX,'model_repo':MODEL_REPO,'model_revision':REVISION,'automatic_retry':False,'replacement_models':0,'execution_authority':'NONE'},sort_keys=True,indent=2),encoding='utf-8')
+          ThreadingHTTPServer(('127.0.0.1',PORT),Handler).serve_forever()
+          PY
+          cat > .r12_runner/runner_client.py <<'PY'
+          import json, os, sys, urllib.request
+          payload=json.load(sys.stdin)
+          req=urllib.request.Request(f"http://127.0.0.1:{os.environ.get('R12_MODEL_PORT','8765')}/predict",data=json.dumps(payload,separators=(',',':')).encode(),headers={'Content-Type':'application/json'},method='POST')
+          with urllib.request.urlopen(req,timeout=180) as resp: body=json.loads(resp.read())
+          print(json.dumps(body,ensure_ascii=False,separators=(',',':')))
+          PY
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          rec={name:hashlib.sha256((Path('.r12_runner')/name).read_bytes()).hexdigest() for name in ('model_server.py','runner_client.py')}
+          Path('r12_out/runner_code_hashes.json').write_text(json.dumps(rec,sort_keys=True,indent=2),encoding='utf-8')
+          PY
+
+      - name: Run R12 scientific qualification once
+        shell: bash
+        run: |
+          set -uo pipefail
+          REVISION="$(tr -d '\r\n' < r12_out/model_revision.txt)"
+          export R12_MODEL_PORT=8765
+          python .r12_runner/model_server.py > r12_out/model_server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          HEALTH=0
+          for i in $(seq 1 60); do
+            if python - <<'PY'
+          import json,urllib.request
+          with urllib.request.urlopen('http://127.0.0.1:8765/health',timeout=2) as r: x=json.loads(r.read())
+          raise SystemExit(0 if x.get('ok') else 1)
+          PY
+            then HEALTH=1; break; fi
+            sleep 2
+          done
+          echo "$HEALTH" > r12_out/model_health.txt
+          if [ "$HEALTH" != "1" ]; then echo '{"status":"FAIL","reason":"LOCAL_MODEL_SERVER_HEALTH_TIMEOUT","execution_authority":"NONE"}' > r12_out/qualification_summary.json; exit 1; fi
+          DB="$PWD/r12_out/r12_evidence.db"
+          python -m sct.cli --db "$DB" r12 amend --r11-receipt-sha256 "$R11_RECEIPT_SHA256" > r12_out/r12_amend.json; AMEND_RC=$?
+          python -m sct.cli --db "$DB" r12 context-sentinel --provider "$PROVIDER_ID" --model "$MODEL_REPO" --model-version "$REVISION" --runner python .r12_runner/runner_client.py > r12_out/r12_context_receipt.json; CONTEXT_RC=$?
+          python -m sct.cli --db "$DB" r12 stable-void --cases "$R12_CASES" --provider "$PROVIDER_ID" --model "$MODEL_REPO" --model-version "$REVISION" --runner python .r12_runner/runner_client.py > r12_out/r12_void_receipt.json; VOID_RC=$?
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          def sha(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest() if Path(p).is_file() else None
+          telemetry=Path('r12_out/model_calls.jsonl'); calls=len(telemetry.read_text(encoding='utf-8').splitlines()) if telemetry.is_file() else 0
+          att={'schema':'sct.r12-operator-runtime-attestation/v1','source_code_sha':os.environ['SCT_CODE_SHA'],'workflow_run_id':os.environ.get('GITHUB_RUN_ID'),'workflow_run_attempt':os.environ.get('GITHUB_RUN_ATTEMPT'),'runner_os':os.environ.get('RUNNER_OS'),'provider':os.environ['PROVIDER_ID'],'model':os.environ['MODEL_REPO'],'model_revision_resolved_before_inference':Path('r12_out/model_revision.txt').read_text().strip(),'model_provenance_sha256':sha('r12_out/model_provenance.json'),'adapter_spec_sha256':sha('r12_out/adapter_spec.json'),'runner_code_hashes_sha256':sha('r12_out/runner_code_hashes.json'),'telemetry_sha256':sha('r12_out/model_calls.jsonl'),'context_receipt_sha256':sha('r12_out/r12_context_receipt.json'),'void_receipt_sha256':sha('r12_out/r12_void_receipt.json'),'observed_model_calls':calls,'expected_model_calls_if_both_components_complete':32,'automatic_retry':False,'replacement_models':0,'paid_inference_endpoint_used':False,'execution_authority':'NONE'}
+          Path('r12_out/operator_attestation.json').write_text(json.dumps(att,sort_keys=True,indent=2),encoding='utf-8')
+          PY
+          python -m sct.cli --db "$DB" r12 qualify --void-receipt r12_out/r12_void_receipt.json --context-receipt r12_out/r12_context_receipt.json --operator-attestation r12_out/operator_attestation.json --operator-attestation-verified > r12_out/r12_qualification.json; QUALIFY_RC=$?
+          python -m sct.cli --db "$DB" r12 status > r12_out/r12_status.json; STATUS_RC=$?
+          python -m sct.cli --db "$DB" verify > r12_out/store_verify.json; VERIFY_RC=$?
+          python - <<PY
+          import json
+          from pathlib import Path
+          def load(path):
+              try:return json.loads(Path(path).read_text(encoding='utf-8'))
+              except Exception as e:return {'read_error':type(e).__name__,'message':str(e)}
+          q=load('r12_out/r12_qualification.json'); status=load('r12_out/r12_status.json')
+          summary={'schema':'sct.r12-local-qualification-summary/v1','source_code_sha':'${SCT_CODE_SHA}','model_repo':'${MODEL_REPO}','model_revision':'${REVISION}','amend_rc':${AMEND_RC},'context_rc':${CONTEXT_RC},'void_rc':${VOID_RC},'qualify_rc':${QUALIFY_RC},'status_rc':${STATUS_RC},'verify_rc':${VERIFY_RC},'scientific_pre_case_gate_pass':bool(q.get('qualification',{}).get('scientific_pre_case_gate_pass')),'case_001_authorized':False,'r12_status':status,'execution_authority':'NONE'}
+          Path('r12_out/qualification_summary.json').write_text(json.dumps(summary,sort_keys=True,indent=2),encoding='utf-8'); print(json.dumps(summary,sort_keys=True))
+          PY
+          if [ "$QUALIFY_RC" -ne 0 ] || [ "$VERIFY_RC" -ne 0 ]; then exit 1; fi
+
+      - name: Hash qualification evidence
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          out={}
+          for p in sorted(Path('r12_out').glob('*')):
+              if p.is_file() and p.name!='EVIDENCE_SHA256.json': out[p.name]={'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'size':p.stat().st_size}
+          Path('r12_out/EVIDENCE_SHA256.json').write_text(json.dumps(out,sort_keys=True,indent=2),encoding='utf-8')
+          PY
+
+      - name: Upload R12 qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SCT_R12_LOCAL_HF_QUALIFICATION_${{ github.run_id }}
+          path: r12_out/
+          if-no-files-found: error
+          retention-days: 30
