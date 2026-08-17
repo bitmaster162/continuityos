@@ -1,0 +1,25 @@
+{
+  "amendment_id": "SCT_R12_PRECASE_QUALIFICATION",
+  "can_execute": false,
+  "changes": [
+    "unique_argmax_top1_tie_policy",
+    "brier_skill_confirmatory_primary",
+    "accuracy_and_log_loss_descriptive_secondary",
+    "sign_flip_symmetry_assumption_explicit",
+    "context_responsiveness_sentinel",
+    "stable_single_model_void_qualification",
+    "no_posthoc_probability_gap_threshold"
+  ],
+  "epoch_id": "SCT-LIVE-EPOCH-001",
+  "execution_authority": "NONE",
+  "manifest_sha256": "a46fc02ae4ad4427c1c39ffa2dd9fb2b439672f64bbe3839efa09a7d897f25f1",
+  "parent_commit": "13256bae2395a514287ccb1685b24b249f087373",
+  "parent_tree": "1393fe4efe2873b27194d628a1325c9b474899dd",
+  "r11_completed_cases": 5,
+  "r11_failed_cases": 15,
+  "r11_gate_result": "FAIL",
+  "r11_planned_cases": 20,
+  "r11_receipt_sha256": "1c5937da898e89e92d9c9a1f905cb29b8e0aec133fb4fb3dffcfe74a94f1fd0c",
+  "schema": "sct.precase-protocol-amendment/v1",
+  "valid_live_n_at_amendment": 0
+}

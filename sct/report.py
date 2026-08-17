@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from collections import defaultdict
@@ -6,6 +5,19 @@ from typing import Any
 
 from .store.protocol import EvidenceStore
 from .stats.cluster import inferential_gate, paired_cluster_randomization, cluster_bootstrap_ci
+
+ANALYSIS_PROTOCOL = {
+    "protocol": "SCT_R12_PRECASE_QUALIFICATION",
+    "primary_comparison": "sct_vs_profile_rag",
+    "confirmatory_primary": "brier_skill_delta_c_minus_b",
+    "descriptive_secondary": [
+        "accuracy_delta_c_minus_b",
+        "log_loss_delta_c_minus_b",
+    ],
+    "top1_tie_policy": "UNIQUE_ARGMAX_REQUIRED_TIE_COUNTS_AS_INCORRECT",
+    "sign_flip_interpretation": "SENSITIVITY_UNDER_PREREGISTERED_SIGN_SYMMETRY_NOT_DESIGN_RANDOMIZATION",
+    "minimum_inference_gate": "n>=100 AND K>=6 IS AN ADMISSION FLOOR, NOT A POWER/INDEPENDENCE PROOF",
+}
 
 
 def epoch_score_report(store: EvidenceStore, *, inferential: bool = False) -> dict[str, Any]:
@@ -36,6 +48,7 @@ def epoch_score_report(store: EvidenceStore, *, inferential: bool = False) -> di
                 "log_loss_delta_c_minus_b": float(by["sct"]["log_loss"]) - float(by["profile_rag"]["log_loss"]),
             }
         )
+
     cluster_keys = {r["cluster_key"] for r in paired if r["cluster_key"]}
     gate = inferential_gate(n_cases=len(paired), n_clusters=len(cluster_keys))
     result = {
@@ -44,27 +57,44 @@ def epoch_score_report(store: EvidenceStore, *, inferential: bool = False) -> di
         "valid_paired_cases": len(paired),
         "independent_clusters": len(cluster_keys),
         "gate": gate,
+        "analysis_protocol": dict(ANALYSIS_PROTOCOL),
         "means": {},
         "execution_authority": "NONE",
     }
     for field in ("accuracy_delta_c_minus_b", "brier_skill_delta_c_minus_b", "log_loss_delta_c_minus_b"):
         result["means"][field] = (sum(r[field] for r in paired) / len(paired)) if paired else None
+
     if inferential:
         if not gate["allowed"]:
             result["inferential_refused"] = True
             return result
         result["inferential"] = {
             "accuracy": {
-                "randomization": paired_cluster_randomization(paired, metric="accuracy_delta_c_minus_b"),
-                "bootstrap_ci": cluster_bootstrap_ci(paired, metric="accuracy_delta_c_minus_b"),
+                "role": "DESCRIPTIVE_SECONDARY_SENSITIVITY",
+                "randomization": paired_cluster_randomization(
+                    paired, metric="accuracy_delta_c_minus_b"
+                ),
+                "bootstrap_ci": cluster_bootstrap_ci(
+                    paired, metric="accuracy_delta_c_minus_b"
+                ),
             },
             "brier_skill": {
-                "randomization": paired_cluster_randomization(paired, metric="brier_skill_delta_c_minus_b"),
-                "bootstrap_ci": cluster_bootstrap_ci(paired, metric="brier_skill_delta_c_minus_b"),
+                "role": "CONFIRMATORY_PRIMARY",
+                "randomization": paired_cluster_randomization(
+                    paired, metric="brier_skill_delta_c_minus_b"
+                ),
+                "bootstrap_ci": cluster_bootstrap_ci(
+                    paired, metric="brier_skill_delta_c_minus_b"
+                ),
             },
             "log_loss": {
-                "randomization": paired_cluster_randomization(paired, metric="log_loss_delta_c_minus_b"),
-                "bootstrap_ci": cluster_bootstrap_ci(paired, metric="log_loss_delta_c_minus_b"),
+                "role": "DESCRIPTIVE_SECONDARY_SENSITIVITY",
+                "randomization": paired_cluster_randomization(
+                    paired, metric="log_loss_delta_c_minus_b"
+                ),
+                "bootstrap_ci": cluster_bootstrap_ci(
+                    paired, metric="log_loss_delta_c_minus_b"
+                ),
             },
         }
     return result
