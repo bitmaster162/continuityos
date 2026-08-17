@@ -5,6 +5,7 @@ import math
 
 from ..errors import BenchError
 
+SCORER_VERSION = "sct.score/v2"
 TOP1_TIE_POLICY = "UNIQUE_ARGMAX_REQUIRED_TIE_COUNTS_AS_INCORRECT"
 
 
