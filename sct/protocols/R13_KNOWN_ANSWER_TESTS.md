@@ -30,3 +30,7 @@ These tests run before any real R13 model call.
 | KA-24 | Scientific PASS is appended without exact recorded 2→18→30 component receipts and verified attestation binding | EvidenceStore rejects append |
 
 No test may lower or tune the scientific sentinel relation. No known-answer/mock case is LIVE evidence. A started real qualification component is a point of no return for that exact protocol/model/source binding.
+
+## Engineering authority
+
+Implementation-complete authority is established only by an exact-head green cross-platform review-gates run. This document does not itself authorize model selection, qualification calls, Case #001, merge, deployment, spend, or execution. `valid_live_n=0`; `execution_authority=NONE`.
