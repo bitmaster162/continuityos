@@ -18,7 +18,13 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install exact tokenizer stack only
-        run: python -m pip install transformers==4.46.3 huggingface_hub==0.26.2 safetensors==0.4.5
+        run: >-
+          python -m pip install
+          transformers==4.46.3
+          tokenizers==0.20.3
+          huggingface_hub==0.26.2
+          safetensors==0.4.5
+          jinja2==3.1.6
       - name: Prove exact Qwen assistant-prefill rendering without model inference
         env:
           HF_HUB_DISABLE_TELEMETRY: '1'
@@ -31,11 +37,15 @@ jobs:
           python - <<'PY'
           import hashlib, json, os
           from pathlib import Path
+          import jinja2, tokenizers, transformers
           from huggingface_hub import snapshot_download
           from transformers import AutoTokenizer
           from sct.r13 import R13_ADAPTER_ID, R13_CHOICE_PREFIX, render_r13_logit_request
           from sct.runner.hf_local import render_model_visible_prompt
 
+          assert transformers.__version__ == '4.46.3'
+          assert tokenizers.__version__ == '0.20.3'
+          assert jinja2.__version__ == '3.1.6'
           revision='5fee7c4ed634dc66c6e318c8ac2897b8b9154536'
           snapshot=Path(snapshot_download(
               repo_id='Qwen/Qwen2.5-1.5B-Instruct',
@@ -71,6 +81,9 @@ jobs:
               'rendered_prompt_bytes':len(rendered.encode('utf-8')),
               'choice_prefix':R13_CHOICE_PREFIX,
               'choice_prefix_token_ids':prefix_ids,
+              'transformers':'4.46.3',
+              'tokenizers':'0.20.3',
+              'jinja2':'3.1.6',
               'ends_exactly_at_choice_prefix':True,
               'model_weights_downloaded':False,
               'model_forward_calls':0,
