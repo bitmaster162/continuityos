@@ -1,0 +1,5 @@
+trigger=R13_POSTPASS_HARDENING_APPLY_ONCE
+scientific_model_calls=0
+valid_live_n=0
+case_001_authorized=false
+execution_authority=NONE
