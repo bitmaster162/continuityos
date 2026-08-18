@@ -1,0 +1,289 @@
+name: sct-r13-qualification-r1
+
+on:
+  push:
+    branches:
+      - agent/sct-r13-qualification-r1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sct-r13-qualification-r1
+  cancel-in-progress: false
+
+jobs:
+  qualification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      SOURCE_SHA: 2b3f0288ee35eb8d6554218694f9111e29147dd2
+      SOURCE_TREE: 174c5045af3e43b1be62dfc07335de0ea6ea095e
+      R2_SHA256: beebc38d4dd32317a3b83c6dba9fbc02054ca4cfbe3a73c1c29ea3c82783d6fc
+      MODEL_MANIFEST: sct/protocols/r13_model_selection_qwen25_1_5b_frozen.json
+      BASELINE_MANIFEST: sct/protocols/r13_arm_b_baseline_frozen.json
+      DB: evidence/r13.sqlite
+      RUNTIME_URL: http://127.0.0.1:8765
+    steps:
+      - name: Checkout exact frozen R13 source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify exact source authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$SOURCE_TREE"
+          test -z "$(git status --porcelain)"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install exact R13 runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.5.1
+          python -m pip install transformers==4.46.3 tokenizers==0.20.3 huggingface_hub==0.26.2 safetensors==0.4.5 jinja2==3.1.6
+          python -m pip install .
+          python - <<'PY'
+          import sys, torch, transformers, tokenizers, huggingface_hub, safetensors, jinja2
+          got = {
+              'python': '.'.join(map(str, sys.version_info[:3])),
+              'torch': torch.__version__,
+              'transformers': transformers.__version__,
+              'tokenizers': tokenizers.__version__,
+              'huggingface_hub': huggingface_hub.__version__,
+              'safetensors': safetensors.__version__,
+              'jinja2': jinja2.__version__,
+          }
+          print(got)
+          assert got['python'].startswith('3.11.')
+          assert got['torch'] == '2.5.1+cpu'
+          assert got['transformers'] == '4.46.3'
+          assert got['tokenizers'] == '0.20.3'
+          assert got['huggingface_hub'] == '0.26.2'
+          assert got['safetensors'] == '0.4.5'
+          assert got['jinja2'] == '3.1.6'
+          PY
+
+      - name: Seal protocol model and Arm B without inference
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          sct-r13 --db "$DB" amend --r2-diagnostic-sha256 "$R2_SHA256" > evidence/amend.json
+          PROTOCOL_SHA="$(python - <<'PY'
+          import json
+          print(json.load(open('evidence/amend.json'))['manifest']['manifest_sha256'])
+          PY
+          )"
+          echo "PROTOCOL_SHA=$PROTOCOL_SHA" >> "$GITHUB_ENV"
+          sct-r13 --db "$DB" seal-model --manifest "$MODEL_MANIFEST" --protocol-manifest-sha256 "$PROTOCOL_SHA" > evidence/seal_model.json
+          sct-r13 --db "$DB" seal-baseline --manifest "$BASELINE_MANIFEST" --protocol-manifest-sha256 "$PROTOCOL_SHA" > evidence/seal_baseline.json
+          sct-r13 --db "$DB" status > evidence/status_pre_runtime.json
+          python - <<'PY'
+          import json
+          s=json.load(open('evidence/status_pre_runtime.json'))
+          assert s['attempt']['started_components']==[]
+          assert s['attempt']['recorded_components']==[]
+          assert s['attempt']['terminal_failure_recorded'] is False
+          assert s['attempt']['valid_live_n']==0
+          assert s['attempt']['execution_authority']=='NONE'
+          PY
+
+      - name: Start exact local HF runtime and verify zero forward calls
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m sct.runner.hf_local serve \
+            --model-manifest "$MODEL_MANIFEST" \
+            --host 127.0.0.1 --port 8765 \
+            --cache-dir "$RUNNER_TEMP/hf-r13-r1" \
+            > evidence/runtime.log 2>&1 &
+          echo $! > evidence/runtime.pid
+          READY=0
+          for i in $(seq 1 300); do
+            if python -m sct.runner.hf_local health --url "$RUNTIME_URL" --timeout 5 > evidence/health.json 2>/dev/null; then
+              READY=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$READY" != "1" ]; then
+            echo 'runtime failed to become healthy' >&2
+            tail -200 evidence/runtime.log >&2 || true
+            exit 31
+          fi
+          python - <<'PY'
+          import json
+          h=json.load(open('evidence/health.json'))
+          assert h['ok'] is True
+          assert h['model_forward_calls']==0
+          assert h['model_inference_executed'] is False
+          assert h['execution_authority']=='NONE'
+          r=h['runtime']
+          assert r['model_repo_or_provider_id']=='Qwen/Qwen2.5-1.5B-Instruct'
+          assert r['model_revision']=='5fee7c4ed634dc66c6e318c8ac2897b8b9154536'
+          assert r['device']=='cpu'
+          assert r['dtype']=='float32'
+          assert r['model_forward_calls_at_ready']==0
+          PY
+
+      - name: Run sealed R13 2 -> 18 -> 30 gates with no retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUNNER=(python -m sct.runner.hf_local client --url "$RUNTIME_URL" --timeout 120)
+
+          run_gate () {
+            local component="$1"
+            local outfile="$2"
+            set +e
+            sct-r13 --db "$DB" "$component" \
+              --model-manifest "$MODEL_MANIFEST" \
+              --protocol-manifest-sha256 "$PROTOCOL_SHA" \
+              --source-sha "$SOURCE_SHA" \
+              --source-tree-sha "$SOURCE_TREE" \
+              --runner "${RUNNER[@]}" \
+              > "$outfile" 2> "${outfile%.json}.stderr"
+            local rc=$?
+            set -e
+            echo "$rc" > "${outfile%.json}.exit_code"
+            return "$rc"
+          }
+
+          if ! run_gate preflight evidence/preflight.json; then
+            echo 'PRELIGHT_TERMINAL_FAIL' > evidence/final_state.txt
+            sct-r13 --db "$DB" status > evidence/status_final.json || true
+            exit 2
+          fi
+          python - <<'PY'
+          import json
+          x=json.load(open('evidence/preflight.json'))
+          assert x['deterministic'] is True
+          assert x['attempted_calls']==2
+          PY
+
+          if ! run_gate context-sentinel evidence/sentinel.json; then
+            echo 'SENTINEL_TERMINAL_FAIL' > evidence/final_state.txt
+            sct-r13 --db "$DB" status > evidence/status_final.json || true
+            exit 3
+          fi
+          python - <<'PY'
+          import json
+          x=json.load(open('evidence/sentinel.json'))
+          assert x['satisfies_context_responsiveness_gate'] is True
+          assert x['attempted_calls']==18
+          assert len(x['relations'])==18
+          assert all(r['strict_directional_relation_pass'] for r in x['relations'])
+          PY
+
+          if ! run_gate stable-void evidence/stable_void.json; then
+            echo 'STABLE_VOID_TERMINAL_FAIL' > evidence/final_state.txt
+            sct-r13 --db "$DB" status > evidence/status_final.json || true
+            exit 4
+          fi
+          python - <<'PY'
+          import json
+          x=json.load(open('evidence/stable_void.json'))
+          assert x['stable_void_pass'] is True
+          assert x['attempted_calls']==30
+          assert x['valid_live_cases_added']==0
+          PY
+
+          python - <<'PY'
+          import json
+          from sct.canon import sha256_obj
+          model=json.load(open('sct/protocols/r13_model_selection_qwen25_1_5b_frozen.json'))
+          pre=json.load(open('evidence/preflight.json'))
+          sen=json.load(open('evidence/sentinel.json'))
+          sta=json.load(open('evidence/stable_void.json'))
+          att={
+            'schema':'sct.r13-operator-runtime-attestation/v1',
+            'source_code_sha':'2b3f0288ee35eb8d6554218694f9111e29147dd2',
+            'source_tree_sha':'174c5045af3e43b1be62dfc07335de0ea6ea095e',
+            'protocol_manifest_sha256':pre['protocol_manifest_sha256'],
+            'model_selection_manifest_sha256':model['manifest_sha256'],
+            'model_repo_or_provider_id':model['model_repo_or_provider_id'],
+            'model_revision':model['model_revision'],
+            'weight_hashes':model['weight_hashes'],
+            'tokenizer_hashes':model['tokenizer_hashes'],
+            'runtime_backend':model['runtime_backend'],
+            'runtime_version':model['runtime_version'],
+            'precision_or_quantization':model['precision_or_quantization'],
+            'device_class':model['device_class'],
+            'deterministic_flags':model['deterministic_flags'],
+            'preflight_receipt_sha256':sha256_obj(pre),
+            'sentinel_receipt_sha256':sha256_obj(sen),
+            'stable_void_receipt_sha256':sha256_obj(sta),
+            'planned_real_model_calls':50,
+            'observed_preflight_calls':2,
+            'observed_sentinel_calls':18,
+            'observed_stable_void_calls':30,
+            'valid_live_n':0,
+            'store_verify_ok':True,
+            'automatic_retry':False,
+            'replacement_cases':0,
+            'replacement_models':0,
+            'execution_authority':'NONE',
+            'can_execute':False,
+          }
+          att['attestation_sha256']=sha256_obj(att)
+          json.dump(att,open('evidence/operator_attestation.json','w'),indent=2,sort_keys=True)
+          PY
+
+          sct-r13 --db "$DB" qualify \
+            --model-manifest "$MODEL_MANIFEST" \
+            --preflight-receipt evidence/preflight.json \
+            --sentinel-receipt evidence/sentinel.json \
+            --stable-void-receipt evidence/stable_void.json \
+            --operator-attestation evidence/operator_attestation.json \
+            --source-sha "$SOURCE_SHA" \
+            --source-tree-sha "$SOURCE_TREE" \
+            > evidence/qualification.json
+
+          sct-r13 --db "$DB" status > evidence/status_final.json
+          python - <<'PY'
+          import json
+          q=json.load(open('evidence/qualification.json'))
+          assert q['qualification']['scientific_pre_case_gate_pass'] is True
+          assert q['qualification']['case_001_authorized'] is False
+          assert q['qualification']['can_execute'] is False
+          assert q['qualification']['execution_authority']=='NONE'
+          s=json.load(open('evidence/status_final.json'))
+          assert s['r13']['case_001_authorized'] is False
+          assert s['r13']['execution_authority']=='NONE'
+          PY
+          echo 'R13_QUALIFICATION_PASS_CASE001_STILL_BLOCKED' > evidence/final_state.txt
+
+      - name: Write evidence SHA-256 manifest
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, json
+          root=Path('evidence')
+          rows=[]
+          for p in sorted(root.rglob('*')):
+            if p.is_file() and p.name!='SHA256SUMS.json':
+              rows.append({'path':str(p.relative_to(root)),'size_bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()})
+          (root/'SHA256SUMS.json').write_text(json.dumps(rows,indent=2),encoding='utf-8')
+          PY
+
+      - name: Upload immutable R13 R1 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SCT_R13_QUALIFICATION_R1_${{ github.run_id }}
+          path: evidence
+          if-no-files-found: error
+          retention-days: 90
