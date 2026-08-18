@@ -12,8 +12,8 @@ class FakeChatTokenizer:
     def apply_chat_template(self, messages, **kwargs):
         self.messages = messages
         self.kwargs = kwargs
-        assert messages[-1] == {"role": "assistant", "content": R13_CHOICE_PREFIX}
-        return "<system>shadow</system><user>payload</user><assistant>" + R13_CHOICE_PREFIX
+        assert messages[-1]["role"] == "user"
+        return "<system>shadow</system><user>payload</user><assistant>"
 
 
 def test_r13_v2_request_uses_exact_final_assistant_prefill():
@@ -34,7 +34,7 @@ def test_r13_v2_request_uses_exact_final_assistant_prefill():
     assert not request["messages"][-2]["content"].endswith(R13_CHOICE_PREFIX)
 
 
-def test_hf_renderer_continues_final_assistant_message_without_new_generation_prompt():
+def test_hf_renderer_opens_assistant_turn_then_appends_exact_literal_prefix():
     tokenizer = FakeChatTokenizer()
     messages = [
         {"role": "system", "content": "shadow"},
@@ -43,8 +43,5 @@ def test_hf_renderer_continues_final_assistant_message_without_new_generation_pr
     ]
     rendered = render_model_visible_prompt(tokenizer, messages)
     assert rendered.endswith(R13_CHOICE_PREFIX)
-    assert tokenizer.kwargs == {
-        "tokenize": False,
-        "continue_final_message": True,
-        "add_generation_prompt": False,
-    }
+    assert tokenizer.messages == messages[:-1]
+    assert tokenizer.kwargs == {"tokenize": False, "add_generation_prompt": True}

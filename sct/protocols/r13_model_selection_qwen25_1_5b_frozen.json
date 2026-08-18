@@ -61,7 +61,7 @@
       "token_id": 46
     }
   ],
-  "chat_template_mode": "tokenizer.apply_chat_template(messages,tokenize=False,continue_final_message=True,add_generation_prompt=False);tokenizer(rendered,add_special_tokens=False)",
+  "chat_template_mode": "tokenizer.apply_chat_template(messages_without_prefill,tokenize=False,add_generation_prompt=True);rendered+=literal_final_assistant_prefill;tokenizer(rendered,add_special_tokens=False)",
   "config_hashes": {
     "config.json": "98d2ff8cc47488d08a2b0b3acf4eb99ef210779b42bd48605f6b8e36acdbf670",
     "generation_config.json": "e558847a8b4402616f1273797b015104dc266fe4b520056fca88823ba8f8ebe6"
@@ -71,18 +71,7 @@
   "device_class": "x86_64-cpu",
   "exact_epoch001_live_substrate": true,
   "execution_authority": "NONE",
-  "load_only_prep": {
-    "artifact_id": 9337369701,
-    "artifact_zip_sha256": "8a90be7ae0c00998bd92f42a5b9a85f48c118155df96d8d2e026a74e4bcbc76d",
-    "model_forward_calls": 0,
-    "model_inference_executed": false,
-    "pull_request": 73,
-    "pull_request_merged": false,
-    "runtime_identity_sha256": "e36b673e02d76abb7625bdbdf28d090f29031ad5e36b0a3c4e844f42b4274aac",
-    "scientific_model_calls": 0,
-    "workflow_run_id": 32170684107
-  },
-  "manifest_sha256": "80341c77f9fbb427613ee5dcd75cbbefb2ba86ac81ee41b8fc431ddcfbfe344b",
+  "manifest_sha256": "1ef6673a78fa690ce0fc54fba5dd8df52625f66caf7f3933224703bbdbe42491",
   "max_option_cardinality_required": 15,
   "model_repo_or_provider_id": "Qwen/Qwen2.5-1.5B-Instruct",
   "model_revision": "5fee7c4ed634dc66c6e318c8ac2897b8b9154536",
@@ -100,7 +89,7 @@
   "runtime_adapter_schema": "sct.r13-hf-local-logit-runtime/v2",
   "runtime_backend": "pytorch-transformers-local-cpu",
   "runtime_module": "sct.runner.hf_local",
-  "runtime_version": "python==3.11;torch==2.5.1+cpu;transformers==4.46.3;huggingface_hub==0.26.2;safetensors==0.4.5",
+  "runtime_version": "python==3.11;torch==2.5.1+cpu;transformers==4.46.3;tokenizers==0.20.3;huggingface_hub==0.26.2;safetensors==0.4.5;jinja2==3.1.6",
   "schema": "sct.epoch001-model-selection-manifest/v1",
   "selection_must_not_use_r13_outputs": true,
   "selection_rationale_non_r13": "Exogenous pre-R13 selection: Apache-2.0 instruction-tuned causal LM, standard Transformers support, 1.54B-class capacity, ~3.09GB published BF16 weights, and practical CPU-memory envelope. Selected before any R13 model/logit output; no R13 outcome was inspected.",
