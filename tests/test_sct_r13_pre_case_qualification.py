@@ -1,5 +1,4 @@
 import json
-import math
 
 import pytest
 
@@ -232,7 +231,7 @@ def test_case_mapping_is_deterministic_and_changes_alias_identity(tmp_path):
         protocol_manifest_sha256=protocol["manifest_sha256"],
         model_selection_manifest_sha256=validate_model_selection_manifest(model)["manifest_sha256"],
     )
-    assert again == frozen
+    assert again == json.loads(json.dumps(frozen))
     store.close()
 
 
