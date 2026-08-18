@@ -25,7 +25,9 @@ jobs:
           python-version: '3.11'
 
       - name: Apply deterministic code patch
-        run: python tools/r13_postpass_apply.py
+        run: |
+          python tools/r13_postpass_apply.py
+          python tools/r13_postpass_fix_legacy_test.py
 
       - name: Run targeted post-pass tests
         run: |
@@ -34,7 +36,7 @@ jobs:
 
       - name: Commit verified code only
         run: |
-          git rm .github/workflows/r13-postpass-apply-once.yml .github/workflows/r13-postpass-pr-apply.yml tools/r13_postpass_apply.py
+          git rm .github/workflows/r13-postpass-apply-once.yml .github/workflows/r13-postpass-pr-apply.yml tools/r13_postpass_apply.py tools/r13_postpass_fix_legacy_test.py
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add sct tests
