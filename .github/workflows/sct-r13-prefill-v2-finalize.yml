@@ -1,0 +1,97 @@
+name: sct-r13-prefill-v2-finalize
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.head_ref == 'agent/sct-r13-prefill-v2-patch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Finalize exact assistant-prefill rendering and runtime pins
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, json, re
+
+          def replace_exact(path, old, new, count=1):
+              p=Path(path); text=p.read_text(encoding='utf-8'); n=text.count(old)
+              if n != count:
+                  raise SystemExit(f'{path}: expected {count}, got {n} for {old!r}')
+              p.write_text(text.replace(old,new),encoding='utf-8')
+
+          replace_exact(
+              'sct/runner/hf_local.py',
+              '''def render_model_visible_prompt(tokenizer, messages) -> str:\n    """Render the frozen R13 v2 assistant-prefill prompt without closing the final message."""\n    if not isinstance(messages, list) or len(messages) < 3:\n        raise EvidenceError("R13 HF runtime messages missing")\n    final = messages[-1]\n    if not isinstance(final, Mapping) or final.get("role") != "assistant" or final.get("content") != R13_CHOICE_PREFIX:\n        raise EvidenceError("R13 v2 requires exact final assistant choice-prefix prefill")\n    rendered = tokenizer.apply_chat_template(\n        messages,\n        tokenize=False,\n        continue_final_message=True,\n        add_generation_prompt=False,\n    )\n    if not isinstance(rendered, str) or not rendered.endswith(R13_CHOICE_PREFIX):\n        raise EvidenceError("R13 v2 model-visible prompt must end exactly at assistant choice prefix")\n    return rendered\n''',
+              '''def render_model_visible_prompt(tokenizer, messages) -> str:\n    """Render system+user, open an assistant turn, then append the exact frozen choice prefix."""\n    if not isinstance(messages, list) or len(messages) < 3:\n        raise EvidenceError("R13 HF runtime messages missing")\n    final = messages[-1]\n    if not isinstance(final, Mapping) or final.get("role") != "assistant" or final.get("content") != R13_CHOICE_PREFIX:\n        raise EvidenceError("R13 v2 requires exact final assistant choice-prefix prefill")\n    rendered = tokenizer.apply_chat_template(\n        messages[:-1],\n        tokenize=False,\n        add_generation_prompt=True,\n    )\n    if not isinstance(rendered, str):\n        raise EvidenceError("R13 v2 chat template did not render text")\n    rendered += R13_CHOICE_PREFIX\n    if not rendered.endswith(R13_CHOICE_PREFIX):\n        raise EvidenceError("R13 v2 model-visible prompt must end exactly at assistant choice prefix")\n    return rendered\n'''
+          )
+
+          replace_exact(
+              'sct/runner/hf_local.py',
+              '''            import torch\n            import transformers\n            from huggingface_hub import snapshot_download\n            from transformers import AutoModelForCausalLM, AutoTokenizer\n''',
+              '''            import jinja2\n            import tokenizers\n            import torch\n            import transformers\n            from huggingface_hub import snapshot_download\n            from transformers import AutoModelForCausalLM, AutoTokenizer\n'''
+          )
+          replace_exact(
+              'sct/runner/hf_local.py',
+              '''            "transformers": self.transformers_version,\n            "device": "cpu",\n''',
+              '''            "transformers": self.transformers_version,\n            "tokenizers": tokenizers.__version__,\n            "jinja2": jinja2.__version__,\n            "device": "cpu",\n'''
+          )
+
+          model_path=Path('sct/protocols/r13_model_selection_qwen25_1_5b_frozen.json')
+          model=json.loads(model_path.read_text(encoding='utf-8'))
+          model['chat_template_mode']=(
+              'tokenizer.apply_chat_template(messages_without_prefill,tokenize=False,add_generation_prompt=True);'
+              'rendered+=literal_final_assistant_prefill;tokenizer(rendered,add_special_tokens=False)'
+          )
+          model['runtime_version']=(
+              'python==3.11;torch==2.5.1+cpu;transformers==4.46.3;tokenizers==0.20.3;'
+              'huggingface_hub==0.26.2;safetensors==0.4.5;jinja2==3.1.6'
+          )
+          model.pop('load_only_prep',None)
+          body=dict(model); body.pop('manifest_sha256',None)
+          canonical=json.dumps(body,ensure_ascii=False,sort_keys=True,separators=(',',':'))
+          model_sha=hashlib.sha256(canonical.encode('utf-8')).hexdigest()
+          model['manifest_sha256']=model_sha
+          model_path.write_text(json.dumps(model,ensure_ascii=False,sort_keys=True,indent=2)+'\n',encoding='utf-8')
+
+          asset=Path('tests/test_sct_r13_protocol_assets.py')
+          text=asset.read_text(encoding='utf-8')
+          text,n=re.subn(r'FROZEN_MODEL_SHA = "[0-9a-f]{64}"',f'FROZEN_MODEL_SHA = "{model_sha}"',text,count=1)
+          if n!=1: raise SystemExit('FROZEN_MODEL_SHA update failed')
+          asset.write_text(text,encoding='utf-8')
+
+          Path('tests/test_sct_r13_prefill_v2.py').write_text('''import json\n\nfrom sct.r13 import R13_ADAPTER_ID, R13_CHOICE_PREFIX, render_r13_logit_request\nfrom sct.runner.hf_local import render_model_visible_prompt\n\n\nclass FakeChatTokenizer:\n    def __init__(self):\n        self.kwargs = None\n        self.messages = None\n\n    def apply_chat_template(self, messages, **kwargs):\n        self.messages = messages\n        self.kwargs = kwargs\n        assert messages[-1]["role"] == "user"\n        return "<system>shadow</system><user>payload</user><assistant>"\n\n\ndef test_r13_v2_request_uses_exact_final_assistant_prefill():\n    request = render_r13_logit_request(\n        scenario="Synthetic prefill test",\n        semantic_options=("X", "Y"),\n        personal_context="SYNTHETIC QUALIFICATION ONLY",\n        semantic_to_alias={"X": "A", "Y": "B"},\n        textual_order=("X", "Y"),\n        provider="p",\n        model="m",\n        model_version="v",\n    )\n    assert R13_ADAPTER_ID == "sct.r13-direct-constrained-label-logits/v2"\n    assert request["messages"][-1] == {"role": "assistant", "content": R13_CHOICE_PREFIX}\n    payload = json.loads(request["messages"][-2]["content"])\n    assert payload["scenario"] == "Synthetic prefill test"\n    assert not request["messages"][-2]["content"].endswith(R13_CHOICE_PREFIX)\n\n\ndef test_hf_renderer_opens_assistant_turn_then_appends_exact_literal_prefix():\n    tokenizer = FakeChatTokenizer()\n    messages = [\n        {"role": "system", "content": "shadow"},\n        {"role": "user", "content": "payload"},\n        {"role": "assistant", "content": R13_CHOICE_PREFIX},\n    ]\n    rendered = render_model_visible_prompt(tokenizer, messages)\n    assert rendered.endswith(R13_CHOICE_PREFIX)\n    assert tokenizer.messages == messages[:-1]\n    assert tokenizer.kwargs == {"tokenize": False, "add_generation_prompt": True}\n''',encoding='utf-8')
+
+          if 'continue_final_message=True' in Path('sct/runner/hf_local.py').read_text(encoding='utf-8'):
+              raise SystemExit('stale continue_final_message seam remains')
+          print(json.dumps({'status':'FINALIZED','frozen_model_manifest_sha256':model_sha},sort_keys=True))
+          PY
+      - name: Run focused R13 regression suite
+        run: |
+          python -m pip install pytest==9.1.1
+          python -m pytest -q tests/test_sct_r13_pre_case_qualification.py tests/test_sct_r13_runtime_evidence.py tests/test_sct_r13_live_wiring.py tests/test_sct_r13_terminal_attempt.py tests/test_sct_r13_protocol_assets.py tests/test_sct_r13_hf_local_and_baseline.py tests/test_sct_r13_prefill_v2.py
+      - name: Remove disposable workflow and push final v2 tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/sct-r13-prefill-v2-finalize.yml
+          git config user.name 'bitmaster162'
+          git config user.email '115934939+bitmaster162@users.noreply.github.com'
+          git add sct tests .github/workflows/sct-r13-prefill-v2-finalize.yml
+          git diff --cached --check
+          git commit -m 'fix: finalize deterministic R13 v2 assistant prefill'
+          git push origin HEAD:${{ github.head_ref }}
