@@ -2,6 +2,7 @@ import copy
 
 import pytest
 
+from sct.baseline_r13 import baseline_policy_hashes
 from sct.canon import sha256_obj
 from sct.errors import EvidenceError
 from sct.r13 import (
@@ -46,18 +47,15 @@ def _model_manifest():
 def _baseline_spec():
     return {
         "schema": R13_BASELINE_SCHEMA,
-        "profile_construction_policy": "Frozen profile policy v1",
-        "profile_builder_sha256": "1" * 64,
-        "retrieval_policy": "Frozen retrieval policy v1",
-        "retrieval_policy_sha256": "2" * 64,
-        "source_cutoff_policy": "Same frozen cutoff as C",
-        "source_cutoff_sha256": "3" * 64,
-        "admissible_evidence_pool": "Same raw admitted pool as C without SCT-only claims",
-        "context_selection_policy": "Deterministic context selection v1",
-        "context_selection_policy_sha256": "4" * 64,
+        "profile_construction_policy": "Frozen deterministic human-authored profile excerpts from the admitted pool",
+        "retrieval_policy": "Frozen deterministic Unicode lexical-overlap retrieval from the admitted pool",
+        "source_cutoff_policy": "Same frozen cutoff as C; no future evidence",
+        "admissible_evidence_pool": "Same raw admitted pool as C without SCT-only or assistant-authored claims",
+        "context_selection_policy": "Frozen 40/60 byte allocation with deterministic spill and parity ceiling",
         "disallow_sct_structured_claims": True,
         "payload_parity_ratio": 1.15,
         "execution_authority": "NONE",
+        **baseline_policy_hashes(),
     }
 
 
@@ -160,19 +158,16 @@ def test_operator_attestation_is_content_verified_not_boolean_only():
         "preflight_receipt_sha256": sha256_obj(preflight),
         "sentinel_receipt_sha256": sha256_obj(sentinel),
         "stable_void_receipt_sha256": sha256_obj(stable),
-        "planned_real_model_calls": 50,
-        "observed_preflight_calls": 2,
-        "observed_sentinel_calls": 18,
-        "observed_stable_void_calls": 30,
+        "valid_live_n": 0,
         "store_verify_ok": True,
         "automatic_retry": False,
         "replacement_cases": 0,
         "replacement_models": 0,
-        "valid_live_n": 0,
         "execution_authority": "NONE",
         "can_execute": False,
     }
-    valid = validate_r13_operator_attestation(
+    attestation["attestation_sha256"] = sha256_obj({k: v for k, v in attestation.items() if k != "attestation_sha256"})
+    validated = validate_r13_operator_attestation(
         attestation,
         model_manifest=model,
         preflight=preflight,
@@ -182,13 +177,13 @@ def test_operator_attestation_is_content_verified_not_boolean_only():
         expected_source_tree_sha=source_tree,
         store_verify_ok=True,
     )
-    assert len(valid["attestation_sha256"]) == 64
-
-    bad = copy.deepcopy(attestation)
-    bad["observed_sentinel_calls"] = 17
-    with pytest.raises(EvidenceError, match="observed_sentinel_calls"):
+    assert validated["attestation_sha256"] == attestation["attestation_sha256"]
+    tampered = copy.deepcopy(attestation)
+    tampered["model_revision"] = "other"
+    tampered["attestation_sha256"] = sha256_obj({k: v for k, v in tampered.items() if k != "attestation_sha256"})
+    with pytest.raises(EvidenceError, match="model_revision"):
         validate_r13_operator_attestation(
-            bad,
+            tampered,
             model_manifest=model,
             preflight=preflight,
             sentinel=sentinel,
