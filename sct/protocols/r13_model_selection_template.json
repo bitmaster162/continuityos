@@ -1,0 +1,19 @@
+{
+  "schema": "sct.epoch001-model-selection-manifest/v1",
+  "selection_must_not_use_r13_outputs": true,
+  "exact_epoch001_live_substrate": true,
+  "model_repo_or_provider_id": "__FILL_BEFORE_R13__",
+  "model_revision": "__FILL_BEFORE_R13__",
+  "weight_hashes": {"__FILL__": "__SHA256__"},
+  "tokenizer_hashes": {"__FILL__": "__SHA256__"},
+  "runtime_backend": "__FILL_BEFORE_R13__",
+  "runtime_version": "__FILL_BEFORE_R13__",
+  "precision_or_quantization": "__FILL_BEFORE_R13__",
+  "device_class": "__FILL_BEFORE_R13__",
+  "context_window": "__FILL_BEFORE_R13__",
+  "deterministic_flags": "__FILL_BEFORE_R13__",
+  "selection_rationale_non_r13": "__FILL_WITH_EXOGENOUS_SELECTION_RATIONALE__",
+  "alias_tokens": [],
+  "max_option_cardinality_required": 15,
+  "execution_authority": "NONE"
+}

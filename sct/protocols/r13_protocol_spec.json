@@ -1,0 +1,43 @@
+{
+  "schema": "sct.r13-precase-qualification/v1",
+  "status": "PROSPECTIVE_NOT_EXECUTED",
+  "parent": {
+    "r12_source_sha": "61929ee088cd83f61b4bc3df97559da2f58bc6c9",
+    "r12_tree_sha": "143f6da481909bb83167f12c102d5be10e4faba3",
+    "r12_artifact_sha256": "a67404f2a3fd0778d86e2ec2fe6ca6f677a8e2056eaf1d38fb7f64825dd6d8c2",
+    "r12_evidence_db_sha256": "9223b6e78c76918c8f33ffe02cbbf2ddaad6212330661747908117017850be61"
+  },
+  "adapter": {
+    "id": "sct.r13-direct-constrained-label-logits/v1",
+    "temperature": 1.0,
+    "uniform_mix": 0.0,
+    "rationale_before_choice": false,
+    "fallback_distribution": null
+  },
+  "sentinel": {
+    "schema": "sct.r13-balanced-context-sentinel/v1",
+    "scenarios": 2,
+    "mapping_order_variants_per_scenario": 3,
+    "directed_contexts_per_variant": 3,
+    "planned_calls": 18,
+    "pass_rule": "FOR_EACH_SCENARIO_MAPPING_TARGET: q_target(ctx_target) > q_target(ctx_other) FOR_ALL_OTHER_CONTEXTS",
+    "minimum_gap": null,
+    "entropy_threshold": null,
+    "confidence_threshold": null,
+    "p_value": null
+  },
+  "determinism_preflight_calls": 2,
+  "stable_void": {
+    "cases": 10,
+    "cardinalities": [2, 3, 4, 5, 6, 7, 8, 10, 12, 15],
+    "arms_per_case": 3,
+    "planned_calls": 30
+  },
+  "max_planned_real_model_calls_successful_run": 50,
+  "automatic_retry": false,
+  "replacement_cases": 0,
+  "replacement_models": 0,
+  "valid_live_n": 0,
+  "case_001_authorized": false,
+  "execution_authority": "NONE"
+}

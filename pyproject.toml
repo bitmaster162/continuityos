@@ -44,6 +44,7 @@ continuity-memory = "continuityos.operational_memory:main"
 continuity-context = "continuityos.operational_context:main"
 continuity-session = "continuityos.session_input:main"
 sct = "sct.cli:main"
+sct-r13 = "sct.r13_cli:main"
 
 [project.urls]
 Homepage = "https://sovereign-arena-site.vercel.app/continuityos"
@@ -57,6 +58,7 @@ exclude = ["demo*", "bench*", "tests*", "docs*", "examples*", "dist*"]
 "continuityos.gate.schemas" = ["*.json"]
 "continuityos.operational_context_schemas" = ["*.json"]
 "continuityos.session_input_schemas" = ["*.json"]
+"sct.protocols" = ["*.json", "*.md"]
 
 [tool.setuptools.dynamic]
 version = {attr = "continuityos._version.__version__"}
