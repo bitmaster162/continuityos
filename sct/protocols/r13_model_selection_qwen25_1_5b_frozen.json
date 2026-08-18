@@ -1,22 +1,67 @@
 {
   "alias_tokens": [
-    {"alias": "A", "token_id": 32},
-    {"alias": "B", "token_id": 33},
-    {"alias": "C", "token_id": 34},
-    {"alias": "D", "token_id": 35},
-    {"alias": "E", "token_id": 36},
-    {"alias": "F", "token_id": 37},
-    {"alias": "G", "token_id": 38},
-    {"alias": "H", "token_id": 39},
-    {"alias": "I", "token_id": 40},
-    {"alias": "J", "token_id": 41},
-    {"alias": "K", "token_id": 42},
-    {"alias": "L", "token_id": 43},
-    {"alias": "M", "token_id": 44},
-    {"alias": "N", "token_id": 45},
-    {"alias": "O", "token_id": 46}
+    {
+      "alias": "A",
+      "token_id": 32
+    },
+    {
+      "alias": "B",
+      "token_id": 33
+    },
+    {
+      "alias": "C",
+      "token_id": 34
+    },
+    {
+      "alias": "D",
+      "token_id": 35
+    },
+    {
+      "alias": "E",
+      "token_id": 36
+    },
+    {
+      "alias": "F",
+      "token_id": 37
+    },
+    {
+      "alias": "G",
+      "token_id": 38
+    },
+    {
+      "alias": "H",
+      "token_id": 39
+    },
+    {
+      "alias": "I",
+      "token_id": 40
+    },
+    {
+      "alias": "J",
+      "token_id": 41
+    },
+    {
+      "alias": "K",
+      "token_id": 42
+    },
+    {
+      "alias": "L",
+      "token_id": 43
+    },
+    {
+      "alias": "M",
+      "token_id": 44
+    },
+    {
+      "alias": "N",
+      "token_id": 45
+    },
+    {
+      "alias": "O",
+      "token_id": 46
+    }
   ],
-  "chat_template_mode": "tokenizer.apply_chat_template(messages,tokenize=False,add_generation_prompt=True);tokenizer(rendered,add_special_tokens=False)",
+  "chat_template_mode": "tokenizer.apply_chat_template(messages,tokenize=False,continue_final_message=True,add_generation_prompt=False);tokenizer(rendered,add_special_tokens=False)",
   "config_hashes": {
     "config.json": "98d2ff8cc47488d08a2b0b3acf4eb99ef210779b42bd48605f6b8e36acdbf670",
     "generation_config.json": "e558847a8b4402616f1273797b015104dc266fe4b520056fca88823ba8f8ebe6"
@@ -26,7 +71,18 @@
   "device_class": "x86_64-cpu",
   "exact_epoch001_live_substrate": true,
   "execution_authority": "NONE",
-  "manifest_sha256": "465758e9570853d82f3bc05afdb201e72ecff29929ef9dba6d940bd74e2f22a1",
+  "load_only_prep": {
+    "artifact_id": 9337369701,
+    "artifact_zip_sha256": "8a90be7ae0c00998bd92f42a5b9a85f48c118155df96d8d2e026a74e4bcbc76d",
+    "model_forward_calls": 0,
+    "model_inference_executed": false,
+    "pull_request": 73,
+    "pull_request_merged": false,
+    "runtime_identity_sha256": "e36b673e02d76abb7625bdbdf28d090f29031ad5e36b0a3c4e844f42b4274aac",
+    "scientific_model_calls": 0,
+    "workflow_run_id": 32170684107
+  },
+  "manifest_sha256": "80341c77f9fbb427613ee5dcd75cbbefb2ba86ac81ee41b8fc431ddcfbfe344b",
   "max_option_cardinality_required": 15,
   "model_repo_or_provider_id": "Qwen/Qwen2.5-1.5B-Instruct",
   "model_revision": "5fee7c4ed634dc66c6e318c8ac2897b8b9154536",
@@ -41,7 +97,7 @@
     "scientific_model_calls": 0,
     "workflow_run_id": 32169897328
   },
-  "runtime_adapter_schema": "sct.r13-hf-local-logit-runtime/v1",
+  "runtime_adapter_schema": "sct.r13-hf-local-logit-runtime/v2",
   "runtime_backend": "pytorch-transformers-local-cpu",
   "runtime_module": "sct.runner.hf_local",
   "runtime_version": "python==3.11;torch==2.5.1+cpu;transformers==4.46.3;huggingface_hub==0.26.2;safetensors==0.4.5",

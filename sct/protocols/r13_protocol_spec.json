@@ -10,7 +10,7 @@
     "r2_diagnostic_sha256": "beebc38d4dd32317a3b83c6dba9fbc02054ca4cfbe3a73c1c29ea3c82783d6fc"
   },
   "adapter": {
-    "id": "sct.r13-direct-constrained-label-logits/v1",
+    "id": "sct.r13-direct-constrained-label-logits/v2",
     "temperature": 1.0,
     "uniform_mix": 0.0,
     "rationale_before_choice": false,

@@ -15,7 +15,7 @@ from ..errors import EvidenceError
 from ..r13 import R13_CHOICE_PREFIX
 from ..r13_manifest_guard import validate_model_manifest_for_seal
 
-R13_HF_RUNTIME_SCHEMA = "sct.r13-hf-local-logit-runtime/v1"
+R13_HF_RUNTIME_SCHEMA = "sct.r13-hf-local-logit-runtime/v2"
 
 
 def _sha256_file(path: Path) -> str:
@@ -82,6 +82,24 @@ def verify_alias_tokens(tokenizer, manifest: Mapping[str, Any]) -> dict[str, int
     if len(out) < 15:
         raise EvidenceError("R13 HF runtime requires at least 15 verified aliases")
     return out
+
+
+def render_model_visible_prompt(tokenizer, messages) -> str:
+    """Render the frozen R13 v2 assistant-prefill prompt without closing the final message."""
+    if not isinstance(messages, list) or len(messages) < 3:
+        raise EvidenceError("R13 HF runtime messages missing")
+    final = messages[-1]
+    if not isinstance(final, Mapping) or final.get("role") != "assistant" or final.get("content") != R13_CHOICE_PREFIX:
+        raise EvidenceError("R13 v2 requires exact final assistant choice-prefix prefill")
+    rendered = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        continue_final_message=True,
+        add_generation_prompt=False,
+    )
+    if not isinstance(rendered, str) or not rendered.endswith(R13_CHOICE_PREFIX):
+        raise EvidenceError("R13 v2 model-visible prompt must end exactly at assistant choice prefix")
+    return rendered
 
 
 class HFLocalLogitRuntime:
@@ -197,13 +215,7 @@ class HFLocalLogitRuntime:
             raise EvidenceError("R13 HF runtime request may not grant execution authority")
 
         messages = request.get("messages")
-        if not isinstance(messages, list) or not messages:
-            raise EvidenceError("R13 HF runtime messages missing")
-        rendered = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
+        rendered = render_model_visible_prompt(self.tokenizer, messages)
         model_inputs = self.tokenizer(
             rendered,
             return_tensors="pt",

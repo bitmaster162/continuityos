@@ -30,7 +30,7 @@ R12_ARTIFACT_SHA256 = "a67404f2a3fd0778d86e2ec2fe6ca6f677a8e2056eaf1d38fb7f64825
 R12_EVIDENCE_DB_SHA256 = "9223b6e78c76918c8f33ffe02cbbf2ddaad6212330661747908117017850be61"
 R11_RECEIPT_SHA256 = "1c5937da898e89e92d9c9a1f905cb29b8e0aec133fb4fb3dffcfe74a94f1fd0c"
 
-R13_ADAPTER_ID = "sct.r13-direct-constrained-label-logits/v1"
+R13_ADAPTER_ID = "sct.r13-direct-constrained-label-logits/v2"
 R13_CHOICE_PREFIX = "Selected option: "
 R13_ALIAS_INVENTORY = tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
 R13_VOID_CARDINALITIES = (2, 3, 4, 5, 6, 7, 8, 10, 12, 15)
@@ -379,7 +379,7 @@ def render_r13_logit_request(
         "labeled_options": labeled,
         "personal_context": personal_context,
         "constraints": {"shadow_only": True, "do_not_execute": True, "do_not_requery_for_a_better_answer": True},
-    }) + "\n" + R13_CHOICE_PREFIX
+    })
     envelope = {
         "system_prompt": R13_SYSTEM_PROMPT,
         "scenario": scenario,
@@ -400,6 +400,7 @@ def render_r13_logit_request(
         "messages": [
             {"role": "system", "content": R13_SYSTEM_PROMPT},
             {"role": "user", "content": user},
+            {"role": "assistant", "content": R13_CHOICE_PREFIX},
         ],
         "envelope_sha256": sha256_obj(envelope),
         "choice_prefix": R13_CHOICE_PREFIX,

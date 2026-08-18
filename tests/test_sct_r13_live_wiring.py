@@ -79,7 +79,7 @@ def _baseline_spec():
 
 class ResponsiveRunner:
     def allowed_token_logits(self, request, *, aliases):
-        payload = json.loads(request["messages"][-1]["content"].split("\nSelected option: ", 1)[0])
+        payload = json.loads(request["messages"][-2]["content"])
         mapping = {row["semantic_option"]: row["label"] for row in payload["labeled_options"]}
         target = next((semantic for semantic in mapping if semantic in payload["personal_context"]), None)
         logits = {alias: (2.0 if alias == "C" else 0.0) for alias in aliases}
