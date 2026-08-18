@@ -1,0 +1,99 @@
+name: sct-r13-prefill-v2-tokenizer-proof-r2
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tokenizer-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install exact frozen tokenizer-rendering stack
+        run: >-
+          python -m pip install
+          transformers==4.46.3
+          tokenizers==0.20.3
+          huggingface_hub==0.26.2
+          safetensors==0.4.5
+          jinja2==3.1.6
+      - name: Prove final v2 model-visible prompt without model inference
+        env:
+          HF_HUB_DISABLE_TELEMETRY: '1'
+          TOKENIZERS_PARALLELISM: 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/sct-r13-prefill-v2-tokenizer-proof-r2"
+          mkdir -p "$OUT"
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          import jinja2, tokenizers, transformers
+          from huggingface_hub import snapshot_download
+          from transformers import AutoTokenizer
+          from sct.r13 import R13_ADAPTER_ID, R13_CHOICE_PREFIX, render_r13_logit_request
+          from sct.runner.hf_local import render_model_visible_prompt
+
+          revision='5fee7c4ed634dc66c6e318c8ac2897b8b9154536'
+          assert transformers.__version__ == '4.46.3'
+          assert tokenizers.__version__ == '0.20.3'
+          assert jinja2.__version__ == '3.1.6'
+          snapshot=Path(snapshot_download(
+              repo_id='Qwen/Qwen2.5-1.5B-Instruct', revision=revision,
+              allow_patterns=['tokenizer.json','tokenizer_config.json','merges.txt','vocab.json','config.json'],
+          ))
+          tok=AutoTokenizer.from_pretrained(str(snapshot),local_files_only=True,use_fast=True)
+          request=render_r13_logit_request(
+              scenario='Synthetic tokenizer-only assistant-prefill proof',
+              semantic_options=('PLAN_X','PLAN_Y','PLAN_Z'),
+              personal_context='SYNTHETIC QUALIFICATION ONLY. Prefer PLAN_Y.',
+              semantic_to_alias={'PLAN_X':'A','PLAN_Y':'B','PLAN_Z':'C'},
+              textual_order=('PLAN_Z','PLAN_X','PLAN_Y'),
+              provider='Qwen/Qwen2.5-1.5B-Instruct',
+              model='Qwen/Qwen2.5-1.5B-Instruct',
+              model_version=revision,
+          )
+          rendered=render_model_visible_prompt(tok, request['messages'])
+          assert R13_ADAPTER_ID == 'sct.r13-direct-constrained-label-logits/v2'
+          assert request['messages'][-1] == {'role':'assistant','content':R13_CHOICE_PREFIX}
+          assert rendered.endswith(R13_CHOICE_PREFIX)
+          prefix_ids=tok.encode(R13_CHOICE_PREFIX,add_special_tokens=False)
+          full_ids=tok.encode(rendered,add_special_tokens=False)
+          assert full_ids[-len(prefix_ids):] == prefix_ids
+          receipt={
+              'schema':'sct.r13-prefill-v2-tokenizer-proof/v2',
+              'adapter_id':R13_ADAPTER_ID,
+              'model_repo':'Qwen/Qwen2.5-1.5B-Instruct',
+              'model_revision':revision,
+              'frozen_model_manifest_sha256':'1ef6673a78fa690ce0fc54fba5dd8df52625f66caf7f3933224703bbdbe42491',
+              'rendered_prompt_sha256':hashlib.sha256(rendered.encode('utf-8')).hexdigest(),
+              'rendered_prompt_bytes':len(rendered.encode('utf-8')),
+              'choice_prefix':R13_CHOICE_PREFIX,
+              'choice_prefix_token_ids':prefix_ids,
+              'ends_exactly_at_choice_prefix':True,
+              'transformers':'4.46.3','tokenizers':'0.20.3','jinja2':'3.1.6',
+              'model_weights_downloaded':False,
+              'model_forward_calls':0,
+              'model_inference_executed':False,
+              'execution_authority':'NONE',
+          }
+          out=Path(os.environ['RUNNER_TEMP'])/'sct-r13-prefill-v2-tokenizer-proof-r2'
+          (out/'receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(receipt,sort_keys=True))
+          PY
+      - name: Upload tokenizer-only proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: sct-r13-prefill-v2-tokenizer-proof-r2-${{ github.run_id }}
+          path: ${{ runner.temp }}/sct-r13-prefill-v2-tokenizer-proof-r2/
+          if-no-files-found: error
+          retention-days: 14
