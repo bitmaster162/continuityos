@@ -1,5 +1,5 @@
 import json
-from pathlib import Path
+from importlib import resources
 
 import pytest
 
@@ -8,11 +8,10 @@ from sct.r13 import r13_protocol_manifest
 from sct.r13_manifest_guard import validate_baseline_for_seal, validate_model_manifest_for_seal
 
 R2_SHA = "beebc38d4dd32317a3b83c6dba9fbc02054ca4cfbe3a73c1c29ea3c82783d6fc"
-PROTOCOL_DIR = Path(__file__).resolve().parents[1] / "sct" / "protocols"
 
 
 def _load(name):
-    return json.loads((PROTOCOL_DIR / name).read_text(encoding="utf-8"))
+    return json.loads(resources.files("sct.protocols").joinpath(name).read_text(encoding="utf-8"))
 
 
 def test_static_r13_protocol_asset_matches_runtime_scientific_contract():
