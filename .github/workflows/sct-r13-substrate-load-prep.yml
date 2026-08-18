@@ -1,0 +1,127 @@
+name: sct-r13-substrate-load-prep
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  load-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out disposable load-prep source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install exact frozen runtime
+        run: |
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.5.1
+          python -m pip install transformers==4.46.3 huggingface_hub==0.26.2 safetensors==0.4.5
+          python - <<'PY'
+          import json, sys
+          import torch, transformers, huggingface_hub, safetensors
+          print(json.dumps({
+              "python": sys.version,
+              "torch": torch.__version__,
+              "transformers": transformers.__version__,
+              "huggingface_hub": huggingface_hub.__version__,
+              "safetensors": safetensors.__version__,
+          }, sort_keys=True))
+          assert torch.__version__ == "2.5.1+cpu"
+          assert transformers.__version__ == "4.46.3"
+          assert huggingface_hub.__version__ == "0.26.2"
+          assert safetensors.__version__ == "0.4.5"
+          PY
+
+      - name: Load exact weights and verify zero-forward health
+        env:
+          HF_HUB_DISABLE_TELEMETRY: "1"
+          TOKENIZERS_PARALLELISM: "false"
+          PYTHONUTF8: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/sct-r13-load-prep"
+          CACHE="$RUNNER_TEMP/hf-cache"
+          mkdir -p "$OUT" "$CACHE"
+          python -m sct.runner.hf_local serve \
+            --model-manifest sct/protocols/r13_model_selection_qwen25_1_5b_frozen.json \
+            --host 127.0.0.1 --port 8765 --cache-dir "$CACHE" \
+            >"$OUT/server.log" 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          READY=0
+          for i in $(seq 1 180); do
+            if python -m sct.runner.hf_local health --url http://127.0.0.1:8765 --timeout 2 >"$OUT/health.json" 2>/dev/null; then
+              READY=1
+              break
+            fi
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              cat "$OUT/server.log"
+              exit 1
+            fi
+            sleep 5
+          done
+          if [ "$READY" -ne 1 ]; then
+            cat "$OUT/server.log"
+            exit 1
+          fi
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          out=Path(os.environ["RUNNER_TEMP"])/"sct-r13-load-prep"
+          health=json.loads((out/"health.json").read_text())
+          assert health["ok"] is True
+          assert health["model_forward_calls"] == 0
+          assert health["model_inference_executed"] is False
+          runtime=health["runtime"]
+          assert runtime["model_forward_calls_at_ready"] == 0
+          assert runtime["model_revision"] == "5fee7c4ed634dc66c6e318c8ac2897b8b9154536"
+          assert runtime["weight_hashes"]["model.safetensors"] == "dd924a11b4c220f385b51ffa522daea7c9f3d850e31b162bb5661df483c6d3ee"
+          assert runtime["alias_token_ids"] == {chr(65+i): 32+i for i in range(15)}
+          receipt={
+              "schema":"sct.r13-substrate-load-prep/v1",
+              "scientific_model_calls":0,
+              "model_forward_calls":0,
+              "model_inference_executed":False,
+              "runtime":runtime,
+              "execution_authority":"NONE",
+          }
+          text=json.dumps(receipt,indent=2,sort_keys=True)+"\n"
+          (out/"load_receipt.json").write_text(text)
+          manifest={}
+          for p in sorted(out.iterdir()):
+              manifest[p.name]={
+                  "sha256":hashlib.sha256(p.read_bytes()).hexdigest(),
+                  "size_bytes":p.stat().st_size,
+              }
+          (out/"SHA256.json").write_text(json.dumps(manifest,indent=2,sort_keys=True)+"\n")
+          print(json.dumps({
+              "status":"PASS",
+              "scientific_model_calls":0,
+              "model_forward_calls":0,
+              "model_inference_executed":False,
+              "runtime_identity_sha256":runtime["runtime_identity_sha256"],
+              "execution_authority":"NONE",
+          },sort_keys=True))
+          PY
+          kill "$SERVER_PID"
+          wait "$SERVER_PID" || true
+          trap - EXIT
+
+      - name: Upload load-only evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sct-r13-substrate-load-prep-${{ github.run_id }}
+          path: ${{ runner.temp }}/sct-r13-load-prep/
+          if-no-files-found: error
+          retention-days: 14
