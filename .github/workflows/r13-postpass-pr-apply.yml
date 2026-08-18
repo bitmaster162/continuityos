@@ -28,6 +28,7 @@ jobs:
         run: |
           python tools/r13_postpass_apply.py
           python tools/r13_postpass_fix_legacy_test.py
+          python tools/r13_postpass_fix_baseline_binding.py
 
       - name: Run targeted post-pass tests
         run: |
@@ -36,7 +37,7 @@ jobs:
 
       - name: Commit verified code only
         run: |
-          git rm .github/workflows/r13-postpass-apply-once.yml .github/workflows/r13-postpass-pr-apply.yml tools/r13_postpass_apply.py tools/r13_postpass_fix_legacy_test.py
+          git rm .github/workflows/r13-postpass-apply-once.yml .github/workflows/r13-postpass-pr-apply.yml tools/r13_postpass_apply.py tools/r13_postpass_fix_legacy_test.py tools/r13_postpass_fix_baseline_binding.py
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add sct tests
