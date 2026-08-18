@@ -9,7 +9,7 @@ from sct.r13 import r13_protocol_manifest
 from sct.r13_manifest_guard import validate_baseline_for_seal, validate_model_manifest_for_seal
 
 R2_SHA = "beebc38d4dd32317a3b83c6dba9fbc02054ca4cfbe3a73c1c29ea3c82783d6fc"
-FROZEN_MODEL_SHA = "465758e9570853d82f3bc05afdb201e72ecff29929ef9dba6d940bd74e2f22a1"
+FROZEN_MODEL_SHA = "1ef6673a78fa690ce0fc54fba5dd8df52625f66caf7f3933224703bbdbe42491"
 FROZEN_BASELINE_SHA = "c332f8e69459cc551ee3ed40e45b10bab14aa5aa6bab427f42ecbaf31831c069"
 
 

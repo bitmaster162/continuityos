@@ -92,7 +92,7 @@ class ResponsiveWithLabelPrior:
 
     def allowed_token_logits(self, request, *, aliases):
         self.calls += 1
-        payload_text = request["messages"][-1]["content"].split("\nSelected option: ", 1)[0]
+        payload_text = request["messages"][-2]["content"]
         payload = json.loads(payload_text)
         labeled = {row["semantic_option"]: row["label"] for row in payload["labeled_options"]}
         context = payload["personal_context"]

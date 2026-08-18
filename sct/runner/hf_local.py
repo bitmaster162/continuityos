@@ -15,7 +15,7 @@ from ..errors import EvidenceError
 from ..r13 import R13_CHOICE_PREFIX
 from ..r13_manifest_guard import validate_model_manifest_for_seal
 
-R13_HF_RUNTIME_SCHEMA = "sct.r13-hf-local-logit-runtime/v1"
+R13_HF_RUNTIME_SCHEMA = "sct.r13-hf-local-logit-runtime/v2"
 
 
 def _sha256_file(path: Path) -> str:
@@ -84,12 +84,34 @@ def verify_alias_tokens(tokenizer, manifest: Mapping[str, Any]) -> dict[str, int
     return out
 
 
+def render_model_visible_prompt(tokenizer, messages) -> str:
+    """Render system+user, open an assistant turn, then append the exact frozen choice prefix."""
+    if not isinstance(messages, list) or len(messages) < 3:
+        raise EvidenceError("R13 HF runtime messages missing")
+    final = messages[-1]
+    if not isinstance(final, Mapping) or final.get("role") != "assistant" or final.get("content") != R13_CHOICE_PREFIX:
+        raise EvidenceError("R13 v2 requires exact final assistant choice-prefix prefill")
+    rendered = tokenizer.apply_chat_template(
+        messages[:-1],
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+    if not isinstance(rendered, str):
+        raise EvidenceError("R13 v2 chat template did not render text")
+    rendered += R13_CHOICE_PREFIX
+    if not rendered.endswith(R13_CHOICE_PREFIX):
+        raise EvidenceError("R13 v2 model-visible prompt must end exactly at assistant choice prefix")
+    return rendered
+
+
 class HFLocalLogitRuntime:
     """Persistent CPU runtime. Loading/health performs no model forward pass."""
 
     def __init__(self, manifest: Mapping[str, Any], *, cache_dir: str | Path | None = None):
         self.manifest = validate_model_manifest_for_seal(manifest)
         try:
+            import jinja2
+            import tokenizers
             import torch
             import transformers
             from huggingface_hub import snapshot_download
@@ -147,6 +169,8 @@ class HFLocalLogitRuntime:
             "python": sys.version.split()[0],
             "torch": torch.__version__,
             "transformers": self.transformers_version,
+            "tokenizers": tokenizers.__version__,
+            "jinja2": jinja2.__version__,
             "device": "cpu",
             "dtype": "float32",
             "torch_num_threads": torch.get_num_threads(),
@@ -197,13 +221,7 @@ class HFLocalLogitRuntime:
             raise EvidenceError("R13 HF runtime request may not grant execution authority")
 
         messages = request.get("messages")
-        if not isinstance(messages, list) or not messages:
-            raise EvidenceError("R13 HF runtime messages missing")
-        rendered = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
+        rendered = render_model_visible_prompt(self.tokenizer, messages)
         model_inputs = self.tokenizer(
             rendered,
             return_tensors="pt",

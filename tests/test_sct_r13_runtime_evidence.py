@@ -71,7 +71,7 @@ class EchoInner:
 class ResponsiveRunner:
     def allowed_token_logits(self, request, *, aliases):
         import json
-        payload = json.loads(request["messages"][-1]["content"].split("\nSelected option: ", 1)[0])
+        payload = json.loads(request["messages"][-2]["content"])
         mapping = {row["semantic_option"]: row["label"] for row in payload["labeled_options"]}
         target = next((semantic for semantic in mapping if semantic in payload["personal_context"]), None)
         out = {alias: 0.0 for alias in aliases}
