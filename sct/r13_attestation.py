@@ -14,9 +14,15 @@ from .r13 import (
 R13_OPERATOR_ATTESTATION_SCHEMA = "sct.r13-operator-runtime-attestation/v1"
 
 
-def _sha(value: Any, field: str) -> str:
+def _sha256(value: Any, field: str) -> str:
     if not isinstance(value, str) or len(value) != 64 or any(ch not in "0123456789abcdefABCDEF" for ch in value):
         raise EvidenceError(f"R13 operator attestation requires exact SHA-256 field {field}")
+    return value.lower()
+
+
+def _git_oid(value: Any, field: str) -> str:
+    if not isinstance(value, str) or len(value) not in {40, 64} or any(ch not in "0123456789abcdefABCDEF" for ch in value):
+        raise EvidenceError(f"R13 operator attestation requires exact Git object ID field {field}")
     return value.lower()
 
 
@@ -34,9 +40,9 @@ def validate_r13_operator_attestation(
     if attestation.get("schema") != R13_OPERATOR_ATTESTATION_SCHEMA:
         raise EvidenceError("R13 operator attestation schema mismatch")
     model = validate_model_selection_manifest(model_manifest)
-    if _sha(attestation.get("source_code_sha"), "source_code_sha") != _sha(expected_source_sha, "expected_source_sha"):
+    if _git_oid(attestation.get("source_code_sha"), "source_code_sha") != _git_oid(expected_source_sha, "expected_source_sha"):
         raise EvidenceError("R13 operator attestation source commit mismatch")
-    if _sha(attestation.get("source_tree_sha"), "source_tree_sha") != _sha(expected_source_tree_sha, "expected_source_tree_sha"):
+    if _git_oid(attestation.get("source_tree_sha"), "source_tree_sha") != _git_oid(expected_source_tree_sha, "expected_source_tree_sha"):
         raise EvidenceError("R13 operator attestation source tree mismatch")
 
     if preflight.get("schema") != R13_PREFLIGHT_SCHEMA:
@@ -52,7 +58,7 @@ def validate_r13_operator_attestation(
         raise EvidenceError("R13 operator attestation receipt protocol bindings disagree")
     if len(model_hashes) != 1 or next(iter(model_hashes)) != model["manifest_sha256"]:
         raise EvidenceError("R13 operator attestation receipt model bindings disagree")
-    protocol_sha = _sha(next(iter(protocol_hashes)), "protocol_manifest_sha256")
+    protocol_sha = _sha256(next(iter(protocol_hashes)), "protocol_manifest_sha256")
 
     exact_pairs = {
         "protocol_manifest_sha256": protocol_sha,

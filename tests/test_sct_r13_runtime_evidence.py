@@ -99,6 +99,14 @@ def test_model_and_baseline_templates_fail_closed_on_placeholders():
         validate_baseline_for_seal(baseline)
 
 
+def test_model_seal_guard_requires_real_weight_and_tokenizer_sha256_values():
+    model = _model_manifest()
+    model["weight_hashes"] = {"weights": "not-a-sha"}
+    with pytest.raises(EvidenceError, match="weight_hashes"):
+        validate_model_manifest_for_seal(model)
+    assert validate_model_manifest_for_seal(_model_manifest())["manifest_sha256"]
+
+
 def test_baseline_seal_guard_requires_implementation_hashes():
     baseline = _baseline_spec()
     del baseline["profile_builder_sha256"]
@@ -114,7 +122,7 @@ def test_manifest_bound_runner_forwards_exact_sealed_alias_token_ids_and_capture
     capture = CapturingLogitRunner(bound)
     out = capture.allowed_token_logits({"envelope_sha256": "e" * 64}, aliases=("A", "C"))
     assert out == {"A": 0.0, "C": 1.0}
-    assert inner.seen == [(('A', 'C'), {'A': 100, 'C': 102})]
+    assert inner.seen == [(("A", "C"), {"A": 100, "C": 102})]
     assert capture.records[0]["allowed_aliases"] == ("A", "C")
     assert capture.records[0]["raw_allowed_token_logits"] == {"A": 0.0, "C": 1.0}
     assert len(capture.records[0]["request_sha256"]) == 64
@@ -132,8 +140,8 @@ def test_operator_attestation_is_content_verified_not_boolean_only():
     stable = run_r13_stable_void(
         logit_runner=UniformRunner(), model_manifest=model, protocol_manifest_sha256=protocol["manifest_sha256"]
     )
-    source_sha = "5" * 64
-    source_tree = "6" * 64
+    source_sha = "5" * 40
+    source_tree = "6" * 40
     attestation = {
         "schema": R13_OPERATOR_ATTESTATION_SCHEMA,
         "source_code_sha": source_sha,
