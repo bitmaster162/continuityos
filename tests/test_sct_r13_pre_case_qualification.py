@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from sct.canon import sha256_obj
 from sct.errors import EvidenceError
 from sct.r13 import (
     R13_ADAPTER_ID,
@@ -30,9 +31,16 @@ from sct.r13 import (
     seal_model_selection,
     validate_model_selection_manifest,
 )
+from sct.r13_attempt import (
+    finish_r13_component_attempt,
+    record_verified_r13_operator_attestation,
+    start_r13_component_attempt,
+)
 from sct.store.sqlite import SQLiteEvidenceStore
 
 R2_SHA = "beebc38d4dd32317a3b83c6dba9fbc02054ca4cfbe3a73c1c29ea3c82783d6fc"
+SOURCE_SHA = "5" * 40
+SOURCE_TREE = "6" * 40
 
 
 def _model_manifest():
@@ -64,10 +72,14 @@ def _baseline_spec():
     return {
         "schema": R13_BASELINE_SCHEMA,
         "profile_construction_policy": "Frozen static profile from admitted evidence only.",
+        "profile_builder_sha256": "1" * 64,
         "retrieval_policy": "Frozen chronological retrieval policy.",
+        "retrieval_policy_sha256": "2" * 64,
         "source_cutoff_policy": "Same frozen source cutoff as Arm C.",
+        "source_cutoff_sha256": "3" * 64,
         "admissible_evidence_pool": "Same admitted raw evidence pool as Arm C, without SCT-only claims.",
         "context_selection_policy": "Deterministic fixed retrieval and truncation policy.",
+        "context_selection_policy_sha256": "4" * 64,
         "disallow_sct_structured_claims": True,
         "payload_parity_ratio": 1.15,
         "execution_authority": "NONE",
@@ -118,6 +130,63 @@ def _receipts(model, protocol_sha):
     sentinel = run_r13_balanced_context_sentinel(logit_runner=runner, model_manifest=model, protocol_manifest_sha256=protocol_sha)
     stable = run_r13_stable_void(logit_runner=UniformValidRunner(), model_manifest=model, protocol_manifest_sha256=protocol_sha)
     return preflight, sentinel, stable
+
+
+def _with_trace(receipt, count):
+    rows = []
+    for ordinal in range(1, count + 1):
+        rows.append({
+            "ordinal": ordinal,
+            "request_sha256": sha256_obj({"ordinal": ordinal, "schema": receipt["schema"]}),
+            "request_envelope_sha256": sha256_obj({"envelope": receipt["schema"], "ordinal": ordinal}),
+            "allowed_aliases": ["A", "B"],
+            "allowed_alias_token_ids": {"A": 100, "B": 101},
+            "raw_allowed_token_logits": {"A": 0.0, "B": 0.0},
+            "execution_authority": "NONE",
+        })
+    return {**receipt, "raw_logit_trace": rows, "raw_logit_trace_sha256": sha256_obj(rows)}
+
+
+def _recorded_receipts(store, model, protocol):
+    protocol_sha = protocol["manifest_sha256"]
+    model_sha = validate_model_selection_manifest(model)["manifest_sha256"]
+    raw = _receipts(model, protocol_sha)
+    components = (
+        ("preflight", _with_trace(raw[0], 2)),
+        ("context-sentinel", _with_trace(raw[1], 18)),
+        ("stable-void", _with_trace(raw[2], 30)),
+    )
+    out = []
+    for component, receipt in components:
+        start_r13_component_attempt(
+            store,
+            component=component,
+            protocol_manifest_sha256=protocol_sha,
+            model_selection_manifest_sha256=model_sha,
+            source_code_sha=SOURCE_SHA,
+            source_tree_sha=SOURCE_TREE,
+        )
+        finish_r13_component_attempt(store, component=component, receipt=receipt)
+        out.append(receipt)
+    return tuple(out)
+
+
+def _record_attestation_event(store, model, protocol, receipts, attestation_sha):
+    model_sha = validate_model_selection_manifest(model)["manifest_sha256"]
+    payload = {
+        "attestation_sha256": attestation_sha,
+        "protocol_manifest_sha256": protocol["manifest_sha256"],
+        "model_selection_manifest_sha256": model_sha,
+        "source_code_sha": SOURCE_SHA,
+        "source_tree_sha": SOURCE_TREE,
+        "preflight_receipt_sha256": sha256_obj(receipts[0]),
+        "sentinel_receipt_sha256": sha256_obj(receipts[1]),
+        "stable_void_receipt_sha256": sha256_obj(receipts[2]),
+        "valid_live_n": 0,
+        "can_execute": False,
+        "execution_authority": "NONE",
+    }
+    return record_verified_r13_operator_attestation(store, payload)
 
 
 def test_protocol_is_post_r2_threshold_free_and_single_primary():
@@ -252,6 +321,14 @@ def test_scientific_pass_requires_protocol_model_and_strong_b_baseline_before_re
         record_r13_qualification_pass(store, q)
 
     baseline = seal_baseline_spec(store, _baseline_spec(), protocol_manifest_sha256=protocol["manifest_sha256"])
+    receipts = _recorded_receipts(store, model, protocol)
+    attestation_sha = "c" * 64
+    _record_attestation_event(store, model, protocol, receipts, attestation_sha)
+    q = qualify_r13_pre_case_gate(
+        receipts[0], receipts[1], receipts[2],
+        operator_attestation_sha256=attestation_sha,
+        operator_attestation_verified=True,
+    )
     recorded = record_r13_qualification_pass(store, q)
     assert recorded["case_001_authorized"] is False
     assert recorded["execution_authority"] == "NONE"
@@ -269,10 +346,12 @@ def test_owner_authorization_is_separate_and_exact_hash_bound(tmp_path):
     model = _model_manifest()
     seal_model_selection(store, model, protocol_manifest_sha256=protocol["manifest_sha256"])
     seal_baseline_spec(store, _baseline_spec(), protocol_manifest_sha256=protocol["manifest_sha256"])
-    preflight, sentinel, stable = _receipts(model, protocol["manifest_sha256"])
+    receipts = _recorded_receipts(store, model, protocol)
+    attestation_sha = "d" * 64
+    _record_attestation_event(store, model, protocol, receipts, attestation_sha)
     q = qualify_r13_pre_case_gate(
-        preflight, sentinel, stable,
-        operator_attestation_sha256="d" * 64,
+        receipts[0], receipts[1], receipts[2],
+        operator_attestation_sha256=attestation_sha,
         operator_attestation_verified=True,
     )
     recorded = record_r13_qualification_pass(store, q)
