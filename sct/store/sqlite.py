@@ -110,6 +110,112 @@ class SQLiteEvidenceStore:
         row = self._conn.execute("SELECT seq,event_hash FROM event ORDER BY seq DESC LIMIT 1").fetchone()
         return ChainHead(0, None) if row is None else ChainHead(int(row["seq"]), str(row["event_hash"]))
 
+    def _require_r13_qualification_append(self, payload: Mapping[str, Any]) -> None:
+        protocol_sha = payload.get("protocol_manifest_sha256")
+        model_sha = payload.get("model_selection_manifest_sha256")
+        if not isinstance(protocol_sha, str) or not isinstance(model_sha, str):
+            raise EvidenceError("R13_QUALIFICATION_EVIDENCE_BLOCKED: protocol/model bindings required")
+        if (
+            payload.get("case_001_authorized") is not False
+            or payload.get("valid_live_n") != 0
+            or payload.get("can_execute") is not False
+            or payload.get("execution_authority") != "NONE"
+        ):
+            raise EvidenceError("R13_QUALIFICATION_EVIDENCE_BLOCKED: PASS cannot authorize LIVE or execution")
+        if self._conn.execute("SELECT 1 FROM event WHERE kind='CASE_FROZEN' LIMIT 1").fetchone() is not None:
+            raise EvidenceError("R13_QUALIFICATION_EVIDENCE_BLOCKED: PASS must precede every LIVE case")
+        failure = self._conn.execute(
+            "SELECT 1 FROM event WHERE kind='R13_QUALIFICATION_FAILED' "
+            "AND json_extract(payload,'$.protocol_manifest_sha256')=? "
+            "AND json_extract(payload,'$.model_selection_manifest_sha256')=? LIMIT 1",
+            (protocol_sha, model_sha),
+        ).fetchone()
+        if failure is not None:
+            raise EvidenceError("R13_QUALIFICATION_EVIDENCE_BLOCKED: terminal failure already recorded")
+
+        rows = list(self._conn.execute(
+            "SELECT seq,payload FROM event WHERE kind='R13_COMPONENT_RECEIPT_RECORDED' "
+            "AND json_extract(payload,'$.protocol_manifest_sha256')=? "
+            "AND json_extract(payload,'$.model_selection_manifest_sha256')=? ORDER BY seq ASC",
+            (protocol_sha, model_sha),
+        ))
+        if len(rows) != 3:
+            raise EvidenceError("R13_QUALIFICATION_EVIDENCE_BLOCKED: exactly three component receipts required")
+        components = [json.loads(row["payload"]) for row in rows]
+        expected = (
+            ("preflight", 0, "preflight_receipt_sha256"),
+            ("context-sentinel", 1, "sentinel_receipt_sha256"),
+            ("stable-void", 2, "stable_void_receipt_sha256"),
+        )
+        source_pairs = set()
+        for component_payload, (name, index, qual_field) in zip(components, expected):
+            if (
+                component_payload.get("component") != name
+                or component_payload.get("component_index") != index
+                or component_payload.get("component_pass") is not True
+                or component_payload.get("receipt_sha256") != payload.get(qual_field)
+                or component_payload.get("valid_live_n") != 0
+                or component_payload.get("execution_authority") != "NONE"
+            ):
+                raise EvidenceError("R13_QUALIFICATION_EVIDENCE_BLOCKED: component receipt binding mismatch")
+            source_pairs.add((component_payload.get("source_code_sha"), component_payload.get("source_tree_sha")))
+        if len(source_pairs) != 1:
+            raise EvidenceError("R13_QUALIFICATION_EVIDENCE_BLOCKED: source commit/tree changed within attempt")
+
+        baseline = self._conn.execute(
+            "SELECT payload FROM event WHERE kind='R13_BASELINE_SPEC_SEALED' "
+            "AND json_extract(payload,'$.protocol_manifest_sha256')=? ORDER BY seq DESC LIMIT 1",
+            (protocol_sha,),
+        ).fetchone()
+        if baseline is None or json.loads(baseline["payload"]).get("baseline_manifest_sha256") != payload.get("baseline_manifest_sha256"):
+            raise EvidenceError("R13_QUALIFICATION_EVIDENCE_BLOCKED: sealed Arm B baseline binding missing")
+
+        attestation = self._conn.execute(
+            "SELECT payload FROM event WHERE kind='R13_OPERATOR_ATTESTATION_VERIFIED' "
+            "AND json_extract(payload,'$.protocol_manifest_sha256')=? "
+            "AND json_extract(payload,'$.model_selection_manifest_sha256')=? ORDER BY seq DESC LIMIT 1",
+            (protocol_sha, model_sha),
+        ).fetchone()
+        if attestation is None:
+            raise EvidenceError("R13_QUALIFICATION_EVIDENCE_BLOCKED: verified operator attestation event required")
+        att = json.loads(attestation["payload"])
+        if (
+            att.get("attestation_sha256") != payload.get("operator_attestation_sha256")
+            or att.get("preflight_receipt_sha256") != payload.get("preflight_receipt_sha256")
+            or att.get("sentinel_receipt_sha256") != payload.get("sentinel_receipt_sha256")
+            or att.get("stable_void_receipt_sha256") != payload.get("stable_void_receipt_sha256")
+            or att.get("content_verified") is not True
+            or att.get("execution_authority") != "NONE"
+        ):
+            raise EvidenceError("R13_QUALIFICATION_EVIDENCE_BLOCKED: operator attestation binding mismatch")
+        if not self.verify().ok:
+            raise EvidenceError("R13_QUALIFICATION_EVIDENCE_BLOCKED: Evidence Store verification failed")
+
+    def _require_r13_owner_authorization_append(self, payload: Mapping[str, Any]) -> None:
+        if payload.get("protocol") != "R13":
+            return
+        qualification = self._conn.execute(
+            "SELECT payload FROM event WHERE kind='R13_QUALIFICATION_PASSED' ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        if qualification is None:
+            raise EvidenceError("R13_OWNER_AUTH_BLOCKED: scientific PASS required")
+        q = json.loads(qualification["payload"])
+        qsha = q.get("qualification_sha256")
+        expected_token_sha = sha256_obj(f"APPROVE_SCT_CASE001_R13:{qsha}")
+        if (
+            payload.get("qualification_sha256") != qsha
+            or payload.get("approval_token_sha256") != expected_token_sha
+            or payload.get("scope") != "SCT_LIVE_EPOCH_001_ENROLLMENT"
+            or payload.get("case_001_authorized") is not True
+            or payload.get("can_execute") is not False
+            or payload.get("execution_authority") != "NONE"
+        ):
+            raise EvidenceError("R13_OWNER_AUTH_BLOCKED: exact hash-bound owner token required")
+        if self._conn.execute("SELECT 1 FROM event WHERE kind='CASE_FROZEN' LIMIT 1").fetchone() is not None:
+            raise EvidenceError("R13_OWNER_AUTH_BLOCKED: authorization must precede every LIVE case")
+        if not self.verify().ok:
+            raise EvidenceError("R13_OWNER_AUTH_BLOCKED: Evidence Store verification failed")
+
     def _require_r13_case_open_admission_if_active(self) -> None:
         active = self._conn.execute(
             "SELECT 1 FROM event WHERE kind='R13_PRECASE_PROTOCOL_AMENDED' ORDER BY seq DESC LIMIT 1"
@@ -133,8 +239,10 @@ class SQLiteEvidenceStore:
         q = json.loads(qualification["payload"])
         b = json.loads(baseline["payload"])
         a = json.loads(authorization["payload"])
+        expected_token_sha = sha256_obj(f"APPROVE_SCT_CASE001_R13:{q.get('qualification_sha256')}")
         if (
             a.get("qualification_sha256") != q.get("qualification_sha256")
+            or a.get("approval_token_sha256") != expected_token_sha
             or q.get("baseline_manifest_sha256") != b.get("baseline_manifest_sha256")
             or q.get("execution_authority") != "NONE"
             or a.get("execution_authority") != "NONE"
@@ -153,8 +261,13 @@ class SQLiteEvidenceStore:
         if not math.isfinite(event_ts) or event_ts <= 0:
             raise EvidenceError("ts must be a positive finite number")
         payload_obj = json.loads(canonical_json(dict(payload)))
+        clean_kind = kind.strip()
         with self._lock:
-            if kind.strip() == "CASE_FROZEN":
+            if clean_kind == "R13_QUALIFICATION_PASSED":
+                self._require_r13_qualification_append(payload_obj)
+            if clean_kind == "CASE001_ENROLLMENT_AUTHORIZED":
+                self._require_r13_owner_authorization_append(payload_obj)
+            if clean_kind == "CASE_FROZEN":
                 self._require_r13_case_open_admission_if_active()
             managed = self._tx_depth == 0
             if managed:
@@ -162,12 +275,12 @@ class SQLiteEvidenceStore:
             try:
                 head = self.head()
                 seq = head.seq + 1
-                body = _event_body(seq, kind.strip(), event_ts, payload_obj, head.event_hash)
+                body = _event_body(seq, clean_kind, event_ts, payload_obj, head.event_hash)
                 event_hash = sha256_obj(body)
                 event_id = _uuid7ish(event_ts)
                 self._conn.execute(
                     "INSERT INTO event(seq,event_id,kind,ts,payload,prev_hash,event_hash) VALUES(?,?,?,?,?,?,?)",
-                    (seq, event_id, kind.strip(), event_ts, canonical_json(payload_obj), head.event_hash, event_hash),
+                    (seq, event_id, clean_kind, event_ts, canonical_json(payload_obj), head.event_hash, event_hash),
                 )
                 if managed:
                     self._conn.execute("COMMIT")
@@ -175,7 +288,7 @@ class SQLiteEvidenceStore:
                 if managed:
                     self._conn.execute("ROLLBACK")
                 raise
-        return EventRecord(seq, event_id, kind.strip(), event_ts, payload_obj, head.event_hash, event_hash)
+        return EventRecord(seq, event_id, clean_kind, event_ts, payload_obj, head.event_hash, event_hash)
 
     @staticmethod
     def _record(row: sqlite3.Row) -> EventRecord:
