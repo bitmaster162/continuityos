@@ -1,0 +1,195 @@
+name: sct-r13-substrate-provenance-prep
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  provenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out disposable prep source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install tokenizer/provenance tooling only
+        run: >-
+          python -m pip install
+          transformers==4.46.3
+          huggingface_hub==0.26.2
+          safetensors==0.4.5
+
+      - name: Resolve exact tokenizer provenance and aliases without model inference
+        env:
+          HF_HUB_DISABLE_TELEMETRY: "1"
+          TOKENIZERS_PARALLELISM: "false"
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/sct-r13-substrate-prep"
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import platform
+          import sys
+          from pathlib import Path
+
+          import huggingface_hub
+          import safetensors
+          import transformers
+          from huggingface_hub import snapshot_download
+          from transformers import AutoTokenizer
+
+          repo = "Qwen/Qwen2.5-1.5B-Instruct"
+          revision = "5fee7c4ed634dc66c6e318c8ac2897b8b9154536"
+          official_weight_sha256 = "dd924a11b4c220f385b51ffa522daea7c9f3d850e31b162bb5661df483c6d3ee"
+          official_weight_size_bytes = 3_088_087_040
+          choice_prefix = "Selected option: "
+          inventory = tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
+          out_dir = Path(os.environ["RUNNER_TEMP"]) / "sct-r13-substrate-prep"
+
+          snapshot = Path(snapshot_download(
+              repo_id=repo,
+              revision=revision,
+              allow_patterns=[
+                  "config.json",
+                  "generation_config.json",
+                  "tokenizer.json",
+                  "tokenizer_config.json",
+                  "merges.txt",
+                  "vocab.json",
+              ],
+          ))
+
+          def sha(path: Path) -> str:
+              h = hashlib.sha256()
+              with path.open("rb") as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          files = {}
+          for name in (
+              "config.json",
+              "generation_config.json",
+              "tokenizer.json",
+              "tokenizer_config.json",
+              "merges.txt",
+              "vocab.json",
+          ):
+              p = snapshot / name
+              files[name] = {"sha256": sha(p), "size_bytes": p.stat().st_size}
+
+          tokenizer = AutoTokenizer.from_pretrained(str(snapshot), local_files_only=True, use_fast=True)
+          aliases = []
+          for alias in inventory:
+              ids = tokenizer.encode(alias, add_special_tokens=False)
+              if len(ids) != 1:
+                  continue
+              token_id = int(ids[0])
+              decoded = tokenizer.decode([token_id], skip_special_tokens=False, clean_up_tokenization_spaces=False)
+              if decoded != alias:
+                  continue
+              aliases.append({"alias": alias, "token_id": token_id})
+          if len(aliases) < 15:
+              raise SystemExit(f"fewer than 15 exact single-token aliases: {len(aliases)}")
+          aliases = aliases[:15]
+
+          # Additional reconstruction check: appending the allowed token to the already-tokenized
+          # literal choice prefix must decode as prefix+alias, without hidden whitespace mutation.
+          prefix_ids = tokenizer.encode(choice_prefix, add_special_tokens=False)
+          for row in aliases:
+              reconstructed = tokenizer.decode(
+                  prefix_ids + [row["token_id"]],
+                  skip_special_tokens=False,
+                  clean_up_tokenization_spaces=False,
+              )
+              if reconstructed != choice_prefix + row["alias"]:
+                  raise SystemExit(f"choice-prefix reconstruction failed for {row['alias']!r}")
+
+          tokenizer_hashes = {
+              name: meta["sha256"]
+              for name, meta in files.items()
+              if name in {"tokenizer.json", "tokenizer_config.json", "merges.txt", "vocab.json"}
+          }
+          candidate = {
+              "schema": "sct.epoch001-model-selection-manifest/v1",
+              "selection_must_not_use_r13_outputs": True,
+              "exact_epoch001_live_substrate": True,
+              "model_repo_or_provider_id": repo,
+              "model_revision": revision,
+              "weight_hashes": {"model.safetensors": official_weight_sha256},
+              "tokenizer_hashes": tokenizer_hashes,
+              "runtime_backend": "pytorch-transformers-local-cpu",
+              "runtime_version": "python==3.11;torch==2.5.1+cpu;transformers==4.46.3;huggingface_hub==0.26.2;safetensors==0.4.5",
+              "precision_or_quantization": "float32-no-quantization",
+              "device_class": "x86_64-cpu",
+              "context_window": "32768",
+              "deterministic_flags": "model.eval();torch.inference_mode();cpu;float32;no_sampling;no_generation;single_forward_next_token_logits",
+              "selection_rationale_non_r13": (
+                  "Exogenous pre-R13 selection: Apache-2.0 instruction-tuned causal LM, standard Transformers support, "
+                  "1.54B-class capacity, ~3.09GB published BF16 weights, and practical CPU-memory envelope. "
+                  "Selected before any R13 model/logit output; no R13 outcome was inspected."
+              ),
+              "alias_tokens": aliases,
+              "max_option_cardinality_required": 15,
+              "execution_authority": "NONE",
+          }
+
+          provenance = {
+              "schema": "sct.r13-substrate-provenance-prep/v1",
+              "scientific_model_calls": 0,
+              "model_weights_downloaded": False,
+              "model_inference_executed": False,
+              "repo": repo,
+              "revision": revision,
+              "official_weight_sha256": official_weight_sha256,
+              "official_weight_size_bytes": official_weight_size_bytes,
+              "snapshot_path_is_ephemeral": True,
+              "files": files,
+              "eligible_alias_count": len(aliases),
+              "selected_aliases": aliases,
+              "choice_prefix": choice_prefix,
+              "python": sys.version,
+              "platform": platform.platform(),
+              "transformers": transformers.__version__,
+              "huggingface_hub": huggingface_hub.__version__,
+              "safetensors": safetensors.__version__,
+              "execution_authority": "NONE",
+          }
+
+          (out_dir / "model_selection_candidate.json").write_text(json.dumps(candidate, indent=2, sort_keys=True) + "\n")
+          (out_dir / "provenance.json").write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n")
+
+          manifest = {}
+          for p in sorted(out_dir.iterdir()):
+              manifest[p.name] = {"sha256": sha(p), "size_bytes": p.stat().st_size}
+          (out_dir / "SHA256.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+          print(json.dumps({
+              "status": "PASS",
+              "repo": repo,
+              "revision": revision,
+              "aliases": aliases,
+              "scientific_model_calls": 0,
+              "model_inference_executed": False,
+              "execution_authority": "NONE",
+          }, sort_keys=True))
+          PY
+
+      - name: Upload provenance prep evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: sct-r13-substrate-provenance-prep-${{ github.run_id }}
+          path: ${{ runner.temp }}/sct-r13-substrate-prep/
+          if-no-files-found: error
+          retention-days: 14
