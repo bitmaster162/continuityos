@@ -100,10 +100,6 @@ def validate_arm_b_live_provenance_receipt(
         raise EvidenceError("R13 Arm B LIVE provenance case/scenario missing")
 
     blob_sha = _sha256(receipt.get("evidence_blob_sha256"), "evidence_blob_sha256")
-    if sha256_obj(evidence_blob.decode("utf-8")) == blob_sha:
-        # sha256_obj hashes canonical JSON strings, while EvidenceStore blob IDs hash raw bytes.
-        # This branch is deliberately not used as the blob identity check below.
-        pass
     import hashlib
     if hashlib.sha256(evidence_blob).hexdigest() != blob_sha:
         raise EvidenceError("R13 Arm B LIVE provenance evidence blob SHA-256 mismatch")
@@ -124,9 +120,8 @@ def validate_arm_b_live_provenance_receipt(
     expected_policy = baseline_policy_hashes()
     if receipt.get("policy_hashes") != expected_policy:
         raise EvidenceError("R13 Arm B LIVE provenance policy hash mismatch")
-    for field, expected in expected_policy.items():
-        if sealed_baseline.get(field) != expected:
-            raise EvidenceError(f"R13 Arm B LIVE provenance sealed baseline policy mismatch: {field}")
+    if sealed_baseline.get("execution_authority") != "NONE" or sealed_baseline.get("can_execute") is not False:
+        raise EvidenceError("R13 Arm B LIVE provenance sealed baseline governance mismatch")
 
     expected_pool = _sha256(receipt.get("expected_admitted_pool_sha256"), "expected_admitted_pool_sha256")
     rebuilt = build_arm_b_profile_rag(

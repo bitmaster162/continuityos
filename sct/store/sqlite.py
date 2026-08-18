@@ -252,6 +252,95 @@ class SQLiteEvidenceStore:
         if not self.verify().ok:
             raise EvidenceError("R13_PRECASE_ADMISSION_BLOCKED: Evidence Store verification failed")
 
+    def _r13_is_active(self) -> bool:
+        return self._conn.execute(
+            "SELECT 1 FROM event WHERE kind='R13_PRECASE_PROTOCOL_AMENDED' ORDER BY seq DESC LIMIT 1"
+        ).fetchone() is not None
+
+    def _require_r13_arm_b_live_provenance_append(self, payload: Mapping[str, Any]) -> None:
+        if not self._r13_is_active():
+            return
+        case_id = payload.get("case_id")
+        if not isinstance(case_id, str) or not case_id.strip():
+            raise EvidenceError("R13_ARM_B_LIVE_PROVENANCE_BLOCKED: case_id required")
+        if self._conn.execute(
+            "SELECT 1 FROM event WHERE kind='CASE_FROZEN' AND json_extract(payload,'$.case_id')=? LIMIT 1",
+            (case_id,),
+        ).fetchone() is not None:
+            raise EvidenceError("R13_ARM_B_LIVE_PROVENANCE_BLOCKED: provenance must precede CASE_FROZEN")
+        if self._conn.execute(
+            "SELECT 1 FROM event WHERE kind='R13_ARM_B_LIVE_PROVENANCE_VERIFIED' "
+            "AND json_extract(payload,'$.case_id')=? LIMIT 1",
+            (case_id,),
+        ).fetchone() is not None:
+            raise EvidenceError("R13_ARM_B_LIVE_PROVENANCE_BLOCKED: duplicate case provenance")
+        baseline = self._conn.execute(
+            "SELECT payload FROM event WHERE kind='R13_BASELINE_SPEC_SEALED' ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        if baseline is None:
+            raise EvidenceError("R13_ARM_B_LIVE_PROVENANCE_BLOCKED: sealed baseline required")
+        blob_sha = payload.get("evidence_blob_sha256")
+        if not isinstance(blob_sha, str):
+            raise EvidenceError("R13_ARM_B_LIVE_PROVENANCE_BLOCKED: evidence blob required")
+        from ..r13_live_provenance import validate_arm_b_live_provenance_receipt
+        validated = validate_arm_b_live_provenance_receipt(
+            payload,
+            evidence_blob=self.get_blob(blob_sha),
+            sealed_baseline=json.loads(baseline["payload"]),
+        )
+        if canonical_json(validated) != canonical_json(dict(payload)):
+            raise EvidenceError("R13_ARM_B_LIVE_PROVENANCE_BLOCKED: non-canonical provenance receipt")
+
+    def _require_r13_case_arm_b_binding_if_active(self, payload: Mapping[str, Any]) -> None:
+        if not self._r13_is_active():
+            return
+        case_id = payload.get("case_id")
+        row = self._conn.execute(
+            "SELECT payload FROM event WHERE kind='R13_ARM_B_LIVE_PROVENANCE_VERIFIED' "
+            "AND json_extract(payload,'$.case_id')=? ORDER BY seq DESC LIMIT 1",
+            (case_id,),
+        ).fetchone()
+        if row is None:
+            raise EvidenceError("R13_ARM_B_LIVE_PROVENANCE_REQUIRED: verified builder receipt required before CASE_FROZEN")
+        provenance = json.loads(row["payload"])
+        snapshots = payload.get("input_snapshot_sha256")
+        baseline = self._conn.execute(
+            "SELECT payload FROM event WHERE kind='R13_BASELINE_SPEC_SEALED' ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        baseline_payload = json.loads(baseline["payload"]) if baseline is not None else {}
+        if (
+            not isinstance(snapshots, Mapping)
+            or snapshots.get("profile_rag") != provenance.get("profile_rag_snapshot_sha256")
+            or provenance.get("baseline_manifest_sha256") != baseline_payload.get("baseline_manifest_sha256")
+            or provenance.get("scenario") != payload.get("situation")
+            or tuple(provenance.get("options") or ()) != tuple(payload.get("options") or ())
+        ):
+            raise EvidenceError("R13_ARM_B_LIVE_PROVENANCE_MISMATCH: CASE_FROZEN not bound to verified Arm B builder output")
+
+    def _require_r13_profile_rag_input_binding_if_active(self, payload: Mapping[str, Any]) -> None:
+        if not self._r13_is_active() or payload.get("arm") != "profile_rag":
+            return
+        case_id = payload.get("case_id")
+        row = self._conn.execute(
+            "SELECT payload FROM event WHERE kind='R13_ARM_B_LIVE_PROVENANCE_VERIFIED' "
+            "AND json_extract(payload,'$.case_id')=? ORDER BY seq DESC LIMIT 1",
+            (case_id,),
+        ).fetchone()
+        if row is None:
+            raise EvidenceError("R13_ARM_B_LIVE_PROVENANCE_REQUIRED: profile_rag provenance missing")
+        provenance = json.loads(row["payload"])
+        builder = provenance.get("builder_output") or {}
+        expected_context = str(builder.get("static_profile") or "") + "\n" + str(builder.get("permitted_history") or "")
+        if (
+            payload.get("snapshot_sha256") != provenance.get("profile_rag_snapshot_sha256")
+            or payload.get("payload_sha256") != provenance.get("profile_rag_payload_sha256")
+            or payload.get("personal_context") != expected_context
+            or sha256_obj(payload.get("personal_context")) != provenance.get("profile_rag_payload_sha256")
+            or payload.get("execution_authority") != "NONE"
+            or payload.get("can_execute") is not False
+        ):
+            raise EvidenceError("R13_ARM_B_LIVE_PROVENANCE_MISMATCH: frozen profile_rag input differs from verified builder output")
+
     def append(self, kind: str, payload: Mapping[str, Any], *, ts: Optional[float] = None) -> EventRecord:
         if not isinstance(kind, str) or not kind.strip():
             raise EvidenceError("kind must be a non-empty string")
@@ -267,8 +356,13 @@ class SQLiteEvidenceStore:
                 self._require_r13_qualification_append(payload_obj)
             if clean_kind == "CASE001_ENROLLMENT_AUTHORIZED":
                 self._require_r13_owner_authorization_append(payload_obj)
+            if clean_kind == "R13_ARM_B_LIVE_PROVENANCE_VERIFIED":
+                self._require_r13_arm_b_live_provenance_append(payload_obj)
             if clean_kind == "CASE_FROZEN":
                 self._require_r13_case_open_admission_if_active()
+                self._require_r13_case_arm_b_binding_if_active(payload_obj)
+            if clean_kind == "CONTESTANT_INPUT_FROZEN":
+                self._require_r13_profile_rag_input_binding_if_active(payload_obj)
             managed = self._tx_depth == 0
             if managed:
                 self._conn.execute("BEGIN IMMEDIATE")
