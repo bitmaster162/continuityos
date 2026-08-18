@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
+from .baseline_r13 import baseline_policy_hashes
 from .errors import EvidenceError
 from .r13 import validate_baseline_spec, validate_model_selection_manifest
 
@@ -48,13 +49,10 @@ def validate_model_manifest_for_seal(manifest: Mapping[str, Any]) -> dict[str, A
 def validate_baseline_for_seal(spec: Mapping[str, Any]) -> dict[str, Any]:
     reject_template_placeholders(spec, label="R13 Arm B baseline")
     validated = validate_baseline_spec(spec)
-    required_hash_fields = (
-        "profile_builder_sha256",
-        "retrieval_policy_sha256",
-        "source_cutoff_sha256",
-        "context_selection_policy_sha256",
-    )
-    for field in required_hash_fields:
+    expected = baseline_policy_hashes()
+    for field, digest in expected.items():
         if not _is_sha256(validated.get(field)):
             raise EvidenceError(f"R13 Arm B baseline requires exact {field}")
+        if validated.get(field) != digest:
+            raise EvidenceError(f"R13 Arm B baseline {field} does not match frozen implementation policy")
     return validated
