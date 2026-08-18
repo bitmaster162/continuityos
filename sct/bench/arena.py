@@ -20,7 +20,6 @@ class ProspectiveArena:
     def __init__(self, store: EvidenceStore):
         self.store = store
 
-
     def _next_opportunity_id(self, ts: float) -> str:
         day = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y%m%d")
         prefix = f"OPP-{day}-"
@@ -92,7 +91,6 @@ class ProspectiveArena:
         cluster_clean = {k: str(v).strip() for k, v in cluster.items()}
         cluster_key = cluster_clean["project_id"] or "personal:" + cluster_clean["domain_id"]
 
-        # R26-style observed opportunity event precedes case finalization.
         self.store.append(
             "OPPORTUNITY_REGISTERED",
             {
@@ -212,6 +210,8 @@ class ProspectiveArena:
 
     def predict_with_runner(self, case_id: str, runner) -> dict[str, Prediction]:
         """Run A/B/C exactly once each. Any runner/schema failure voids the whole case."""
+        if list(self.store.query(kind="R13_PRECASE_PROTOCOL_AMENDED")):
+            raise BenchError("R13_DIRECT_LOGIT_RUNNER_REQUIRED: use sct-r13 predict-case")
         requests = self.requests(case_id)
         out: dict[str, Prediction] = {}
         for arm in BASELINES:

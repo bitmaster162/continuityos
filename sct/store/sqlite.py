@@ -58,7 +58,6 @@ def _event_body(seq: int, kind: str, ts: float, payload: Mapping[str, Any], prev
 
 
 def _uuid7ish(ts: float) -> str:
-    # Python 3.10/3.11-compatible time-sortable UUID-like identifier.
     millis = int(ts * 1000)
     suffix = uuid.uuid4().hex[12:]
     return f"{millis:012x}-7000-4000-8000-{suffix[:12]}"
@@ -111,6 +110,40 @@ class SQLiteEvidenceStore:
         row = self._conn.execute("SELECT seq,event_hash FROM event ORDER BY seq DESC LIMIT 1").fetchone()
         return ChainHead(0, None) if row is None else ChainHead(int(row["seq"]), str(row["event_hash"]))
 
+    def _require_r13_case_open_admission_if_active(self) -> None:
+        active = self._conn.execute(
+            "SELECT 1 FROM event WHERE kind='R13_PRECASE_PROTOCOL_AMENDED' ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        if active is None:
+            return
+        qualification = self._conn.execute(
+            "SELECT payload FROM event WHERE kind='R13_QUALIFICATION_PASSED' ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        baseline = self._conn.execute(
+            "SELECT payload FROM event WHERE kind='R13_BASELINE_SPEC_SEALED' ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        authorization = self._conn.execute(
+            "SELECT payload FROM event WHERE kind='CASE001_ENROLLMENT_AUTHORIZED' "
+            "AND json_extract(payload,'$.protocol')='R13' ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        if qualification is None or baseline is None or authorization is None:
+            raise EvidenceError(
+                "R13_PRECASE_ADMISSION_BLOCKED: scientific PASS, sealed Arm B baseline, and exact owner authorization required"
+            )
+        q = json.loads(qualification["payload"])
+        b = json.loads(baseline["payload"])
+        a = json.loads(authorization["payload"])
+        if (
+            a.get("qualification_sha256") != q.get("qualification_sha256")
+            or q.get("baseline_manifest_sha256") != b.get("baseline_manifest_sha256")
+            or q.get("execution_authority") != "NONE"
+            or a.get("execution_authority") != "NONE"
+            or a.get("can_execute") is not False
+        ):
+            raise EvidenceError("R13_PRECASE_ADMISSION_BLOCKED: R13 admission bindings are invalid")
+        if not self.verify().ok:
+            raise EvidenceError("R13_PRECASE_ADMISSION_BLOCKED: Evidence Store verification failed")
+
     def append(self, kind: str, payload: Mapping[str, Any], *, ts: Optional[float] = None) -> EventRecord:
         if not isinstance(kind, str) or not kind.strip():
             raise EvidenceError("kind must be a non-empty string")
@@ -121,6 +154,8 @@ class SQLiteEvidenceStore:
             raise EvidenceError("ts must be a positive finite number")
         payload_obj = json.loads(canonical_json(dict(payload)))
         with self._lock:
+            if kind.strip() == "CASE_FROZEN":
+                self._require_r13_case_open_admission_if_active()
             managed = self._tx_depth == 0
             if managed:
                 self._conn.execute("BEGIN IMMEDIATE")
