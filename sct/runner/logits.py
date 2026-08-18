@@ -125,9 +125,8 @@ class ManifestBoundLogitRunner:
         return self.inner.allowed_token_logits(request, aliases=allowed, alias_token_ids=token_ids)
 
 
-
 class CapturingLogitRunner:
-    """Diagnostic/evidence wrapper that records each exact raw-logit call without retrying it."""
+    """Evidence wrapper that records each exact raw-logit call without retrying it."""
 
     def __init__(self, inner):
         self.inner = inner
@@ -135,12 +134,20 @@ class CapturingLogitRunner:
 
     def allowed_token_logits(self, request: Mapping[str, Any], *, aliases: Sequence[str]) -> Mapping[str, float]:
         allowed = tuple(str(x) for x in aliases)
+        token_source = getattr(self.inner, "alias_token_ids", None)
+        if not isinstance(token_source, Mapping):
+            raise ProviderConfigurationError("capturing R13 runner requires manifest-bound alias token IDs")
+        try:
+            token_ids = {alias: int(token_source[alias]) for alias in allowed}
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ProviderConfigurationError("capturing R13 runner cannot resolve sealed alias token IDs") from exc
         logits = self.inner.allowed_token_logits(request, aliases=allowed)
         self.records.append({
             "ordinal": len(self.records) + 1,
             "request_sha256": sha256_obj(dict(request)),
             "request_envelope_sha256": request.get("envelope_sha256"),
             "allowed_aliases": allowed,
+            "allowed_alias_token_ids": token_ids,
             "raw_allowed_token_logits": {alias: float(logits[alias]) for alias in allowed},
             "execution_authority": "NONE",
         })
