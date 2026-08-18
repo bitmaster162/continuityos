@@ -1,10 +1,14 @@
 {
   "schema": "sct.epoch001-arm-b-baseline/v1",
   "profile_construction_policy": "__FREEZE_BEFORE_CASE001__",
+  "profile_builder_sha256": "__SHA256__",
   "retrieval_policy": "__FREEZE_BEFORE_CASE001__",
+  "retrieval_policy_sha256": "__SHA256__",
   "source_cutoff_policy": "__SAME_CUTOFF_AS_ARM_C__",
+  "source_cutoff_sha256": "__SHA256__",
   "admissible_evidence_pool": "__SAME_RAW_ADMITTED_POOL_AS_ARM_C_WITHOUT_SCT_ONLY_STRUCTURED_CLAIMS__",
   "context_selection_policy": "__DETERMINISTIC_AND_FROZEN__",
+  "context_selection_policy_sha256": "__SHA256__",
   "disallow_sct_structured_claims": true,
   "payload_parity_ratio": 1.15,
   "execution_authority": "NONE"
