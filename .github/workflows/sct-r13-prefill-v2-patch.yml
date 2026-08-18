@@ -1,0 +1,185 @@
+name: sct-r13-prefill-v2-patch
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.head_ref == 'agent/sct-r13-prefill-v2-patch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact patch branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Apply exact prospective v2 measurement patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+
+          def replace_exact(path, old, new, *, count=1):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              actual = text.count(old)
+              if actual != count:
+                  raise SystemExit(f'{path}: expected {count} occurrence(s), found {actual}: {old!r}')
+              p.write_text(text.replace(old, new), encoding='utf-8')
+
+          # 1) Measurement protocol: v2 and a real assistant prefill message.
+          replace_exact(
+              'sct/r13.py',
+              'R13_ADAPTER_ID = "sct.r13-direct-constrained-label-logits/v1"',
+              'R13_ADAPTER_ID = "sct.r13-direct-constrained-label-logits/v2"',
+          )
+          replace_exact(
+              'sct/r13.py',
+              '    }) + "\\n" + R13_CHOICE_PREFIX\n',
+              '    })\n',
+          )
+          replace_exact(
+              'sct/r13.py',
+              '            {"role": "user", "content": user},\n        ],\n',
+              '            {"role": "user", "content": user},\n            {"role": "assistant", "content": R13_CHOICE_PREFIX},\n        ],\n',
+          )
+
+          # 2) Local HF runtime: keep final assistant message open; never add a new assistant generation prompt.
+          replace_exact(
+              'sct/runner/hf_local.py',
+              'R13_HF_RUNTIME_SCHEMA = "sct.r13-hf-local-logit-runtime/v1"',
+              'R13_HF_RUNTIME_SCHEMA = "sct.r13-hf-local-logit-runtime/v2"',
+          )
+          marker = '\n\nclass HFLocalLogitRuntime:\n'
+          helper = '''\n\ndef render_model_visible_prompt(tokenizer, messages) -> str:\n    """Render the frozen R13 v2 assistant-prefill prompt without closing the final message."""\n    if not isinstance(messages, list) or len(messages) < 3:\n        raise EvidenceError("R13 HF runtime messages missing")\n    final = messages[-1]\n    if not isinstance(final, Mapping) or final.get("role") != "assistant" or final.get("content") != R13_CHOICE_PREFIX:\n        raise EvidenceError("R13 v2 requires exact final assistant choice-prefix prefill")\n    rendered = tokenizer.apply_chat_template(\n        messages,\n        tokenize=False,\n        continue_final_message=True,\n        add_generation_prompt=False,\n    )\n    if not isinstance(rendered, str) or not rendered.endswith(R13_CHOICE_PREFIX):\n        raise EvidenceError("R13 v2 model-visible prompt must end exactly at assistant choice prefix")\n    return rendered\n\n\nclass HFLocalLogitRuntime:\n'''
+          replace_exact('sct/runner/hf_local.py', marker, helper)
+          replace_exact(
+              'sct/runner/hf_local.py',
+              '''        messages = request.get("messages")\n        if not isinstance(messages, list) or not messages:\n            raise EvidenceError("R13 HF runtime messages missing")\n        rendered = self.tokenizer.apply_chat_template(\n            messages,\n            tokenize=False,\n            add_generation_prompt=True,\n        )\n''',
+              '''        messages = request.get("messages")\n        rendered = render_model_visible_prompt(self.tokenizer, messages)\n''',
+          )
+
+          # 3) Existing synthetic runners parse the user JSON from the penultimate message now.
+          for path in sorted(Path('tests').glob('test_sct_r13*.py')):
+              text = path.read_text(encoding='utf-8')
+              text = text.replace(
+                  'payload_text = request["messages"][-1]["content"].split("\\nSelected option: ", 1)[0]',
+                  'payload_text = request["messages"][-2]["content"]',
+              )
+              text = text.replace(
+                  'payload = json.loads(request["messages"][-1]["content"].split("\\nSelected option: ", 1)[0])',
+                  'payload = json.loads(request["messages"][-2]["content"])',
+              )
+              path.write_text(text, encoding='utf-8')
+
+          # 4) Static protocol asset follows the runtime protocol.
+          replace_exact(
+              'sct/protocols/r13_protocol_spec.json',
+              '"id": "sct.r13-direct-constrained-label-logits/v1"',
+              '"id": "sct.r13-direct-constrained-label-logits/v2"',
+          )
+
+          # 5) Frozen substrate manifest records the exact v2 rendering method and successful zero-forward load proof.
+          model_path = Path('sct/protocols/r13_model_selection_qwen25_1_5b_frozen.json')
+          model = json.loads(model_path.read_text(encoding='utf-8'))
+          model['chat_template_mode'] = (
+              'tokenizer.apply_chat_template(messages,tokenize=False,continue_final_message=True,'
+              'add_generation_prompt=False);tokenizer(rendered,add_special_tokens=False)'
+          )
+          model['runtime_adapter_schema'] = 'sct.r13-hf-local-logit-runtime/v2'
+          model['load_only_prep'] = {
+              'workflow_run_id': 32170684107,
+              'artifact_id': 9337369701,
+              'artifact_zip_sha256': '8a90be7ae0c00998bd92f42a5b9a85f48c118155df96d8d2e026a74e4bcbc76d',
+              'runtime_identity_sha256': 'e36b673e02d76abb7625bdbdf28d090f29031ad5e36b0a3c4e844f42b4274aac',
+              'scientific_model_calls': 0,
+              'model_forward_calls': 0,
+              'model_inference_executed': False,
+              'pull_request': 73,
+              'pull_request_merged': False,
+          }
+          body = dict(model)
+          body.pop('manifest_sha256', None)
+          canonical = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+          model_sha = hashlib.sha256(canonical.encode('utf-8')).hexdigest()
+          model['manifest_sha256'] = model_sha
+          model_path.write_text(json.dumps(model, ensure_ascii=False, sort_keys=True, indent=2) + '\n', encoding='utf-8')
+
+          # Update the hard-pinned frozen-model test constant.
+          asset_test = Path('tests/test_sct_r13_protocol_assets.py')
+          asset_text = asset_test.read_text(encoding='utf-8')
+          import re
+          asset_text, n = re.subn(
+              r'FROZEN_MODEL_SHA = "[0-9a-f]{64}"',
+              f'FROZEN_MODEL_SHA = "{model_sha}"',
+              asset_text,
+              count=1,
+          )
+          if n != 1:
+              raise SystemExit('failed to update FROZEN_MODEL_SHA')
+          asset_test.write_text(asset_text, encoding='utf-8')
+
+          # 6) New known-answer: exact assistant-prefill semantics.
+          Path('tests/test_sct_r13_prefill_v2.py').write_text('''import json\n\nfrom sct.r13 import R13_ADAPTER_ID, R13_CHOICE_PREFIX, render_r13_logit_request\nfrom sct.runner.hf_local import render_model_visible_prompt\n\n\nclass FakeChatTokenizer:\n    def __init__(self):\n        self.kwargs = None\n        self.messages = None\n\n    def apply_chat_template(self, messages, **kwargs):\n        self.messages = messages\n        self.kwargs = kwargs\n        assert messages[-1] == {"role": "assistant", "content": R13_CHOICE_PREFIX}\n        return "<system>shadow</system><user>payload</user><assistant>" + R13_CHOICE_PREFIX\n\n\ndef test_r13_v2_request_uses_exact_final_assistant_prefill():\n    request = render_r13_logit_request(\n        scenario="Synthetic prefill test",\n        semantic_options=("X", "Y"),\n        personal_context="SYNTHETIC QUALIFICATION ONLY",\n        semantic_to_alias={"X": "A", "Y": "B"},\n        textual_order=("X", "Y"),\n        provider="p",\n        model="m",\n        model_version="v",\n    )\n    assert R13_ADAPTER_ID == "sct.r13-direct-constrained-label-logits/v2"\n    assert request["messages"][-1] == {"role": "assistant", "content": R13_CHOICE_PREFIX}\n    payload = json.loads(request["messages"][-2]["content"])\n    assert payload["scenario"] == "Synthetic prefill test"\n    assert not request["messages"][-2]["content"].endswith(R13_CHOICE_PREFIX)\n\n\ndef test_hf_renderer_continues_final_assistant_message_without_new_generation_prompt():\n    tokenizer = FakeChatTokenizer()\n    messages = [\n        {"role": "system", "content": "shadow"},\n        {"role": "user", "content": "payload"},\n        {"role": "assistant", "content": R13_CHOICE_PREFIX},\n    ]\n    rendered = render_model_visible_prompt(tokenizer, messages)\n    assert rendered.endswith(R13_CHOICE_PREFIX)\n    assert tokenizer.kwargs == {\n        "tokenize": False,\n        "continue_final_message": True,\n        "add_generation_prompt": False,\n    }\n''', encoding='utf-8')
+
+          # 7) Update known-answer documentation.
+          known = Path('sct/protocols/R13_KNOWN_ANSWER_TESTS.md')
+          text = known.read_text(encoding='utf-8')
+          needle = '| KA-24 | Scientific PASS is appended without exact recorded 2→18→30 component receipts and verified attestation binding | EvidenceStore rejects append |\n'
+          if text.count(needle) != 1:
+              raise SystemExit('KA-24 marker missing')
+          text = text.replace(
+              needle,
+              needle + '| KA-25 | Model-visible chat template closes the choice prefix or starts a new assistant turn after it | FAIL; final assistant message must remain open and rendered prompt must end exactly at `Selected option: ` |\n',
+          )
+          known.write_text(text, encoding='utf-8')
+
+          # No stale measurement-version or old parser seam may remain in R13 source/tests/assets.
+          stale = []
+          for root in (Path('sct'), Path('tests')):
+              for p in root.rglob('*'):
+                  if not p.is_file() or p.suffix not in {'.py', '.json', '.md'}:
+                      continue
+                  data = p.read_text(encoding='utf-8', errors='ignore')
+                  if 'sct.r13-direct-constrained-label-logits/v1' in data:
+                      stale.append(f'{p}:adapter-v1')
+                  if 'add_generation_prompt=True' in data and 'r13' in p.name.lower():
+                      stale.append(f'{p}:old-generation-prompt')
+                  if 'split("\\nSelected option: ", 1)[0]' in data:
+                      stale.append(f'{p}:old-user-prefix-parser')
+          if stale:
+              raise SystemExit('stale R13 v1 seams remain: ' + ', '.join(stale))
+
+          print(json.dumps({'status': 'PATCHED', 'frozen_model_manifest_sha256': model_sha}, sort_keys=True))
+          PY
+
+      - name: Run focused R13 regression suite
+        run: |
+          python -m pip install pytest==9.1.1
+          python -m pytest -q tests/test_sct_r13_pre_case_qualification.py tests/test_sct_r13_runtime_evidence.py tests/test_sct_r13_live_wiring.py tests/test_sct_r13_terminal_attempt.py tests/test_sct_r13_protocol_assets.py tests/test_sct_r13_hf_local_and_baseline.py tests/test_sct_r13_prefill_v2.py
+
+      - name: Remove disposable patch workflow and push patched tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/sct-r13-prefill-v2-patch.yml
+          git config user.name 'bitmaster162'
+          git config user.email '115934939+bitmaster162@users.noreply.github.com'
+          git add sct tests .github/workflows/sct-r13-prefill-v2-patch.yml
+          git diff --cached --check
+          git commit -m 'fix: freeze R13 assistant-prefill measurement v2'
+          git push origin HEAD:${{ github.head_ref }}
