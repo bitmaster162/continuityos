@@ -1,6 +1,6 @@
 {
   "schema": "sct.r13-postpass-status/v1",
-  "status": "R13_PASS_CASE001_BLOCKED_PENDING_HARDENING",
+  "status": "R13_PASS_POSTPASS_HARDENING_CODE_READY_FULL_CI_PENDING",
   "scientific_source_sha": "2b3f0288ee35eb8d6554218694f9111e29147dd2",
   "scientific_source_tree": "174c5045af3e43b1be62dfc07335de0ea6ea095e",
   "qualification_sha256": "fe64f44570486e9971d451776085c64ac742a0b490f9c43a4d4af73084d02af2",
@@ -15,7 +15,11 @@
   "can_execute": false,
   "execution_authority": "NONE",
   "hardening": {
-    "receipt_wrapper_regression": "PENDING",
-    "live_arm_b_provenance_binding": "PENDING"
+    "receipt_wrapper_regression": "TARGETED_TEST_PASS",
+    "live_arm_b_provenance_binding": "TARGETED_TEST_PASS",
+    "direct_store_case_bypass": "BLOCKED",
+    "direct_python_baseline_seal_policy_bypass": "BLOCKED",
+    "targeted_test_result": "13_PASS",
+    "full_review_gates": "PENDING"
   }
 }
