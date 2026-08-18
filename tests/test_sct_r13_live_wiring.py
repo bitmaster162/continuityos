@@ -4,6 +4,7 @@ import pytest
 
 from sct.bench.arena import ProspectiveArena
 from sct.bench.envelope import build_standard_inputs
+from sct.canon import sha256_obj
 from sct.errors import BenchError, EvidenceError
 from sct.r13 import (
     R13_ALIAS_INVENTORY,
@@ -19,10 +20,18 @@ from sct.r13 import (
     run_r13_stable_void,
     seal_baseline_spec,
     seal_model_selection,
+    validate_model_selection_manifest,
+)
+from sct.r13_attempt import (
+    finish_r13_component_attempt,
+    record_verified_r13_operator_attestation,
+    start_r13_component_attempt,
 )
 from sct.store.sqlite import SQLiteEvidenceStore
 
 R2_SHA = "beebc38d4dd32317a3b83c6dba9fbc02054ca4cfbe3a73c1c29ea3c82783d6fc"
+SOURCE_SHA = "5" * 40
+SOURCE_TREE = "6" * 40
 
 
 def _model_manifest():
@@ -54,10 +63,14 @@ def _baseline_spec():
     return {
         "schema": R13_BASELINE_SCHEMA,
         "profile_construction_policy": "Frozen admitted-evidence profile.",
+        "profile_builder_sha256": "1" * 64,
         "retrieval_policy": "Frozen chronological retrieval.",
+        "retrieval_policy_sha256": "2" * 64,
         "source_cutoff_policy": "Same cutoff as Arm C.",
+        "source_cutoff_sha256": "3" * 64,
         "admissible_evidence_pool": "Same admitted raw pool as Arm C, without SCT-only claims.",
         "context_selection_policy": "Deterministic frozen selection.",
+        "context_selection_policy_sha256": "4" * 64,
         "disallow_sct_structured_claims": True,
         "payload_parity_ratio": 1.15,
         "execution_authority": "NONE",
@@ -80,27 +93,73 @@ class UniformRunner:
         return {alias: 0.0 for alias in aliases}
 
 
+def _with_trace(receipt, count):
+    rows = []
+    for ordinal in range(1, count + 1):
+        rows.append({
+            "ordinal": ordinal,
+            "request_sha256": sha256_obj({"ordinal": ordinal, "schema": receipt["schema"]}),
+            "request_envelope_sha256": sha256_obj({"envelope": receipt["schema"], "ordinal": ordinal}),
+            "allowed_aliases": ["A", "B"],
+            "allowed_alias_token_ids": {"A": 100, "B": 101},
+            "raw_allowed_token_logits": {"A": 0.0, "B": 0.0},
+            "execution_authority": "NONE",
+        })
+    return {**receipt, "raw_logit_trace": rows, "raw_logit_trace_sha256": sha256_obj(rows)}
+
+
 def _fully_authorized_store(tmp_path):
     store = SQLiteEvidenceStore(tmp_path / "authorized.sqlite")
     protocol = r13_protocol_manifest(r2_diagnostic_sha256=R2_SHA)
     ensure_r13_protocol_amended(store, protocol)
     model = _model_manifest()
-    seal_model_selection(store, model, protocol_manifest_sha256=protocol["manifest_sha256"])
+    sealed_model = seal_model_selection(store, model, protocol_manifest_sha256=protocol["manifest_sha256"])
     seal_baseline_spec(store, _baseline_spec(), protocol_manifest_sha256=protocol["manifest_sha256"])
-    preflight = run_r13_determinism_preflight(
+
+    preflight = _with_trace(run_r13_determinism_preflight(
         logit_runner=ResponsiveRunner(), model_manifest=model, protocol_manifest_sha256=protocol["manifest_sha256"]
-    )
-    sentinel = run_r13_balanced_context_sentinel(
+    ), 2)
+    sentinel = _with_trace(run_r13_balanced_context_sentinel(
         logit_runner=ResponsiveRunner(), model_manifest=model, protocol_manifest_sha256=protocol["manifest_sha256"]
-    )
-    stable = run_r13_stable_void(
+    ), 18)
+    stable = _with_trace(run_r13_stable_void(
         logit_runner=UniformRunner(), model_manifest=model, protocol_manifest_sha256=protocol["manifest_sha256"]
-    )
+    ), 30)
+    model_sha = sealed_model["model_selection_manifest_sha256"]
+    for component, receipt in (
+        ("preflight", preflight),
+        ("context-sentinel", sentinel),
+        ("stable-void", stable),
+    ):
+        start_r13_component_attempt(
+            store,
+            component=component,
+            protocol_manifest_sha256=protocol["manifest_sha256"],
+            model_selection_manifest_sha256=model_sha,
+            source_code_sha=SOURCE_SHA,
+            source_tree_sha=SOURCE_TREE,
+        )
+        finish_r13_component_attempt(store, component=component, receipt=receipt)
+
+    attestation_sha = "e" * 64
+    record_verified_r13_operator_attestation(store, {
+        "attestation_sha256": attestation_sha,
+        "protocol_manifest_sha256": protocol["manifest_sha256"],
+        "model_selection_manifest_sha256": validate_model_selection_manifest(model)["manifest_sha256"],
+        "source_code_sha": SOURCE_SHA,
+        "source_tree_sha": SOURCE_TREE,
+        "preflight_receipt_sha256": sha256_obj(preflight),
+        "sentinel_receipt_sha256": sha256_obj(sentinel),
+        "stable_void_receipt_sha256": sha256_obj(stable),
+        "valid_live_n": 0,
+        "can_execute": False,
+        "execution_authority": "NONE",
+    })
     qualification = qualify_r13_pre_case_gate(
         preflight,
         sentinel,
         stable,
-        operator_attestation_sha256="e" * 64,
+        operator_attestation_sha256=attestation_sha,
         operator_attestation_verified=True,
     )
     recorded = record_r13_qualification_pass(store, qualification)
