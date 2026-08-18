@@ -24,6 +24,14 @@ from .r13 import (
     seal_baseline_spec,
     seal_model_selection,
 )
+from .r13_attempt import (
+    finish_r13_component_attempt,
+    r13_attempt_status,
+    record_r13_component_abort,
+    record_verified_r13_operator_attestation,
+    require_recorded_r13_component_receipts,
+    start_r13_component_attempt,
+)
 from .r13_attestation import validate_r13_operator_attestation
 from .r13_manifest_guard import validate_baseline_for_seal, validate_model_manifest_for_seal
 from .runner.logits import CapturingLogitRunner, ManifestBoundLogitRunner, SubprocessLogitRunner
@@ -98,6 +106,8 @@ def build_parser() -> argparse.ArgumentParser:
         c = sub.add_parser(name)
         c.add_argument("--model-manifest", required=True)
         c.add_argument("--protocol-manifest-sha256", required=True)
+        c.add_argument("--source-sha", required=True)
+        c.add_argument("--source-tree-sha", required=True)
         c.add_argument("--runner", nargs=argparse.REMAINDER, required=True)
 
     qualify = sub.add_parser("qualify")
@@ -144,6 +154,61 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _run_component(args, store, manifest):
+    component = args.cmd
+    model_sha = manifest["manifest_sha256"]
+    start_r13_component_attempt(
+        store,
+        component=component,
+        protocol_manifest_sha256=args.protocol_manifest_sha256,
+        model_selection_manifest_sha256=model_sha,
+        source_code_sha=args.source_sha,
+        source_tree_sha=args.source_tree_sha,
+    )
+    runner = _capturing_runner(args.runner, manifest)
+    try:
+        if component == "preflight":
+            out = run_r13_determinism_preflight(
+                logit_runner=runner,
+                model_manifest=manifest,
+                protocol_manifest_sha256=args.protocol_manifest_sha256,
+            )
+            pass_field = "deterministic"
+        elif component == "context-sentinel":
+            out = run_r13_balanced_context_sentinel(
+                logit_runner=runner,
+                model_manifest=manifest,
+                protocol_manifest_sha256=args.protocol_manifest_sha256,
+            )
+            pass_field = "satisfies_context_responsiveness_gate"
+        else:
+            out = run_r13_stable_void(
+                logit_runner=runner,
+                model_manifest=manifest,
+                protocol_manifest_sha256=args.protocol_manifest_sha256,
+            )
+            pass_field = "stable_void_pass"
+        out = _trace_receipt(out, runner)
+        lifecycle = finish_r13_component_attempt(store, component=component, receipt=out)
+        return _emit(
+            {**out, "attempt_lifecycle": lifecycle},
+            0 if out.get(pass_field) is True else 2,
+        )
+    except Exception as exc:
+        try:
+            record_r13_component_abort(
+                store,
+                component=component,
+                protocol_manifest_sha256=args.protocol_manifest_sha256,
+                model_selection_manifest_sha256=model_sha,
+                failure_class=type(exc).__name__,
+            )
+        except Exception:
+            # ATTEMPT_STARTED already makes the binding terminal even if the abort receipt cannot be appended.
+            pass
+        raise
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     store = SQLiteEvidenceStore(Path(args.db).expanduser())
@@ -172,30 +237,7 @@ def main(argv=None) -> int:
         if args.cmd in {"preflight", "context-sentinel", "stable-void"}:
             _require_protocol(store, args.protocol_manifest_sha256)
             manifest = _sealed_model(store, args.model_manifest)
-            runner = _capturing_runner(args.runner, manifest)
-            if args.cmd == "preflight":
-                out = run_r13_determinism_preflight(
-                    logit_runner=runner,
-                    model_manifest=manifest,
-                    protocol_manifest_sha256=args.protocol_manifest_sha256,
-                )
-                out = _trace_receipt(out, runner)
-                return _emit(out, 0 if out["deterministic"] else 2)
-            if args.cmd == "context-sentinel":
-                out = run_r13_balanced_context_sentinel(
-                    logit_runner=runner,
-                    model_manifest=manifest,
-                    protocol_manifest_sha256=args.protocol_manifest_sha256,
-                )
-                out = _trace_receipt(out, runner)
-                return _emit(out, 0 if out["satisfies_context_responsiveness_gate"] else 2)
-            out = run_r13_stable_void(
-                logit_runner=runner,
-                model_manifest=manifest,
-                protocol_manifest_sha256=args.protocol_manifest_sha256,
-            )
-            out = _trace_receipt(out, runner)
-            return _emit(out, 0 if out["stable_void_pass"] else 2)
+            return _run_component(args, store, manifest)
 
         if args.cmd == "qualify":
             manifest = _sealed_model(store, args.model_manifest)
@@ -203,6 +245,16 @@ def main(argv=None) -> int:
             sentinel = _json_file(args.sentinel_receipt)
             stable = _json_file(args.stable_void_receipt)
             attestation = _json_file(args.operator_attestation)
+            component_bindings = require_recorded_r13_component_receipts(
+                store,
+                preflight=preflight,
+                sentinel=sentinel,
+                stable_void=stable,
+                expected_source_sha=args.source_sha,
+                expected_source_tree_sha=args.source_tree_sha,
+            )
+            if component_bindings["model_selection_manifest_sha256"] != manifest["manifest_sha256"]:
+                raise SctError("R13 recorded component receipts do not match sealed model manifest")
             verify = store.verify()
             validated_attestation = validate_r13_operator_attestation(
                 attestation,
@@ -214,6 +266,7 @@ def main(argv=None) -> int:
                 expected_source_tree_sha=args.source_tree_sha,
                 store_verify_ok=verify.ok,
             )
+            attestation_event = record_verified_r13_operator_attestation(store, validated_attestation)
             result = qualify_r13_pre_case_gate(
                 preflight,
                 sentinel,
@@ -229,15 +282,18 @@ def main(argv=None) -> int:
             return _emit(
                 {
                     "qualification": result,
+                    "component_bindings": component_bindings,
                     "validated_operator_attestation": validated_attestation,
+                    "operator_attestation_event": attestation_event,
                     "recorded": recorded,
                     "r13": r13_enrollment_gate_status(store),
+                    "attempt": r13_attempt_status(store),
                 },
                 0 if result["scientific_pre_case_gate_pass"] else 2,
             )
 
         if args.cmd == "status":
-            return _emit(r13_enrollment_gate_status(store))
+            return _emit({"r13": r13_enrollment_gate_status(store), "attempt": r13_attempt_status(store)})
 
         if args.cmd == "authorize-case001":
             recorded = authorize_case001_r13(store, approval_token=args.approval)
@@ -311,10 +367,7 @@ def main(argv=None) -> int:
             frozen_version = manifest["model_revision"]
             requests = arena.requests(args.case_id)
             for request in requests.values():
-                if (
-                    request.get("model") != frozen_model
-                    or request.get("model_version") != frozen_version
-                ):
+                if request.get("model") != frozen_model or request.get("model_version") != frozen_version:
                     raise SctError("CASE_MODEL_IDENTITY_MISMATCH_WITH_SEALED_R13_SUBSTRATE")
             mapping = freeze_case_mapping(
                 store,
@@ -338,13 +391,8 @@ def main(argv=None) -> int:
                 try:
                     response = runner.predict(requests[arm], arm=arm)
                 except Exception as exc:
-                    arena.void_case(
-                        args.case_id,
-                        f"R13_LOGIT_RUNNER_FAILURE:{type(exc).__name__}",
-                    )
-                    raise SctError(
-                        f"R13 logit runner failure: {type(exc).__name__}"
-                    ) from exc
+                    arena.void_case(args.case_id, f"R13_LOGIT_RUNNER_FAILURE:{type(exc).__name__}")
+                    raise SctError(f"R13 logit runner failure: {type(exc).__name__}") from exc
                 if len(capture.records) != before + 1:
                     arena.void_case(args.case_id, "R13_RAW_LOGIT_TRACE_CARDINALITY_FAILURE")
                     raise SctError("R13 raw-logit trace cardinality mismatch")
@@ -369,9 +417,7 @@ def main(argv=None) -> int:
                     "ok": True,
                     "r13_gate": gate,
                     "mapping": mapping,
-                    "predictions": {
-                        arm: pred.to_dict() for arm, pred in predictions.items()
-                    },
+                    "predictions": {arm: pred.to_dict() for arm, pred in predictions.items()},
                     "raw_logit_trace_sha256": sha256_obj(capture.records),
                     "execution_authority": "NONE",
                 }
@@ -379,9 +425,7 @@ def main(argv=None) -> int:
 
         raise SctError("unsupported R13 command")
     except (SctError, ValueError) as exc:
-        return _emit(
-            {"ok": False, "error": str(exc), "execution_authority": "NONE"}, 2
-        )
+        return _emit({"ok": False, "error": str(exc), "execution_authority": "NONE"}, 2)
     except Exception as exc:
         return _emit(
             {
