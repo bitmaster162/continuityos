@@ -24,5 +24,9 @@ These tests run before any real R13 model call.
 | KA-18 | Operator attestation SHA exists but content/source/receipt binding disagrees | FAIL qualification |
 | KA-19 | Arm B baseline lacks frozen builder/retrieval/cutoff/selection hashes | FAIL before seal |
 | KA-20 | Legacy JSON prediction runner is used after R13 amendment | FAIL; direct-logit path required |
+| KA-21 | Same qualification component is started twice under one protocol/model binding | FAIL before second model call; rerun forbidden |
+| KA-22 | Process dies after `R13_COMPONENT_ATTEMPT_STARTED` but before component receipt | Binding remains terminal; no silent retry |
+| KA-23 | Sentinel or stable-VOID component returns scientific FAIL | Record `R13_QUALIFICATION_FAILED`; later components and reruns blocked |
+| KA-24 | Scientific PASS is appended without exact recorded 2→18→30 component receipts and verified attestation binding | EvidenceStore rejects append |
 
-No test may lower or tune the scientific sentinel relation. No known-answer/mock case is LIVE evidence.
+No test may lower or tune the scientific sentinel relation. No known-answer/mock case is LIVE evidence. A started real qualification component is a point of no return for that exact protocol/model/source binding.
