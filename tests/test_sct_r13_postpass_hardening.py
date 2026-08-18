@@ -1,4 +1,5 @@
 import hashlib
+import inspect
 
 from sct.baseline_r13 import admitted_pool_sha256, admitted_segments, build_arm_b_profile_rag
 from sct.bench.envelope import build_standard_inputs
@@ -44,13 +45,13 @@ def test_provenance_receipt_binds_exact_frozen_builder_and_raw_blob(tmp_path):
 
 
 def test_cli_component_output_is_exact_core_receipt_and_open_case_has_no_freeform_arm_b_files():
-    from pathlib import Path
-    from sct.r13_cli import build_parser
-    text = Path("sct/r13_cli.py").read_text(encoding="utf-8")
-    block = text[text.index("def _run_component"):text.index("def main")]
-    assert 'attempt_lifecycle' not in block
-    assert 'finish_r13_component_attempt(store, component=component, receipt=out)' in block
-    parser = build_parser()
+    import sct.r13_cli as r13_cli
+
+    block = inspect.getsource(r13_cli._run_component)
+    assert "attempt_lifecycle" not in block
+    assert "finish_r13_component_attempt(store, component=component, receipt=out)" in block
+
+    parser = r13_cli.build_parser()
     open_case = next(a for a in parser._actions if getattr(a, "dest", None) == "cmd").choices["open-case"]
     dests = {a.dest for a in open_case._actions}
     assert "static_profile_file" not in dests
