@@ -168,43 +168,21 @@ def _run_component(args, store, manifest):
     runner = _capturing_runner(args.runner, manifest)
     try:
         if component == "preflight":
-            out = run_r13_determinism_preflight(
-                logit_runner=runner,
-                model_manifest=manifest,
-                protocol_manifest_sha256=args.protocol_manifest_sha256,
-            )
+            out = run_r13_determinism_preflight(logit_runner=runner, model_manifest=manifest, protocol_manifest_sha256=args.protocol_manifest_sha256)
             pass_field = "deterministic"
         elif component == "context-sentinel":
-            out = run_r13_balanced_context_sentinel(
-                logit_runner=runner,
-                model_manifest=manifest,
-                protocol_manifest_sha256=args.protocol_manifest_sha256,
-            )
+            out = run_r13_balanced_context_sentinel(logit_runner=runner, model_manifest=manifest, protocol_manifest_sha256=args.protocol_manifest_sha256)
             pass_field = "satisfies_context_responsiveness_gate"
         else:
-            out = run_r13_stable_void(
-                logit_runner=runner,
-                model_manifest=manifest,
-                protocol_manifest_sha256=args.protocol_manifest_sha256,
-            )
+            out = run_r13_stable_void(logit_runner=runner, model_manifest=manifest, protocol_manifest_sha256=args.protocol_manifest_sha256)
             pass_field = "stable_void_pass"
         out = _trace_receipt(out, runner)
         lifecycle = finish_r13_component_attempt(store, component=component, receipt=out)
-        return _emit(
-            {**out, "attempt_lifecycle": lifecycle},
-            0 if out.get(pass_field) is True else 2,
-        )
+        return _emit({**out, "attempt_lifecycle": lifecycle}, 0 if out.get(pass_field) is True else 2)
     except Exception as exc:
         try:
-            record_r13_component_abort(
-                store,
-                component=component,
-                protocol_manifest_sha256=args.protocol_manifest_sha256,
-                model_selection_manifest_sha256=model_sha,
-                failure_class=type(exc).__name__,
-            )
+            record_r13_component_abort(store, component=component, protocol_manifest_sha256=args.protocol_manifest_sha256, model_selection_manifest_sha256=model_sha, failure_class=type(exc).__name__)
         except Exception:
-            # ATTEMPT_STARTED already makes the binding terminal even if the abort receipt cannot be appended.
             pass
         raise
 
@@ -217,144 +195,52 @@ def main(argv=None) -> int:
             manifest = r13_protocol_manifest(r2_diagnostic_sha256=args.r2_diagnostic_sha256)
             recorded = ensure_r13_protocol_amended(store, manifest)
             return _emit({"ok": True, "manifest": manifest, "recorded": recorded})
-
         if args.cmd == "seal-model":
             _require_protocol(store, args.protocol_manifest_sha256)
             manifest = validate_model_manifest_for_seal(_json_file(args.manifest))
-            recorded = seal_model_selection(
-                store, manifest, protocol_manifest_sha256=args.protocol_manifest_sha256
-            )
+            recorded = seal_model_selection(store, manifest, protocol_manifest_sha256=args.protocol_manifest_sha256)
             return _emit({"ok": True, "manifest": manifest, "recorded": recorded})
-
         if args.cmd == "seal-baseline":
             _require_protocol(store, args.protocol_manifest_sha256)
             spec = validate_baseline_for_seal(_json_file(args.manifest))
-            recorded = seal_baseline_spec(
-                store, spec, protocol_manifest_sha256=args.protocol_manifest_sha256
-            )
+            recorded = seal_baseline_spec(store, spec, protocol_manifest_sha256=args.protocol_manifest_sha256)
             return _emit({"ok": True, "manifest": spec, "recorded": recorded})
-
         if args.cmd in {"preflight", "context-sentinel", "stable-void"}:
             _require_protocol(store, args.protocol_manifest_sha256)
             manifest = _sealed_model(store, args.model_manifest)
             return _run_component(args, store, manifest)
-
         if args.cmd == "qualify":
             manifest = _sealed_model(store, args.model_manifest)
             preflight = _json_file(args.preflight_receipt)
             sentinel = _json_file(args.sentinel_receipt)
             stable = _json_file(args.stable_void_receipt)
             attestation = _json_file(args.operator_attestation)
-            component_bindings = require_recorded_r13_component_receipts(
-                store,
-                preflight=preflight,
-                sentinel=sentinel,
-                stable_void=stable,
-                expected_source_sha=args.source_sha,
-                expected_source_tree_sha=args.source_tree_sha,
-            )
+            component_bindings = require_recorded_r13_component_receipts(store, preflight=preflight, sentinel=sentinel, stable_void=stable, expected_source_sha=args.source_sha, expected_source_tree_sha=args.source_tree_sha)
             if component_bindings["model_selection_manifest_sha256"] != manifest["manifest_sha256"]:
                 raise SctError("R13 recorded component receipts do not match sealed model manifest")
             verify = store.verify()
-            validated_attestation = validate_r13_operator_attestation(
-                attestation,
-                model_manifest=manifest,
-                preflight=preflight,
-                sentinel=sentinel,
-                stable_void=stable,
-                expected_source_sha=args.source_sha,
-                expected_source_tree_sha=args.source_tree_sha,
-                store_verify_ok=verify.ok,
-            )
+            validated_attestation = validate_r13_operator_attestation(attestation, model_manifest=manifest, preflight=preflight, sentinel=sentinel, stable_void=stable, expected_source_sha=args.source_sha, expected_source_tree_sha=args.source_tree_sha, store_verify_ok=verify.ok)
             attestation_event = record_verified_r13_operator_attestation(store, validated_attestation)
-            result = qualify_r13_pre_case_gate(
-                preflight,
-                sentinel,
-                stable,
-                operator_attestation_sha256=validated_attestation["attestation_sha256"],
-                operator_attestation_verified=True,
-            )
-            recorded = (
-                record_r13_qualification_pass(store, result)
-                if result["scientific_pre_case_gate_pass"]
-                else None
-            )
-            return _emit(
-                {
-                    "qualification": result,
-                    "component_bindings": component_bindings,
-                    "validated_operator_attestation": validated_attestation,
-                    "operator_attestation_event": attestation_event,
-                    "recorded": recorded,
-                    "r13": r13_enrollment_gate_status(store),
-                    "attempt": r13_attempt_status(store),
-                },
-                0 if result["scientific_pre_case_gate_pass"] else 2,
-            )
-
+            result = qualify_r13_pre_case_gate(preflight, sentinel, stable, operator_attestation_sha256=validated_attestation["attestation_sha256"], operator_attestation_verified=True)
+            recorded = record_r13_qualification_pass(store, result) if result["scientific_pre_case_gate_pass"] else None
+            return _emit({"qualification": result, "component_bindings": component_bindings, "validated_operator_attestation": validated_attestation, "operator_attestation_event": attestation_event, "recorded": recorded, "r13": r13_enrollment_gate_status(store), "attempt": r13_attempt_status(store)}, 0 if result["scientific_pre_case_gate_pass"] else 2)
         if args.cmd == "status":
             return _emit({"r13": r13_enrollment_gate_status(store), "attempt": r13_attempt_status(store)})
-
         if args.cmd == "authorize-case001":
             recorded = authorize_case001_r13(store, approval_token=args.approval)
-            return _emit(
-                {"ok": True, "recorded": recorded, "r13": r13_enrollment_gate_status(store)}
-            )
-
+            return _emit({"ok": True, "recorded": recorded, "r13": r13_enrollment_gate_status(store)})
         if args.cmd == "open-case":
             gate = require_r13_enrollment_authorized(store)
             _require_protocol(store, args.protocol_manifest_sha256)
             manifest = _sealed_model(store, args.model_manifest)
             model_id = manifest["model_repo_or_provider_id"]
             model_version = manifest["model_revision"]
-            inputs = build_standard_inputs(
-                scenario=args.situation,
-                options=args.option,
-                provider=model_id,
-                model=model_id,
-                model_version=model_version,
-                static_profile=_read_text(args.static_profile_file),
-                permitted_history=_read_text(args.permitted_history_file),
-                sct_state=_read_text(args.sct_state_file),
-                token_budget=args.token_budget,
-                temperature=args.temperature,
-                reasoning=args.reasoning,
-                frozen_at=__import__("time").time(),
-            )
+            inputs = build_standard_inputs(scenario=args.situation, options=args.option, provider=model_id, model=model_id, model_version=model_version, static_profile=_read_text(args.static_profile_file), permitted_history=_read_text(args.permitted_history_file), sct_state=_read_text(args.sct_state_file), token_budget=args.token_budget, temperature=args.temperature, reasoning=args.reasoning, frozen_at=__import__("time").time())
             arena = ProspectiveArena(store)
-            case = arena.open_case(
-                case_id=args.id,
-                situation=args.situation,
-                options=args.option,
-                inputs=inputs,
-                cluster={
-                    "project_id": args.project_id,
-                    "domain_id": args.domain_id,
-                    "time_epoch": args.time_epoch,
-                    "decision_family": args.decision_family,
-                },
-                assistant_influence=args.assistant_influence,
-            )
-            mapping = freeze_case_mapping(
-                store,
-                case_id=args.id,
-                semantic_options=case["options"],
-                alias_manifest=manifest,
-                protocol_manifest_sha256=args.protocol_manifest_sha256,
-                model_selection_manifest_sha256=manifest["manifest_sha256"],
-            )
+            case = arena.open_case(case_id=args.id, situation=args.situation, options=args.option, inputs=inputs, cluster={"project_id": args.project_id, "domain_id": args.domain_id, "time_epoch": args.time_epoch, "decision_family": args.decision_family}, assistant_influence=args.assistant_influence)
+            mapping = freeze_case_mapping(store, case_id=args.id, semantic_options=case["options"], alias_manifest=manifest, protocol_manifest_sha256=args.protocol_manifest_sha256, model_selection_manifest_sha256=manifest["manifest_sha256"])
             requests = arena.requests(args.id)
-            return _emit(
-                {
-                    "ok": True,
-                    "case": case,
-                    "r13_gate": gate,
-                    "mapping": mapping,
-                    "request_hashes": {arm: sha256_obj(requests[arm]) for arm in BASELINES},
-                    "execution_authority": "NONE",
-                }
-            )
-
+            return _emit({"ok": True, "case": case, "r13_gate": gate, "mapping": mapping, "request_hashes": {arm: sha256_obj(requests[arm]) for arm in BASELINES}, "execution_authority": "NONE"})
         if args.cmd == "predict-case":
             gate = require_r13_enrollment_authorized(store)
             _require_protocol(store, args.protocol_manifest_sha256)
@@ -369,22 +255,9 @@ def main(argv=None) -> int:
             for request in requests.values():
                 if request.get("model") != frozen_model or request.get("model_version") != frozen_version:
                     raise SctError("CASE_MODEL_IDENTITY_MISMATCH_WITH_SEALED_R13_SUBSTRATE")
-            mapping = freeze_case_mapping(
-                store,
-                case_id=args.case_id,
-                semantic_options=case.payload["options"],
-                alias_manifest=manifest,
-                protocol_manifest_sha256=args.protocol_manifest_sha256,
-                model_selection_manifest_sha256=manifest["manifest_sha256"],
-            )
+            mapping = freeze_case_mapping(store, case_id=args.case_id, semantic_options=case.payload["options"], alias_manifest=manifest, protocol_manifest_sha256=args.protocol_manifest_sha256, model_selection_manifest_sha256=manifest["manifest_sha256"])
             capture = _capturing_runner(args.runner, manifest)
-            runner = R13CasePredictionRunner(
-                logit_runner=capture,
-                case_id=args.case_id,
-                mapping=mapping["semantic_to_alias"],
-                textual_order=mapping["textual_order"],
-                model_manifest=manifest,
-            )
+            runner = R13CasePredictionRunner(logit_runner=capture, case_id=args.case_id, mapping=mapping["semantic_to_alias"], textual_order=mapping["textual_order"], model_manifest=manifest)
             predictions = {}
             for arm in BASELINES:
                 before = len(capture.records)
@@ -397,45 +270,15 @@ def main(argv=None) -> int:
                     arena.void_case(args.case_id, "R13_RAW_LOGIT_TRACE_CARDINALITY_FAILURE")
                     raise SctError("R13 raw-logit trace cardinality mismatch")
                 trace = capture.records[-1]
-                measurement = {
-                    "case_id": args.case_id,
-                    "arm": arm,
-                    "protocol_manifest_sha256": args.protocol_manifest_sha256,
-                    "model_selection_manifest_sha256": manifest["manifest_sha256"],
-                    "mapping_sha256": mapping["mapping_sha256"],
-                    "semantic_to_alias": mapping["semantic_to_alias"],
-                    "raw_logit_trace": trace,
-                    "option_probabilities": response["option_probabilities"],
-                    "probability_vector_sha256": sha256_obj(response["option_probabilities"]),
-                    "execution_authority": "NONE",
-                    "can_execute": False,
-                }
+                measurement = {"case_id": args.case_id, "arm": arm, "protocol_manifest_sha256": args.protocol_manifest_sha256, "model_selection_manifest_sha256": manifest["manifest_sha256"], "mapping_sha256": mapping["mapping_sha256"], "semantic_to_alias": mapping["semantic_to_alias"], "raw_logit_trace": trace, "option_probabilities": response["option_probabilities"], "probability_vector_sha256": sha256_obj(response["option_probabilities"]), "execution_authority": "NONE", "can_execute": False}
                 store.append("R13_FORECAST_MEASUREMENT_COMMITTED", measurement)
                 predictions[arm] = arena.submit_prediction(args.case_id, arm, response)
-            return _emit(
-                {
-                    "ok": True,
-                    "r13_gate": gate,
-                    "mapping": mapping,
-                    "predictions": {arm: pred.to_dict() for arm, pred in predictions.items()},
-                    "raw_logit_trace_sha256": sha256_obj(capture.records),
-                    "execution_authority": "NONE",
-                }
-            )
-
+            return _emit({"ok": True, "r13_gate": gate, "mapping": mapping, "predictions": {arm: pred.to_dict() for arm, pred in predictions.items()}, "raw_logit_trace_sha256": sha256_obj(capture.records), "execution_authority": "NONE"})
         raise SctError("unsupported R13 command")
     except (SctError, ValueError) as exc:
         return _emit({"ok": False, "error": str(exc), "execution_authority": "NONE"}, 2)
     except Exception as exc:
-        return _emit(
-            {
-                "ok": False,
-                "error": str(exc),
-                "error_class": type(exc).__name__,
-                "execution_authority": "NONE",
-            },
-            2,
-        )
+        return _emit({"ok": False, "error": str(exc), "error_class": type(exc).__name__, "execution_authority": "NONE"}, 2)
     finally:
         store.close()
 
