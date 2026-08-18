@@ -3,6 +3,7 @@ import json
 import pytest
 
 from sct.canon import sha256_obj
+from sct.baseline_r13 import baseline_policy_hashes
 from sct.errors import EvidenceError
 from sct.r13 import (
     R13_ADAPTER_ID,
@@ -72,14 +73,11 @@ def _baseline_spec():
     return {
         "schema": R13_BASELINE_SCHEMA,
         "profile_construction_policy": "Frozen static profile from admitted evidence only.",
-        "profile_builder_sha256": "1" * 64,
         "retrieval_policy": "Frozen chronological retrieval policy.",
-        "retrieval_policy_sha256": "2" * 64,
         "source_cutoff_policy": "Same frozen source cutoff as Arm C.",
-        "source_cutoff_sha256": "3" * 64,
         "admissible_evidence_pool": "Same admitted raw evidence pool as Arm C, without SCT-only claims.",
         "context_selection_policy": "Deterministic fixed retrieval and truncation policy.",
-        "context_selection_policy_sha256": "4" * 64,
+        **baseline_policy_hashes(),
         "disallow_sct_structured_claims": True,
         "payload_parity_ratio": 1.15,
         "execution_authority": "NONE",

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .bench.arena import ProspectiveArena
 from .bench.envelope import BASELINES, build_standard_inputs
+from .baseline_r13 import build_arm_b_profile_rag
 from .canon import sha256_obj
 from .errors import SctError
 from .r13 import (
@@ -34,6 +35,7 @@ from .r13_attempt import (
 )
 from .r13_attestation import validate_r13_operator_attestation
 from .r13_manifest_guard import validate_baseline_for_seal, validate_model_manifest_for_seal
+from .r13_live_provenance import build_arm_b_live_provenance_receipt, canonical_evidence_blob
 from .runner.logits import CapturingLogitRunner, ManifestBoundLogitRunner, SubprocessLogitRunner
 from .store.sqlite import SQLiteEvidenceStore
 
@@ -42,6 +44,13 @@ def _json_file(path: str) -> dict:
     value = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise SctError(f"JSON object required: {path}")
+    return value
+
+
+def _json_array_file(path: str) -> list[dict]:
+    value = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    if not isinstance(value, list) or not all(isinstance(row, dict) for row in value):
+        raise SctError(f"JSON array of objects required: {path}")
     return value
 
 
@@ -130,8 +139,9 @@ def build_parser() -> argparse.ArgumentParser:
     op.add_argument("--option", action="append", required=True)
     op.add_argument("--model-manifest", required=True)
     op.add_argument("--protocol-manifest-sha256", required=True)
-    op.add_argument("--static-profile-file", required=True)
-    op.add_argument("--permitted-history-file")
+    op.add_argument("--arm-b-evidence-file", required=True)
+    op.add_argument("--arm-b-source-cutoff", type=float, required=True)
+    op.add_argument("--arm-b-expected-pool-sha256", required=True)
     op.add_argument("--sct-state-file", required=True)
     op.add_argument("--token-budget", type=int, default=4096)
     op.add_argument("--temperature", type=float, default=0.0)
@@ -189,9 +199,9 @@ def _run_component(args, store, manifest):
             )
             pass_field = "stable_void_pass"
         out = _trace_receipt(out, runner)
-        lifecycle = finish_r13_component_attempt(store, component=component, receipt=out)
+        finish_r13_component_attempt(store, component=component, receipt=out)
         return _emit(
-            {**out, "attempt_lifecycle": lifecycle},
+            out,
             0 if out.get(pass_field) is True else 2,
         )
     except Exception as exc:
@@ -307,20 +317,50 @@ def main(argv=None) -> int:
             manifest = _sealed_model(store, args.model_manifest)
             model_id = manifest["model_repo_or_provider_id"]
             model_version = manifest["model_revision"]
+            evidence_rows = _json_array_file(args.arm_b_evidence_file)
+            sct_state = _read_text(args.sct_state_file)
+            target_context_bytes = len(sct_state.encode("utf-8"))
+            builder_output = build_arm_b_profile_rag(
+                scenario=args.situation,
+                options=args.option,
+                evidence_rows=evidence_rows,
+                source_cutoff=args.arm_b_source_cutoff,
+                target_context_bytes=target_context_bytes,
+                expected_admitted_pool_sha256=args.arm_b_expected_pool_sha256,
+            )
+            frozen_at = __import__("time").time()
             inputs = build_standard_inputs(
                 scenario=args.situation,
                 options=args.option,
                 provider=model_id,
                 model=model_id,
                 model_version=model_version,
-                static_profile=_read_text(args.static_profile_file),
-                permitted_history=_read_text(args.permitted_history_file),
-                sct_state=_read_text(args.sct_state_file),
+                static_profile=builder_output["static_profile"],
+                permitted_history=builder_output["permitted_history"],
+                sct_state=sct_state,
                 token_budget=args.token_budget,
                 temperature=args.temperature,
                 reasoning=args.reasoning,
-                frozen_at=__import__("time").time(),
+                frozen_at=frozen_at,
             )
+            baseline_events = list(store.query(kind="R13_BASELINE_SPEC_SEALED"))
+            if not baseline_events:
+                raise SctError("R13 Arm B baseline must be sealed before LIVE provenance")
+            evidence_blob_sha256 = store.put_blob(canonical_evidence_blob(evidence_rows))
+            arm_b_provenance = build_arm_b_live_provenance_receipt(
+                case_id=args.id,
+                scenario=args.situation,
+                options=args.option,
+                evidence_rows=evidence_rows,
+                evidence_blob_sha256=evidence_blob_sha256,
+                source_cutoff=args.arm_b_source_cutoff,
+                target_context_bytes=target_context_bytes,
+                expected_admitted_pool_sha256=args.arm_b_expected_pool_sha256,
+                builder_output=builder_output,
+                profile_rag_snapshot_sha256=inputs["profile_rag"].snapshot_sha256,
+                baseline_manifest_sha256=baseline_events[-1].payload["baseline_manifest_sha256"],
+            )
+            store.append("R13_ARM_B_LIVE_PROVENANCE_VERIFIED", arm_b_provenance)
             arena = ProspectiveArena(store)
             case = arena.open_case(
                 case_id=args.id,
@@ -334,6 +374,7 @@ def main(argv=None) -> int:
                     "decision_family": args.decision_family,
                 },
                 assistant_influence=args.assistant_influence,
+                frozen_at=frozen_at,
             )
             mapping = freeze_case_mapping(
                 store,
@@ -350,6 +391,7 @@ def main(argv=None) -> int:
                     "case": case,
                     "r13_gate": gate,
                     "mapping": mapping,
+                    "arm_b_provenance": arm_b_provenance,
                     "request_hashes": {arm: sha256_obj(requests[arm]) for arm in BASELINES},
                     "execution_authority": "NONE",
                 }

@@ -266,7 +266,8 @@ def validate_baseline_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def seal_baseline_spec(store, spec: Mapping[str, Any], *, protocol_manifest_sha256: str) -> dict[str, Any]:
-    validated = validate_baseline_spec(spec)
+    from .r13_manifest_guard import validate_baseline_for_seal
+    validated = validate_baseline_for_seal(spec)
     protocols = list(store.query(kind=R13_PROTOCOL_EVENT))
     if not protocols or protocols[-1].payload.get("manifest_sha256") != protocol_manifest_sha256:
         raise EvidenceError("matching R13 protocol must be recorded before baseline seal")

@@ -3,6 +3,7 @@ import json
 import pytest
 
 from sct.canon import sha256_obj
+from sct.baseline_r13 import baseline_policy_hashes
 from sct.errors import EvidenceError
 from sct.r13 import (
     R13_ALIAS_INVENTORY,
@@ -57,14 +58,11 @@ def _baseline():
     return {
         "schema": R13_BASELINE_SCHEMA,
         "profile_construction_policy": "Frozen profile builder.",
-        "profile_builder_sha256": "1" * 64,
         "retrieval_policy": "Frozen retrieval.",
-        "retrieval_policy_sha256": "2" * 64,
         "source_cutoff_policy": "Frozen cutoff.",
-        "source_cutoff_sha256": "3" * 64,
         "admissible_evidence_pool": "Frozen admitted pool.",
         "context_selection_policy": "Frozen deterministic selection.",
-        "context_selection_policy_sha256": "4" * 64,
+        **baseline_policy_hashes(),
         "disallow_sct_structured_claims": True,
         "payload_parity_ratio": 1.15,
         "execution_authority": "NONE",

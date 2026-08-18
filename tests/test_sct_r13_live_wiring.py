@@ -3,6 +3,8 @@ import json
 import pytest
 
 from sct.bench.arena import ProspectiveArena
+from sct.baseline_r13 import admitted_pool_sha256, admitted_segments, baseline_policy_hashes, build_arm_b_profile_rag
+from sct.r13_live_provenance import build_arm_b_live_provenance_receipt, canonical_evidence_blob
 from sct.bench.envelope import build_standard_inputs
 from sct.canon import sha256_obj
 from sct.errors import BenchError, EvidenceError
@@ -63,14 +65,11 @@ def _baseline_spec():
     return {
         "schema": R13_BASELINE_SCHEMA,
         "profile_construction_policy": "Frozen admitted-evidence profile.",
-        "profile_builder_sha256": "1" * 64,
         "retrieval_policy": "Frozen chronological retrieval.",
-        "retrieval_policy_sha256": "2" * 64,
         "source_cutoff_policy": "Same cutoff as Arm C.",
-        "source_cutoff_sha256": "3" * 64,
         "admissible_evidence_pool": "Same admitted raw pool as Arm C, without SCT-only claims.",
         "context_selection_policy": "Deterministic frozen selection.",
-        "context_selection_policy_sha256": "4" * 64,
+        **baseline_policy_hashes(),
         "disallow_sct_structured_claims": True,
         "payload_parity_ratio": 1.15,
         "execution_authority": "NONE",
@@ -180,28 +179,58 @@ def test_sqlite_physically_blocks_case_frozen_after_r13_amend_until_bound_author
     store.close()
 
     store, _, _ = _fully_authorized_store(tmp_path)
-    rec = store.append("CASE_FROZEN", {"case_id": "AUTHORIZED-DIRECT"})
-    assert rec.payload["case_id"] == "AUTHORIZED-DIRECT"
+    with pytest.raises(EvidenceError, match="R13_ARM_B_LIVE_PROVENANCE_REQUIRED"):
+        store.append("CASE_FROZEN", {"case_id": "AUTHORIZED-DIRECT"})
+    assert not list(store.query(kind="CASE_FROZEN"))
     store.close()
 
 
 def test_legacy_json_prediction_path_is_rejected_once_r13_protocol_is_active(tmp_path):
     store, _, model = _fully_authorized_store(tmp_path)
     arena = ProspectiveArena(store)
+    rows = [
+        {"segment_id":"profile-legacy","source_id":"raw","text":"I compare evidence before choosing Alpha Beta or Gamma.","observed_at":100.0,"profile_eligible":True,"admitted":True,"assistant_authored":False,"sct_only_derived":False,"authorship":"HUMAN_USER"},
+        {"segment_id":"history-legacy","source_id":"raw","text":"Previous synthetic decisions use reversible evidence gates.","observed_at":110.0,"profile_eligible":False,"admitted":True,"assistant_authored":False,"sct_only_derived":False,"authorship":"HUMAN_USER"},
+    ]
+    pool = admitted_pool_sha256(admitted_segments(rows, source_cutoff=200.0))
+    builder = build_arm_b_profile_rag(
+        scenario="Synthetic live-path wiring check",
+        options=("Alpha", "Beta", "Gamma"),
+        evidence_rows=rows,
+        source_cutoff=200.0,
+        target_context_bytes=512,
+        expected_admitted_pool_sha256=pool,
+    )
     inputs = build_standard_inputs(
         scenario="Synthetic live-path wiring check",
         options=("Alpha", "Beta", "Gamma"),
         provider=model["model_repo_or_provider_id"],
         model=model["model_repo_or_provider_id"],
         model_version=model["model_revision"],
-        static_profile="P" * 100,
-        permitted_history="",
-        sct_state="S" * 100,
+        static_profile=builder["static_profile"],
+        permitted_history=builder["permitted_history"],
+        sct_state="S" * builder["payload_bytes"],
         token_budget=512,
         temperature=0.0,
         reasoning="fixed",
         frozen_at=9000.0,
     )
+    blob_sha = store.put_blob(canonical_evidence_blob(rows))
+    baseline = list(store.query(kind="R13_BASELINE_SPEC_SEALED"))[-1].payload
+    provenance = build_arm_b_live_provenance_receipt(
+        case_id="CASE-R13-GUARD",
+        scenario="Synthetic live-path wiring check",
+        options=("Alpha", "Beta", "Gamma"),
+        evidence_rows=rows,
+        evidence_blob_sha256=blob_sha,
+        source_cutoff=200.0,
+        target_context_bytes=512,
+        expected_admitted_pool_sha256=pool,
+        builder_output=builder,
+        profile_rag_snapshot_sha256=inputs["profile_rag"].snapshot_sha256,
+        baseline_manifest_sha256=baseline["baseline_manifest_sha256"],
+    )
+    store.append("R13_ARM_B_LIVE_PROVENANCE_VERIFIED", provenance)
     arena.open_case(
         case_id="CASE-R13-GUARD",
         situation="Synthetic live-path wiring check",
