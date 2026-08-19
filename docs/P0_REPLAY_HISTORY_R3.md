@@ -129,3 +129,5 @@ A valid candidate is evidence that an append would preserve lineage. It is not t
 ## Evidence ceiling
 
 The external expected registry/head digests must be retained by an independently trusted authority/custody surface. Hash chains detect substitution only relative to an expected root/head. If an attacker can rewrite both the complete ledger and the independently retained expected digest, hash equality alone cannot reconstruct authenticity.
+
+R3 ContinuityOS is intentionally domain-generic: `subject_sha256` is a typed content-address field, but ContinuityOS does not itself know whether a `TWIN_COMMITTED`, `DECISION_PACKET`, `HUMAN_REVEAL` or `OUTCOME_RECEIPT` subject is the exact domain artifact expected by TradingOS. That cross-domain subject binding must be verified by the consuming domain/control membrane rather than smuggled into the generic history store.
