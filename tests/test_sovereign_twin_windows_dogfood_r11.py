@@ -27,13 +27,18 @@ def test_dogfood_r11_contract_is_fail_closed_and_opt_in_for_fast_smoke():
     assert "-NoAutostart -NoStart" in text
     assert "runtime source manifest did not bind exact SourceSha" in text
 
+    stop_pos = text.index('Step "Stop validated Twin listener before in-place Windows runtime upgrade"')
+    install_pos = text.index('Step "Upgrade runtime to exact reviewed source without auto-start"')
     dry_pos = text.index('Step "Dry-run re-embedding plan"')
     commit_pos = text.index('Step "Commit re-embedding into fresh target only"')
     compat_pos = text.index('Step "Manifest-bound compatibility gate on target"')
     activate_pos = text.index('Step "Atomic activation with rollback-on-failure"')
     final_pos = text.index('Step "Final active runtime verification"')
-    assert dry_pos < commit_pos < compat_pos < activate_pos < final_pos
+    assert stop_pos < install_pos < dry_pos < commit_pos < compat_pos < activate_pos < final_pos
 
+    assert "refusing to stop unknown listener on 127.0.0.1:8765" in text
+    assert "Restore-SourceTwin $SourceDb" in text
+    assert "previous Twin recovery failed" in text
     assert '"COMPATIBLE_MANIFEST_BOUND"' in text
     assert 'selected_embedding_dimension -eq 768' in text
     assert 'execution_authority = "NONE"' in text
