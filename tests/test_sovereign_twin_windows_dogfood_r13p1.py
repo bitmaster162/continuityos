@@ -8,15 +8,21 @@ import pytest
 SCRIPT = Path("scripts/windows/SovereignTwin-Dogfood-R13P1.ps1")
 
 
+def _require_source_script() -> Path:
+    if not SCRIPT.is_file():
+        pytest.skip("R13P1 Windows harness is source-only and is not shipped in the wheel")
+    return SCRIPT
+
+
 def _text() -> str:
-    return SCRIPT.read_text(encoding="utf-8")
+    return _require_source_script().read_text(encoding="utf-8")
 
 
 def test_r13p1_harness_is_exact_sha_bound_and_authority_none():
     text = _text()
-    assert 'b781108be9c8c7be3d1c7169642b9ef0d657289c' in text
-    assert 'edacb54409ebcf355f7a57b3e34190c79dd6c7cd' in text
-    assert "execution_authority -eq \"NONE\"" in text
+    assert "b781108be9c8c7be3d1c7169642b9ef0d657289c" in text
+    assert "edacb54409ebcf355f7a57b3e34190c79dd6c7cd" in text
+    assert 'execution_authority -eq "NONE"' in text
     assert "can_execute" in text
     assert "capital_permission = 'DENY'" in text
 
@@ -40,10 +46,19 @@ def test_r13p1_harness_preserves_nomic_pointer_and_has_rollback_path():
 
 def test_r13p1_harness_enforces_ascii_only_unicode_emission():
     text = _text()
-    assert "ensure_ascii" not in text  # installed Python owns serialization behavior
+    text.encode("ascii")
     assert "-notmatch '[^\\x00-\\x7F]'" in text
+    assert "FromBase64String" in text
     assert "Unicode round-trip failed" in text
     assert "Unicode was not escaped in CLI JSON" in text
+
+
+def test_r13p1_harness_avoids_ambiguous_variable_colon_interpolation():
+    text = _text()
+    assert "$Stage:" not in text
+    assert "$exitCode:" not in text
+    assert "${Stage}:" in text
+    assert "${exitCode}:" in text
 
 
 def test_r13p1_harness_validates_two_pass_reasoning_off_contract():
@@ -58,7 +73,8 @@ def test_r13p1_harness_validates_two_pass_reasoning_off_contract():
 
 @pytest.mark.skipif(platform.system() != "Windows", reason="PowerShell parser gate is Windows-specific")
 def test_r13p1_harness_parses_in_windows_powershell():
-    script = str(SCRIPT.resolve()).replace("'", "''")
+    source_script = _require_source_script()
+    script = str(source_script.resolve()).replace("'", "''")
     command = (
         "$errors=$null; "
         f"[void][System.Management.Automation.Language.Parser]::ParseFile('{script}', [ref]$null, [ref]$errors); "
