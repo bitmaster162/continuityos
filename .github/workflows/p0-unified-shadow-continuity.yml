@@ -20,9 +20,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Compile P0 continuity adapter
+      - name: Compile P0 continuity adapters
         run: |
-          python -m py_compile continuityos/unified_shadow_continuity.py tests/test_unified_shadow_continuity.py
-      - name: Run P0 continuity tests
+          python -m py_compile continuityos/unified_shadow_continuity.py continuityos/shadow_replay_history.py tests/test_unified_shadow_continuity.py tests/test_shadow_replay_history.py
+      - name: Run P0 continuity and replay-history tests
         run: |
-          python -m unittest tests.test_unified_shadow_continuity -v
+          python -m unittest tests.test_unified_shadow_continuity tests.test_shadow_replay_history -v
