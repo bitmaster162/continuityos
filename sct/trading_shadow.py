@@ -4,12 +4,13 @@ from dataclasses import asdict, is_dataclass
 from typing import Any, Mapping
 
 from .bench.envelope import build_standard_inputs
+from .bench.predict import PREDICTION_SCHEMA
 from .canon import canonical_json, sha256_obj
 from .errors import BenchError
 
 TRADING_CASE_SCHEMA = "tradingos.shadow_trade_case.v1"
 TRADING_TWIN_PREP_SCHEMA = "sct.trading_shadow_preparation.v1"
-SCT_PREDICTION_SCHEMA = "sct.prediction/v2"
+SCT_PREDICTION_SCHEMA = PREDICTION_SCHEMA
 OFFLINE_MODE = "OFFLINE_FIXTURE_ONLY"
 R13_BASELINE_SHA = "944d1711102b7dc12c1be26b17526e87f6b13100"
 
@@ -115,6 +116,7 @@ def prepare_trading_shadow_case(
         "schema": TRADING_TWIN_PREP_SCHEMA,
         "mode": OFFLINE_MODE,
         "r13_baseline_sha": R13_BASELINE_SHA,
+        "prediction_schema": SCT_PREDICTION_SCHEMA,
         "case_id": case["case_id"],
         "trade_case_sha256": case["case_sha256"],
         "situation": _case_situation(case),
@@ -137,7 +139,7 @@ def prepare_trading_shadow_case(
 
 
 def export_sct_prediction(prediction: Any) -> dict[str, Any]:
-    """Project one already committed SCT-arm prediction into a TradingOS shadow packet."""
+    """Project one already committed current-schema SCT-arm prediction into a shadow packet."""
     if is_dataclass(prediction):
         raw = asdict(prediction)
     elif isinstance(prediction, Mapping):
