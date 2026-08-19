@@ -37,8 +37,12 @@ def _validate_trade_case(case: Mapping[str, Any]) -> dict[str, Any]:
     options = case.get("options")
     if not isinstance(options, (list, tuple)) or len(options) < 2:
         _fail("TRADING_SHADOW_OPTIONS_INVALID")
+    if any(not isinstance(option, str) or not option.strip() for option in options):
+        _fail("TRADING_SHADOW_OPTIONS_INVALID")
     if len(set(options)) != len(options):
         _fail("TRADING_SHADOW_OPTIONS_DUPLICATE")
+    if "WAIT" not in options:
+        _fail("TRADING_SHADOW_WAIT_REQUIRED")
     if case.get("human_decision_status") != "UNREVEALED":
         _fail("TRADING_SHADOW_DECISION_ALREADY_REVEALED")
     expected = sha256_obj({k: v for k, v in case.items() if k != "case_sha256"})
