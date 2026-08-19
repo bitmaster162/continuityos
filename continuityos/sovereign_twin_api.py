@@ -14,25 +14,143 @@ from .sovereign_twin_runtime import DEFAULT_EMBEDDING_MODEL, LmStudioClient, Sov
 EXECUTION_AUTHORITY = "NONE"
 
 _UI = """<!doctype html>
-<meta charset=\"utf-8\">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sovereign Twin Local</title>
 <style>
-body{font:16px system-ui;max-width:900px;margin:40px auto;padding:0 18px}
-textarea{width:100%;height:120px}button{padding:10px 16px;margin:8px 8px 8px 0}
-pre{white-space:pre-wrap;background:#111;color:#eee;padding:16px;border-radius:10px}
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;max-width:980px;margin:0 auto;padding:32px 18px 64px;background:#0b0d10;color:#eef2f6}
+header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:24px}
+h1{margin:0 0 4px;font-size:26px}.sub{margin:0;color:#9ba7b4}
+.badges{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.badge{border:1px solid #2f3a46;border-radius:999px;padding:5px 9px;color:#b7c3cf;font-size:12px}
+.panel{background:#12161b;border:1px solid #252d36;border-radius:14px;padding:16px;margin-top:14px}
+textarea{width:100%;min-height:126px;resize:vertical;border:1px solid #37414c;border-radius:10px;background:#0d1116;color:#f4f7fa;padding:13px;font:inherit}
+textarea:focus{outline:2px solid #637083;outline-offset:1px}
+.controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+button{padding:10px 15px;border:1px solid #44505d;border-radius:9px;background:#1a2027;color:#eef2f6;font:inherit;cursor:pointer}
+button:hover{background:#222a33}button:disabled{opacity:.5;cursor:wait}
+#status{min-height:24px;margin-top:10px;color:#aab5c0}
+#status.error{color:#ffb4b4}
+#result[hidden]{display:none}
+.result-head{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}
+#mode{font-weight:700}.meta{color:#9ba7b4;font-size:13px}
+#answer{white-space:pre-wrap;margin:16px 0 0;font-size:16px;line-height:1.65}
+h2{font-size:16px;margin:20px 0 8px}
+#evidence{display:grid;gap:8px;padding:0;margin:0;list-style:none}
+.evidence-item{border:1px solid #2d3742;border-radius:9px;padding:10px 12px;background:#0e1217}
+.evidence-id{font-weight:700;margin-right:8px}.evidence-text{white-space:pre-wrap;color:#cbd4dd}
+details{margin-top:18px;border-top:1px solid #28313a;padding-top:12px}
+summary{cursor:pointer;color:#aeb9c4}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#090b0e;color:#cbd4dd;padding:12px;border-radius:9px;max-height:420px;overflow:auto}
+@media(max-width:640px){header{display:block}.badges{justify-content:flex-start;margin-top:10px}}
 </style>
-<h1>Sovereign Twin — Local</h1>
-<p>Local shadow mode. No execution authority.</p>
-<textarea id=q placeholder=\"Ask your local Twin\"></textarea><br>
-<button onclick=\"ask('fast')\">FAST</button><button onclick=\"ask('deep')\">DEEP</button><button onclick=\"askDeepLite()\">DEEP-LITE</button>
-<pre id=o>Ready.</pre>
+<header>
+ <div>
+  <h1>Sovereign Twin — Local</h1>
+  <p class="sub">Read-only local shadow assistant backed by ContinuityOS memory.</p>
+ </div>
+ <div class="badges">
+  <span class="badge">LOCAL_SHADOW</span>
+  <span class="badge">AUTHORITY NONE</span>
+ </div>
+</header>
+<div class="panel">
+ <textarea id="q" placeholder="Ask your local Twin"></textarea>
+ <div class="controls">
+  <button data-ask onclick="ask('fast')">FAST</button>
+  <button data-ask onclick="ask('deep')">DEEP</button>
+  <button data-ask onclick="askDeepLite()">DEEP-LITE</button>
+ </div>
+ <div id="status">Ready.</div>
+</div>
+<section id="result" class="panel" hidden>
+ <div class="result-head">
+  <div id="mode"></div>
+  <div id="meta" class="meta"></div>
+ </div>
+ <div id="answer"></div>
+ <div id="evidence-wrap" hidden>
+  <h2>Evidence</h2>
+  <ul id="evidence"></ul>
+ </div>
+ <details>
+  <summary>Raw response</summary>
+  <pre id="raw"></pre>
+ </details>
+</section>
 <script>
+const buttons=()=>Array.from(document.querySelectorAll('[data-ask]'));
+function setBusy(label,busy){
+ const status=document.getElementById('status');
+ status.classList.remove('error');
+ status.textContent=busy?label+' thinking...':'Ready.';
+ buttons().forEach(b=>b.disabled=busy);
+}
+function clearNode(node){while(node.firstChild)node.removeChild(node.firstChild)}
+function evidenceLabel(item){
+ const id=item&&item.id!==undefined?'mem:'+String(item.id):'memory';
+ const score=item&&item.score!==undefined?' · score '+String(item.score):'';
+ return id+score;
+}
+function renderAnswer(payload,label){
+ const result=document.getElementById('result');
+ const answer=document.getElementById('answer');
+ const mode=document.getElementById('mode');
+ const meta=document.getElementById('meta');
+ const raw=document.getElementById('raw');
+ const list=document.getElementById('evidence');
+ const wrap=document.getElementById('evidence-wrap');
+
+ mode.textContent=String(payload.mode||label||'answer').toUpperCase();
+ const metaBits=[];
+ if(payload.model)metaBits.push(String(payload.model));
+ if(payload.stats&&payload.stats.pass_count!==undefined)metaBits.push(String(payload.stats.pass_count)+' pass');
+ if(payload.execution_authority)metaBits.push('authority '+String(payload.execution_authority));
+ meta.textContent=metaBits.join(' · ');
+
+ const text=payload.text!==undefined?payload.text:(payload.answer!==undefined?payload.answer:'');
+ answer.textContent=String(text||'No answer text returned.');
+ raw.textContent=JSON.stringify(payload,null,2);
+
+ clearNode(list);
+ const evidence=Array.isArray(payload.evidence)?payload.evidence:[];
+ for(const item of evidence){
+  const li=document.createElement('li');
+  li.className='evidence-item';
+  const id=document.createElement('span');
+  id.className='evidence-id';
+  id.textContent=evidenceLabel(item);
+  const body=document.createElement('div');
+  body.className='evidence-text';
+  body.textContent=String((item&&item.text)!==undefined?item.text:'');
+  li.appendChild(id);
+  li.appendChild(body);
+  list.appendChild(li);
+ }
+ wrap.hidden=evidence.length===0;
+ result.hidden=false;
+}
 async function postAsk(path,payload,label){
- const o=document.getElementById('o');
- o.textContent=label+' thinking...';
- const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
- const j=await r.json();
- o.textContent=JSON.stringify(j,null,2);
+ const query=String(payload.query||'').trim();
+ const status=document.getElementById('status');
+ if(!query){
+  status.classList.add('error');
+  status.textContent='Query required.';
+  return;
+ }
+ setBusy(label,true);
+ try{
+  const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  const data=await response.json();
+  if(!response.ok||data.ok===false||data.error)throw new Error(String(data.error||('HTTP '+response.status)));
+  renderAnswer(data,label);
+  status.textContent=label+' complete.';
+ }catch(error){
+  status.classList.add('error');
+  status.textContent='Error: '+String(error&&error.message?error.message:error);
+ }finally{
+  buttons().forEach(b=>b.disabled=false);
+ }
 }
 async function ask(mode){
  const q=document.getElementById('q').value;
