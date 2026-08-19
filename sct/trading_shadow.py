@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
+from datetime import datetime
 import math
 from typing import Any, Mapping
 
@@ -55,6 +56,20 @@ def _validate_trade_case(case: Mapping[str, Any]) -> dict[str, Any]:
     return dict(case)
 
 
+def _case_frozen_epoch(case: Mapping[str, Any]) -> float:
+    value = case.get("frozen_at")
+    if not isinstance(value, str) or not value.strip():
+        _fail("TRADING_SHADOW_FROZEN_AT_INVALID")
+    text = value.strip()
+    try:
+        parsed = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
+    except ValueError:
+        _fail("TRADING_SHADOW_FROZEN_AT_INVALID")
+    if parsed.tzinfo is None:
+        _fail("TRADING_SHADOW_FROZEN_AT_TZ_REQUIRED")
+    return parsed.timestamp()
+
+
 def _case_situation(case: Mapping[str, Any]) -> str:
     compact = {
         "case_id": case["case_id"],
@@ -93,6 +108,12 @@ def prepare_trading_shadow_case(
     if mode != OFFLINE_MODE:
         _fail("TRADING_SHADOW_R13_LIVE_BYPASS_FORBIDDEN")
     case = _validate_trade_case(trade_case)
+    if isinstance(frozen_at, bool) or not isinstance(frozen_at, (int, float)) or not math.isfinite(float(frozen_at)):
+        _fail("TRADING_SHADOW_FREEZE_EPOCH_INVALID")
+    freeze_epoch = float(frozen_at)
+    case_epoch = _case_frozen_epoch(case)
+    if abs(freeze_epoch - case_epoch) > 1e-6:
+        _fail("TRADING_SHADOW_FREEZE_MISMATCH")
     inputs = build_standard_inputs(
         scenario=_case_situation(case),
         options=case["options"],
@@ -105,7 +126,7 @@ def prepare_trading_shadow_case(
         token_budget=token_budget,
         temperature=temperature,
         reasoning=reasoning,
-        frozen_at=frozen_at,
+        frozen_at=freeze_epoch,
     )
     cluster = {
         "project_id": "tradingos",

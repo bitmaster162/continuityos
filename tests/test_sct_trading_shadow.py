@@ -5,6 +5,9 @@ from sct.canon import sha256_obj
 from sct.errors import BenchError
 from sct.trading_shadow import OFFLINE_MODE, R13_BASELINE_SHA, export_sct_prediction, prepare_trading_shadow_case
 
+CASE_FREEZE_EPOCH = 1_787_151_600.0
+PREDICTION_COMMIT_EPOCH = CASE_FREEZE_EPOCH + 100.0
+
 
 def _case():
     body = {
@@ -42,7 +45,7 @@ def _prepare(case=None, **extra):
         provider="fixture",
         model="fixture-model",
         model_version="v1",
-        frozen_at=1_776_000_000.0,
+        frozen_at=CASE_FREEZE_EPOCH,
         **extra,
     )
 
@@ -58,7 +61,7 @@ def _prediction(*, case_id="trade-001", arm="sct"):
             "change_conditions": ["new evidence"],
             "would_escalate": False,
         },
-        committed_at=1_776_000_100.0,
+        committed_at=PREDICTION_COMMIT_EPOCH,
     )
 
 
@@ -97,6 +100,19 @@ def test_rejects_trade_case_without_wait_option():
         _prepare(case)
 
 
+def test_rejects_mismatched_numeric_freeze_epoch():
+    with pytest.raises(BenchError, match="TRADING_SHADOW_FREEZE_MISMATCH"):
+        prepare_trading_shadow_case(
+            _case(),
+            static_profile="profile context xxxxxxxxxxxxxxxxxxxxxxxxxx",
+            sct_state="sct context xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            provider="fixture",
+            model="fixture-model",
+            model_version="v1",
+            frozen_at=1_776_000_000.0,
+        )
+
+
 def test_export_committed_sct_prediction_preserves_full_hash_basis():
     pred = _prediction()
     exported = export_sct_prediction(pred)
@@ -108,7 +124,7 @@ def test_export_committed_sct_prediction_preserves_full_hash_basis():
     assert exported["reasons"] == ("historical pattern",)
     assert exported["change_conditions"] == ("new evidence",)
     assert exported["would_escalate"] is False
-    assert exported["committed_at"] == 1_776_000_100.0
+    assert exported["committed_at"] == PREDICTION_COMMIT_EPOCH
     assert exported["prediction_id"] == sha256_obj({k: v for k, v in exported.items() if k != "prediction_id"})
     assert exported["execution_authority"] == "NONE"
     assert exported["can_execute"] is False
