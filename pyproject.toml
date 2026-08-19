@@ -45,6 +45,7 @@ continuity-context = "continuityos.operational_context:main"
 continuity-session = "continuityos.session_input:main"
 sct = "sct.cli:main"
 sct-r13 = "sct.r13_cli:main"
+sovereign-twin = "continuityos.sovereign_twin_cli:main"
 
 [project.urls]
 Homepage = "https://sovereign-arena-site.vercel.app/continuityos"
