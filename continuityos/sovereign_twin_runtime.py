@@ -256,8 +256,11 @@ class SovereignTwinRuntime:
     ):
         self.client = client or LmStudioClient()
         self.embedding_model = str(embedding_model)
+        self.memory_db = os.path.realpath(
+            os.path.abspath(os.path.expanduser(str(memory_db)))
+        )
         self.memory = Memory(
-            memory_db,
+            self.memory_db,
             embedder=lambda text: self.client.embed(
                 text,
                 model=self.embedding_model,
@@ -380,6 +383,7 @@ class SovereignTwinRuntime:
             "ok": all(row["visible_to_server"] for row in profiles.values()) and embedding_visible,
             "server": self.client.base_url,
             "api": "lm-studio-rest-v1+openai-embeddings",
+            "memory_db": self.memory_db,
             "profiles": profiles,
             "embedding": {
                 "model": self.embedding_model,
