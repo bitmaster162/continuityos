@@ -77,6 +77,22 @@ def test_rejects_trade_case_with_action_authority():
         )
 
 
+def test_rejects_trade_case_without_wait_option():
+    case = _case()
+    case["options"] = ("LONG", "SHORT")
+    case["case_sha256"] = sha256_obj({k: v for k, v in case.items() if k != "case_sha256"})
+    with pytest.raises(BenchError, match="TRADING_SHADOW_WAIT_REQUIRED"):
+        prepare_trading_shadow_case(
+            case,
+            static_profile="profile context",
+            sct_state="sct context",
+            provider="fixture",
+            model="fixture-model",
+            model_version="v1",
+            frozen_at=1_776_000_000.0,
+        )
+
+
 def test_export_committed_sct_prediction():
     pred = build_prediction(
         case_id="trade-001",
