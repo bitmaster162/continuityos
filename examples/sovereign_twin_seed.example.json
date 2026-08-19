@@ -1,0 +1,19 @@
+{
+  "schema": "sovereign-twin.memory-seed/v1",
+  "entries": [
+    {
+      "text": "Prefer local-first processing for sensitive personal context.",
+      "namespace": "rules",
+      "tags": ["privacy", "local-first"],
+      "type": "preference",
+      "key": "privacy.local-first"
+    },
+    {
+      "text": "Sovereign Twin model output never grants execution authority.",
+      "namespace": "canon",
+      "tags": ["governance", "authority"],
+      "type": "rule",
+      "key": "authority.none"
+    }
+  ]
+}
