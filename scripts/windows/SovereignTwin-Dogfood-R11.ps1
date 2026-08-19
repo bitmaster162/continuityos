@@ -10,6 +10,7 @@ $ErrorActionPreference = "Stop"
 $Repo = "bitmaster162/continuityos"
 $Root = Join-Path $env:LOCALAPPDATA "SovereignTwin"
 $Twin = Join-Path $Root "runtime-venv\Scripts\sovereign-twin.exe"
+$RuntimeManifestPath = Join-Path $Root "runtime-source.json"
 $Receipts = Join-Path $Root "receipts"
 $LlmUrl = "http://127.0.0.1:1234"
 $UiUrl = "http://127.0.0.1:8765"
@@ -21,6 +22,9 @@ function Download-Reviewed([string]$Path, [string]$OutFile) {
     $uri = "https://raw.githubusercontent.com/$Repo/$SourceSha/$Path"
     Invoke-WebRequest -Uri $uri -OutFile $OutFile -UseBasicParsing
     Require (Test-Path -LiteralPath $OutFile) "download failed: $Path"
+}
+function Resolve-ExactPath([string]$PathValue) {
+    return [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $PathValue).Path)
 }
 function Stop-KnownTwinListener {
     $listener = Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -57,6 +61,7 @@ function Restore-SourceTwin([string]$ExpectedDb) {
 if ($SourceSha -notmatch '^[0-9a-fA-F]{40}$') { throw "-SourceSha must be an exact 40-character Git commit SHA" }
 $SourceSha = $SourceSha.ToLowerInvariant()
 Require (Test-Path -LiteralPath $SourceDb) "source memory DB missing: $SourceDb"
+Require (Test-Path -LiteralPath $RuntimeManifestPath) "runtime source manifest missing: $RuntimeManifestPath"
 Require ((Get-ScheduledTask -TaskName "SovereignTwin-LLMStudio" -ErrorAction SilentlyContinue) -ne $null) "SovereignTwin-LLMStudio task missing"
 Require ((Get-ScheduledTask -TaskName $UiTask -ErrorAction SilentlyContinue) -ne $null) "$UiTask task missing"
 
@@ -64,7 +69,7 @@ if (-not $TargetDb) {
     $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $TargetDb = "$HOME\.continuityos\memory-nomic-768-$stamp.db"
 }
-$SourceDb = [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $SourceDb).Path)
+$SourceDb = Resolve-ExactPath $SourceDb
 $TargetDb = [System.IO.Path]::GetFullPath($TargetDb)
 Require ($SourceDb -ne $TargetDb) "source and target DB must be different paths"
 Require (-not (Test-Path -LiteralPath $TargetDb)) "target DB already exists: $TargetDb"
@@ -78,6 +83,15 @@ $ActivationSucceeded = $false
 Start-Transcript -Path $Transcript -Force | Out-Null
 
 try {
+    Step "Bind migration source to current runtime manifest"
+    $preRuntime = Get-Content -LiteralPath $RuntimeManifestPath -Raw | ConvertFrom-Json
+    Require ([string]$preRuntime.execution_authority -eq "NONE") "current runtime manifest authority is not NONE"
+    Require (-not [bool]$preRuntime.can_execute) "current runtime manifest unexpectedly grants execution"
+    Require (-not [string]::IsNullOrWhiteSpace([string]$preRuntime.memory_db)) "current runtime manifest has no memory_db"
+    $currentManifestDb = Resolve-ExactPath ([string]$preRuntime.memory_db)
+    Require ($currentManifestDb -eq $SourceDb) "SourceDb does not match current runtime memory_db: $currentManifestDb"
+    Write-Host "current source DB binding: PASS ($SourceDb)"
+
     Step "Preflight local services and model catalog"
     $daemonRaw = & lms daemon status --json 2>$null
     if ($LASTEXITCODE -ne 0) { throw "lms daemon status failed" }
@@ -112,11 +126,11 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "runtime installer failed" }
     Require (Test-Path -LiteralPath $Twin) "Twin executable missing after runtime upgrade"
 
-    $runtimeManifestPath = Join-Path $Root "runtime-source.json"
-    $runtimeManifest = Get-Content -LiteralPath $runtimeManifestPath -Raw | ConvertFrom-Json
+    $runtimeManifest = Get-Content -LiteralPath $RuntimeManifestPath -Raw | ConvertFrom-Json
     Require ([string]$runtimeManifest.source_sha -eq $SourceSha) "runtime source manifest did not bind exact SourceSha"
     Require ([string]$runtimeManifest.execution_authority -eq "NONE") "runtime manifest authority is not NONE"
     Require (-not [bool]$runtimeManifest.can_execute) "runtime manifest unexpectedly grants execution"
+    Require ((Resolve-ExactPath ([string]$runtimeManifest.memory_db)) -eq $SourceDb) "upgraded runtime manifest changed source DB unexpectedly"
     Write-Host "runtime exact-source binding: PASS"
 
     Step "Read-only compatibility report on legacy source"
