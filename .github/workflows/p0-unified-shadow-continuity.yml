@@ -1,0 +1,28 @@
+name: P0 Unified Shadow Continuity
+
+on:
+  push:
+    branches:
+      - agent/p0-unified-shadow-continuity-r1
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  offline-shadow-continuity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile P0 continuity adapter
+        run: |
+          python -m py_compile continuityos/unified_shadow_continuity.py tests/test_unified_shadow_continuity.py
+      - name: Run P0 continuity tests
+        run: |
+          python -m pytest -q tests/test_unified_shadow_continuity.py
