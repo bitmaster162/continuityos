@@ -54,7 +54,7 @@ class ErrorCleanupClient:
                 "key": "qwen3.6-35b-a3b",
                 "loaded_instances": ([{"id": "deep-timeout-1", "config": {}}] if self.deep_loaded else []),
             },
-            {"key": DEFAULT_EMEDDING_MODEL, "loaded_instances": []},
+            {"key": DEFAULT_EMBEDDING_MODEL, "loaded_instances": []},
         ]
 
     def unload(self, instance_id):
