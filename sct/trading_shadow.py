@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
+import math
 from typing import Any, Mapping
 
 from .bench.envelope import build_standard_inputs
@@ -139,7 +140,11 @@ def prepare_trading_shadow_case(
 
 
 def export_sct_prediction(prediction: Any) -> dict[str, Any]:
-    """Project one already committed current-schema SCT-arm prediction into a shadow packet."""
+    """Project one hash-intact current-schema SCT-arm prediction into a shadow packet.
+
+    The export preserves the full content-addressed prediction body so downstream consumers
+    can verify `prediction_id` instead of trusting a mutable projection of probabilities.
+    """
     if is_dataclass(prediction):
         raw = asdict(prediction)
     elif isinstance(prediction, Mapping):
@@ -152,17 +157,46 @@ def export_sct_prediction(prediction: Any) -> dict[str, Any]:
         _fail("TRADING_SHADOW_PREDICTION_NOT_SCT_ARM")
     if raw.get("execution_authority") != "NONE" or raw.get("can_execute") is not False:
         _fail("TRADING_SHADOW_PREDICTION_UNSAFE")
+
+    options = raw.get("options")
+    if not isinstance(options, (list, tuple)) or len(options) < 2:
+        _fail("TRADING_SHADOW_PREDICTION_OPTIONS")
+    options = tuple(str(option) for option in options)
+
     probs = raw.get("option_probabilities")
-    if not isinstance(probs, Mapping) or not probs:
+    if not isinstance(probs, Mapping) or set(probs) != set(options):
         _fail("TRADING_SHADOW_PREDICTION_PROBABILITIES")
-    return {
+    probabilities = dict(probs)
+
+    committed_at = raw.get("committed_at")
+    if isinstance(committed_at, bool) or not isinstance(committed_at, (int, float)) or not math.isfinite(float(committed_at)):
+        _fail("TRADING_SHADOW_PREDICTION_COMMITTED_AT")
+
+    reasons = tuple(str(x).strip() for x in raw.get("reasons", ()) if str(x).strip())
+    change_conditions = tuple(str(x).strip() for x in raw.get("change_conditions", ()) if str(x).strip())
+    would_escalate = raw.get("would_escalate", False)
+    if not isinstance(would_escalate, bool):
+        _fail("TRADING_SHADOW_PREDICTION_WOULD_ESCALATE")
+
+    body = {
         "schema": SCT_PREDICTION_SCHEMA,
         "case_id": raw.get("case_id"),
-        "prediction_id": raw.get("prediction_id"),
+        "arm": "sct",
+        "options": options,
+        "option_probabilities": probabilities,
         "predicted_choice": raw.get("predicted_choice"),
         "confidence": raw.get("confidence"),
-        "option_probabilities": dict(probs),
-        "committed_at": raw.get("committed_at"),
+        "reasons": reasons,
+        "change_conditions": change_conditions,
+        "would_escalate": would_escalate,
+        "committed_at": float(committed_at),
         "execution_authority": "NONE",
         "can_execute": False,
+    }
+    expected_prediction_id = sha256_obj(body)
+    if raw.get("prediction_id") != expected_prediction_id:
+        _fail("TRADING_SHADOW_PREDICTION_HASH_MISMATCH")
+    return {
+        **body,
+        "prediction_id": expected_prediction_id,
     }

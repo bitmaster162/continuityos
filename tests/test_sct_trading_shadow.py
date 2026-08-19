@@ -47,6 +47,21 @@ def _prepare(case=None, **extra):
     )
 
 
+def _prediction(*, case_id="trade-001", arm="sct"):
+    return build_prediction(
+        case_id=case_id,
+        arm=arm,
+        options=("LONG", "SHORT", "WAIT"),
+        response={
+            "option_probabilities": {"LONG": 0.7, "SHORT": 0.1, "WAIT": 0.2},
+            "reasons": ["historical pattern"],
+            "change_conditions": ["new evidence"],
+            "would_escalate": False,
+        },
+        committed_at=1_776_000_100.0,
+    )
+
+
 def test_prepare_is_offline_shadow_only_and_r13_bound():
     prepared = _prepare()
     assert prepared["schema"] == "sct.trading_shadow_preparation.v1"
@@ -82,38 +97,40 @@ def test_rejects_trade_case_without_wait_option():
         _prepare(case)
 
 
-def test_export_committed_sct_prediction():
-    pred = build_prediction(
-        case_id="trade-001",
-        arm="sct",
-        options=("LONG", "SHORT", "WAIT"),
-        response={
-            "option_probabilities": {"LONG": 0.7, "SHORT": 0.1, "WAIT": 0.2},
-            "reasons": ["historical pattern"],
-            "change_conditions": ["new evidence"],
-            "would_escalate": False,
-        },
-        committed_at=1_776_000_100.0,
-    )
+def test_export_committed_sct_prediction_preserves_full_hash_basis():
+    pred = _prediction()
     exported = export_sct_prediction(pred)
+    assert exported["case_id"] == "trade-001"
+    assert exported["arm"] == "sct"
+    assert tuple(exported["options"]) == ("LONG", "SHORT", "WAIT")
     assert exported["predicted_choice"] == "LONG"
     assert exported["option_probabilities"]["LONG"] == 0.7
+    assert exported["reasons"] == ("historical pattern",)
+    assert exported["change_conditions"] == ("new evidence",)
+    assert exported["would_escalate"] is False
+    assert exported["committed_at"] == 1_776_000_100.0
+    assert exported["prediction_id"] == sha256_obj({k: v for k, v in exported.items() if k != "prediction_id"})
     assert exported["execution_authority"] == "NONE"
     assert exported["can_execute"] is False
 
 
 def test_export_rejects_non_sct_arm():
-    pred = build_prediction(
-        case_id="trade-001",
-        arm="generic",
-        options=("LONG", "SHORT", "WAIT"),
-        response={
-            "option_probabilities": {"LONG": 0.3, "SHORT": 0.2, "WAIT": 0.5},
-            "reasons": [],
-            "change_conditions": [],
-            "would_escalate": False,
-        },
-        committed_at=1_776_000_100.0,
-    )
+    pred = _prediction(arm="generic")
     with pytest.raises(BenchError, match="NOT_SCT_ARM"):
         export_sct_prediction(pred)
+
+
+def test_export_rejects_tampered_probability_with_stale_prediction_id():
+    raw = _prediction().to_dict()
+    raw["option_probabilities"] = {"LONG": 0.2, "SHORT": 0.1, "WAIT": 0.7}
+    raw["predicted_choice"] = "WAIT"
+    raw["confidence"] = 0.7
+    with pytest.raises(BenchError, match="TRADING_SHADOW_PREDICTION_HASH_MISMATCH"):
+        export_sct_prediction(raw)
+
+
+def test_export_rejects_cross_case_relabel_with_stale_prediction_id():
+    raw = _prediction().to_dict()
+    raw["case_id"] = "trade-OTHER"
+    with pytest.raises(BenchError, match="TRADING_SHADOW_PREDICTION_HASH_MISMATCH"):
+        export_sct_prediction(raw)
