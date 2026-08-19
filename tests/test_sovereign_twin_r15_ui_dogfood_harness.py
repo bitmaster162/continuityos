@@ -52,7 +52,7 @@ def test_r15_harness_checks_human_ui_and_real_deep_lite_contract():
         "draft token budget mismatch",
         "final token budget mismatch",
         "final answer cites mem:$id outside retrieved evidence",
-        "LMS_POST_API_DOGFOOD=EMPTY",
+        "Assert-LmsEmpty 'POST_API_DOGFOOD'",
         "R15_UI_DOGFOOD=PASS",
     ):
         assert marker in text
