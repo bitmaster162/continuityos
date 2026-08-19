@@ -87,6 +87,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(200, {
                     "ok": True,
                     "mode": "LOCAL_SHADOW",
+                    "memory_db": self.server.runtime.memory_db,
                     "execution_authority": EXECUTION_AUTHORITY,
                     "can_execute": False,
                 })
