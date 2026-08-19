@@ -1,4 +1,8 @@
 from pathlib import Path
+import platform
+import subprocess
+
+import pytest
 
 
 SCRIPT = Path("scripts/windows/SovereignTwin-Dogfood-R13P1.ps1")
@@ -36,7 +40,7 @@ def test_r13p1_harness_preserves_nomic_pointer_and_has_rollback_path():
 
 def test_r13p1_harness_enforces_ascii_only_unicode_emission():
     text = _text()
-    assert "ensure_ascii" not in text  # implementation check belongs to installed Python, not the harness source
+    assert "ensure_ascii" not in text  # installed Python owns serialization behavior
     assert "-notmatch '[^\\x00-\\x7F]'" in text
     assert "Unicode round-trip failed" in text
     assert "Unicode was not escaped in CLI JSON" in text
@@ -50,3 +54,20 @@ def test_r13p1_harness_validates_two_pass_reasoning_off_contract():
     assert "final_max_output_tokens -eq 700" in text
     assert "reasoning_output_tokens -eq 0" in text
     assert "outside retrieved evidence" in text
+
+
+@pytest.mark.skipif(platform.system() != "Windows", reason="PowerShell parser gate is Windows-specific")
+def test_r13p1_harness_parses_in_windows_powershell():
+    script = str(SCRIPT.resolve()).replace("'", "''")
+    command = (
+        "$errors=$null; "
+        f"[void][System.Management.Automation.Language.Parser]::ParseFile('{script}', [ref]$null, [ref]$errors); "
+        "if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }"
+    )
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
