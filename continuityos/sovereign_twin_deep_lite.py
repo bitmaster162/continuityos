@@ -251,7 +251,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _emit(payload: Mapping[str, Any], code: int = 0) -> int:
-    print(json.dumps(dict(payload), ensure_ascii=False, sort_keys=True))
+    # Keep CLI JSON ASCII-only so Windows legacy console encodings cannot corrupt or reject Unicode payloads.
+    print(json.dumps(dict(payload), ensure_ascii=True, sort_keys=True))
     return code
 
 
