@@ -1,0 +1,150 @@
+param(
+    [Parameter(Mandatory=$true)][string]$SourceSha,
+    [switch]$NoAutostart,
+    [switch]$NoStart
+)
+
+$ErrorActionPreference = "Stop"
+$Repo = "bitmaster162/continuityos"
+$Root = Join-Path $env:LOCALAPPDATA "SovereignTwin"
+$Venv = Join-Path $Root "runtime-venv"
+$Python = Join-Path $Venv "Scripts\python.exe"
+$Twin = Join-Path $Venv "Scripts\sovereign-twin.exe"
+$Launcher = Join-Path $Root "start-sovereign-twin.ps1"
+$Manifest = Join-Path $Root "runtime-source.json"
+$TaskName = "SovereignTwin-UI"
+$MemoryDb = Join-Path $HOME ".continuityos\memory.db"
+$AdmissionQueue = Join-Path $HOME ".continuityos\twin-admissions.jsonl"
+$UiUrl = "http://127.0.0.1:8765"
+
+function Step([string]$Text) { Write-Host "`n=== $Text ===" -ForegroundColor Cyan }
+
+if ($SourceSha -notmatch '^[0-9a-fA-F]{40}$') {
+    throw "-SourceSha must be an exact 40-character Git commit SHA"
+}
+$SourceSha = $SourceSha.ToLowerInvariant()
+
+Step "Preflight"
+$llmTask = Get-ScheduledTask -TaskName "SovereignTwin-LLMStudio" -ErrorAction SilentlyContinue
+if (-not $llmTask) {
+    throw "SovereignTwin-LLMStudio task not found. Finish the llmster bootstrap first."
+}
+try {
+    $health = Invoke-RestMethod -Uri "http://127.0.0.1:1234/api/v1/models" -TimeoutSec 8
+    if (-not $health.models) { Write-Warning "LM Studio API is reachable but model list is empty." }
+} catch {
+    throw "LM Studio/llmster API is not reachable on 127.0.0.1:1234: $($_.Exception.Message)"
+}
+
+$py = Get-Command py.exe -ErrorAction SilentlyContinue
+if ($py) {
+    $BootstrapPython = $py.Source
+    $PyArgs = @("-3.11")
+} else {
+    $p = Get-Command python.exe -ErrorAction SilentlyContinue
+    if (-not $p) { throw "Python 3.10+ is required" }
+    $BootstrapPython = $p.Source
+    $PyArgs = @()
+}
+
+$version = & $BootstrapPython @PyArgs -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+$parts = $version.Trim().Split('.')
+if ([int]$parts[0] -lt 3 -or ([int]$parts[0] -eq 3 -and [int]$parts[1] -lt 10)) {
+    throw "Python 3.10+ required; found $version"
+}
+Write-Host "Python bootstrap: $BootstrapPython $($PyArgs -join ' ') ($version)"
+
+Step "Download exact reviewed source"
+New-Item -ItemType Directory -Path $Root -Force | Out-Null
+$Work = Join-Path $env:TEMP ("sovereign-twin-install-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $Work -Force | Out-Null
+try {
+    $Zip = Join-Path $Work "source.zip"
+    $ArchiveUrl = "https://github.com/$Repo/archive/$SourceSha.zip"
+    Invoke-WebRequest -Uri $ArchiveUrl -OutFile $Zip -UseBasicParsing
+    Expand-Archive -Path $Zip -DestinationPath $Work -Force
+    $Source = Get-ChildItem $Work -Directory | Where-Object { $_.Name -like 'continuityos-*' } | Select-Object -First 1
+    if (-not $Source) { throw "Downloaded archive did not contain continuityos source directory" }
+
+    Step "Create isolated runtime venv"
+    if (-not (Test-Path $Python)) {
+        & $BootstrapPython @PyArgs -m venv $Venv
+    }
+    if (-not (Test-Path $Python)) { throw "venv Python was not created" }
+
+    Step "Install exact source into venv"
+    & $Python -m pip install --disable-pip-version-check --no-deps --upgrade $Source.FullName
+    if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
+    if (-not (Test-Path $Twin)) { throw "sovereign-twin entry point not installed" }
+
+    Step "Initialize local memory container"
+    & $Twin --db $MemoryDb init
+    if ($LASTEXITCODE -ne 0) { throw "sovereign-twin init failed" }
+
+    $manifestObj = [ordered]@{
+        schema = "sovereign-twin.windows-runtime-source/v1"
+        repository = $Repo
+        source_sha = $SourceSha
+        installed_at_utc = [DateTime]::UtcNow.ToString("o")
+        python = $Python
+        twin_executable = $Twin
+        memory_db = $MemoryDb
+        admission_queue = $AdmissionQueue
+        llm_server = "http://127.0.0.1:1234"
+        ui = $UiUrl
+        execution_authority = "NONE"
+        can_execute = $false
+    }
+    $manifestObj | ConvertTo-Json -Depth 5 | Set-Content -Path $Manifest -Encoding UTF8
+} finally {
+    Remove-Item $Work -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Step "Write local UI launcher"
+$escapedTwin = $Twin.Replace("'", "''")
+$escapedDb = $MemoryDb.Replace("'", "''")
+$escapedQueue = $AdmissionQueue.Replace("'", "''")
+$launcherBody = @"
+`$ErrorActionPreference = "SilentlyContinue"
+Start-Sleep -Seconds 8
+try {
+    `$h = Invoke-RestMethod -Uri "$UiUrl/health" -TimeoutSec 2
+    if (`$h.ok) { exit 0 }
+} catch {}
+& '$escapedTwin' --db '$escapedDb' --admission-queue '$escapedQueue' serve --host 127.0.0.1 --port 8765
+"@
+Set-Content -Path $Launcher -Value $launcherBody -Encoding UTF8
+
+if (-not $NoAutostart) {
+    Step "Register per-user UI autostart"
+    $psExe = (Get-Command powershell.exe).Source
+    $args = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Launcher`""
+    $action = New-ScheduledTaskAction -Execute $psExe -Argument $args
+    $trigger = New-ScheduledTaskTrigger -AtLogOn
+    $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal `
+        -Description "Start local Sovereign Twin UI/API on 127.0.0.1:8765" -Force | Out-Null
+    Write-Host "Autostart installed: $TaskName"
+}
+
+if (-not $NoStart) {
+    Step "Start local Twin UI now"
+    Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$Launcher`""
+    ) | Out-Null
+
+    $ok = $false
+    for ($i = 0; $i -lt 30; $i++) {
+        Start-Sleep -Seconds 1
+        try {
+            $h = Invoke-RestMethod -Uri "$UiUrl/health" -TimeoutSec 2
+            if ($h.ok) { $ok = $true; break }
+        } catch {}
+    }
+    if (-not $ok) { throw "Sovereign Twin UI did not become healthy on $UiUrl" }
+    Write-Host "Twin health: PASS"
+}
+
+Step "Receipt"
+Get-Content $Manifest
+Write-Host "`nDONE. Open $UiUrl"
