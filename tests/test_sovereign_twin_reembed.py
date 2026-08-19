@@ -8,6 +8,7 @@ import pytest
 
 from continuityos.store import Store
 from continuityos.sovereign_twin_reembed import TwinReembedError, reembed_memory
+from continuityos.sovereign_twin_runtime import NOMIC_DOCUMENT_TASK, NOMIC_QUERY_TASK
 
 
 class FakeClient:
@@ -15,8 +16,8 @@ class FakeClient:
         self.dim = dim
         self.calls = []
 
-    def embed(self, text: str, *, model: str):
-        self.calls.append((text, model))
+    def embed(self, text: str, *, model: str, task=None):
+        self.calls.append((text, model, task))
         seed = float((sum(ord(c) for c in text) % 17) + 1)
         return [seed / (i + 1) for i in range(self.dim)]
 
@@ -53,14 +54,20 @@ def test_reembed_dry_run_never_creates_target(tmp_path):
     target = tmp_path / "memory-nomic.db"
     _source(source)
     before = _sha(source)
+    client = FakeClient(5)
 
-    out = reembed_memory(str(source), str(target), client=FakeClient(5), commit=False)
+    out = reembed_memory(str(source), str(target), client=client, commit=False)
 
     assert out["ok"] is True
     assert out["dry_run"] is True
     assert out["source_count"] == 2
     assert out["source_vector_dimension_counts"] == {"2": 1, "3": 1}
     assert out["embedding_dimension"] == 5
+    assert out["embedding_contract"] == {
+        "document_task_prefix": NOMIC_DOCUMENT_TASK,
+        "query_task_prefix": NOMIC_QUERY_TASK,
+    }
+    assert client.calls[0][2] == NOMIC_QUERY_TASK
     assert out["source_mutated"] is False
     assert not target.exists()
     assert _sha(source) == before
@@ -71,8 +78,9 @@ def test_reembed_commit_preserves_stable_rows_and_replaces_vectors(tmp_path):
     target = tmp_path / "memory-nomic.db"
     _source(source)
     before = _sha(source)
+    client = FakeClient(5)
 
-    out = reembed_memory(str(source), str(target), client=FakeClient(5), commit=True)
+    out = reembed_memory(str(source), str(target), client=client, commit=True)
 
     assert out["ok"] is True
     assert out["verification"]["ok"] is True
@@ -82,6 +90,9 @@ def test_reembed_commit_preserves_stable_rows_and_replaces_vectors(tmp_path):
     assert out["verification"]["namespace_parity"] is True
     assert out["verification"]["all_vectors_present"] is True
     assert out["verification"]["target_vector_dimension_counts"] == {"5": 2}
+    assert client.calls[0][2] == NOMIC_QUERY_TASK
+    document_calls = [call for call in client.calls if call[2] == NOMIC_DOCUMENT_TASK]
+    assert len(document_calls) == 2
     assert _sha(source) == before
 
     src = Store(str(source), read_only=True)
@@ -105,6 +116,10 @@ def test_reembed_commit_preserves_stable_rows_and_replaces_vectors(tmp_path):
     m = json.loads(manifest.read_text(encoding="utf-8"))
     assert m["embedding_dimension"] == 5
     assert m["embedding_model"] == "text-embedding-nomic-embed-text-v1.5"
+    assert m["embedding_contract"] == {
+        "document_task_prefix": NOMIC_DOCUMENT_TASK,
+        "query_task_prefix": NOMIC_QUERY_TASK,
+    }
     assert m["execution_authority"] == "NONE"
     assert m["can_execute"] is False
 
