@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from time import monotonic
 from typing import Any, Mapping, Sequence
 
@@ -32,6 +33,7 @@ DEEP_LITE_DRAFT_MAX_OUTPUT_TOKENS = 400
 DEEP_LITE_FINAL_MAX_OUTPUT_TOKENS = 700
 DEEP_LITE_DRAFT_TEMPERATURE = 0.15
 DEEP_LITE_FINAL_TEMPERATURE = 0.10
+_MEMORY_CITATION_RE = re.compile(r"\bmem:(\d+)\b")
 
 
 def _safe_pass_stats(result: LocalChatResult) -> dict[str, Any]:
@@ -132,6 +134,18 @@ def _best_effort_unload(client: LmStudioClient, instance_ids: Sequence[str]) -> 
             pass
 
 
+def _validate_final_citations(text: str, evidence: Sequence[TwinEvidence]) -> None:
+    """Fail closed if the final answer cites memory that was not actually retrieved."""
+    allowed = {int(row.id) for row in evidence}
+    cited = {int(value) for value in _MEMORY_CITATION_RE.findall(str(text))}
+    unknown = sorted(cited - allowed)
+    if unknown:
+        refs = ", ".join(f"mem:{value}" for value in unknown)
+        raise LocalModelEndpointError(
+            f"DEEP-LITE final answer cited memory outside retrieved evidence: {refs}"
+        )
+
+
 def run_deep_lite(
     query: str,
     *,
@@ -153,11 +167,11 @@ def run_deep_lite(
         embedding_model=embedding_model,
         recall_k=recall_k,
     )
-    preexisting_ids: list[str] = []
-    cleanup_ids: list[str] = []
+    preexisting_ids: set[str] = set()
+    cleanup_ids: set[str] = set()
     started = monotonic()
     try:
-        preexisting_ids = _loaded_instance_ids(local_client, model)
+        preexisting_ids = set(_loaded_instance_ids(local_client, model))
         evidence = runtime.evidence(text)
 
         draft = local_client.chat(
@@ -169,8 +183,8 @@ def run_deep_lite(
             max_output_tokens=DEEP_LITE_DRAFT_MAX_OUTPUT_TOKENS,
             temperature=DEEP_LITE_DRAFT_TEMPERATURE,
         )
-        if draft.model_instance_id:
-            cleanup_ids.append(draft.model_instance_id)
+        if draft.model_instance_id and draft.model_instance_id not in preexisting_ids:
+            cleanup_ids.add(draft.model_instance_id)
 
         final_input = (
             "ORIGINAL_QUERY:\n"
@@ -187,9 +201,10 @@ def run_deep_lite(
             max_output_tokens=DEEP_LITE_FINAL_MAX_OUTPUT_TOKENS,
             temperature=DEEP_LITE_FINAL_TEMPERATURE,
         )
-        if final.model_instance_id:
-            cleanup_ids.append(final.model_instance_id)
+        if final.model_instance_id and final.model_instance_id not in preexisting_ids:
+            cleanup_ids.add(final.model_instance_id)
 
+        _validate_final_citations(final.text, evidence)
         stats = _aggregate_stats(draft, final, monotonic() - started)
         return TwinAnswer(
             text=final.text,
@@ -200,23 +215,17 @@ def run_deep_lite(
             reasoning_present=False,
         )
     except LocalModelEndpointError as exc:
-        if exc.model_instance_id:
-            cleanup_ids.append(exc.model_instance_id)
-        elif not preexisting_ids:
-            try:
-                cleanup_ids.extend(_loaded_instance_ids(local_client, model))
-            except LocalModelEndpointError:
-                pass
+        if exc.model_instance_id and exc.model_instance_id not in preexisting_ids:
+            cleanup_ids.add(exc.model_instance_id)
         raise
     finally:
-        # Preserve pre-existing residency. If this call loaded the model, unload it on both PASS and FAIL.
-        if not preexisting_ids:
-            if not cleanup_ids:
-                try:
-                    cleanup_ids.extend(_loaded_instance_ids(local_client, model))
-                except LocalModelEndpointError:
-                    pass
-            _best_effort_unload(local_client, cleanup_ids)
+        # Preserve every instance that existed before this call, but unload anything this call added.
+        try:
+            current_ids = set(_loaded_instance_ids(local_client, model))
+            cleanup_ids.update(current_ids - preexisting_ids)
+        except LocalModelEndpointError:
+            pass
+        _best_effort_unload(local_client, sorted(cleanup_ids))
         runtime.close()
 
 
