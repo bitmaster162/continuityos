@@ -13,7 +13,12 @@ from typing import Any, Iterable, Mapping
 from .adapters import import_path
 from .memory import Memory
 from .store import Store
-from .sovereign_twin_runtime import DEFAULT_EMBEDDING_MODEL, LmStudioClient
+from .sovereign_twin_runtime import (
+    DEFAULT_EMBEDDING_MODEL,
+    LmStudioClient,
+    NOMIC_DOCUMENT_TASK,
+    NOMIC_QUERY_TASK,
+)
 
 MEMORY_SEED_SCHEMA = "sovereign-twin.memory-seed/v1"
 MEMORY_MANIFEST_SCHEMA = "sovereign-twin.memory-manifest/v1"
@@ -71,6 +76,10 @@ def _write_manifest(db: Path, *, embedding_model: str, embedding_dimension: int)
         "db": str(db),
         "embedding_model": str(embedding_model),
         "embedding_dimension": int(embedding_dimension),
+        "embedding_contract": {
+            "document_task_prefix": NOMIC_DOCUMENT_TASK,
+            "query_task_prefix": NOMIC_QUERY_TASK,
+        },
         "updated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "execution_authority": "NONE",
         "can_execute": False,
@@ -86,7 +95,11 @@ def _verify_embedding_compatibility(
     client: LmStudioClient,
     embedding_model: str,
 ) -> tuple[int, list[int]]:
-    probe = client.embed("Sovereign Twin embedding compatibility probe", model=embedding_model)
+    probe = client.embed(
+        "Sovereign Twin embedding compatibility probe",
+        model=embedding_model,
+        task=NOMIC_QUERY_TASK,
+    )
     dim = len(probe)
     if dim <= 0:
         raise TwinMemoryError("embedding probe returned an empty vector")
@@ -134,7 +147,11 @@ def ingest_history(
 
     memory = Memory(
         str(db),
-        embedder=lambda text: client.embed(text, model=embedding_model),
+        embedder=lambda text: client.embed(
+            text,
+            model=embedding_model,
+            task=NOMIC_DOCUMENT_TASK,
+        ),
     )
     try:
         result = import_path(
@@ -225,6 +242,10 @@ def import_seed(
             "seed": str(path),
             "entry_count": len(entries),
             "embedding_model": embedding_model,
+            "embedding_contract": {
+                "document_task_prefix": NOMIC_DOCUMENT_TASK,
+                "query_task_prefix": NOMIC_QUERY_TASK,
+            },
             "execution_authority": "NONE",
             "can_execute": False,
         }
@@ -236,7 +257,11 @@ def import_seed(
     )
     memory = Memory(
         str(db),
-        embedder=lambda text: client.embed(text, model=embedding_model),
+        embedder=lambda text: client.embed(
+            text,
+            model=embedding_model,
+            task=NOMIC_DOCUMENT_TASK,
+        ),
     )
     ids: list[int] = []
     try:
