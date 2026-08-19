@@ -5,6 +5,7 @@ import argparse
 import json
 from pathlib import Path
 
+from .memory import Memory
 from .sovereign_twin_admission import AdmissionQueueError, ShadowMemoryAdmissionQueue
 from .sovereign_twin_runtime import LmStudioClient, LocalModelEndpointError, SovereignTwinRuntime
 
@@ -19,6 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=str(Path.home() / ".continuityos" / "twin-admissions.jsonl"),
     )
     sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("init")
     sub.add_parser("doctor")
 
     ask = sub.add_parser("ask")
@@ -44,14 +46,54 @@ def _emit(value: dict, code: int = 0) -> int:
     return code
 
 
+def _initialize_memory_db(path: str) -> dict:
+    db = Path(path).expanduser()
+    db.parent.mkdir(parents=True, exist_ok=True)
+    existed = db.exists()
+    memory = Memory(str(db))
+    try:
+        namespaces = memory.namespaces()
+    finally:
+        close = getattr(memory.store, "close", None)
+        if callable(close):
+            close()
+        else:
+            memory.store.con.close()
+    return {
+        "ok": True,
+        "db": str(db),
+        "created": not existed,
+        "namespace_count": len(namespaces),
+        "mode": "LOCAL_SHADOW",
+        "execution_authority": "NONE",
+        "can_execute": False,
+    }
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.cmd == "init":
+        try:
+            return _emit(_initialize_memory_db(args.db))
+        except (OSError, ValueError) as exc:
+            return _emit(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "error_class": type(exc).__name__,
+                    "execution_authority": "NONE",
+                    "can_execute": False,
+                },
+                2,
+            )
+
     if args.cmd == "serve":
         if args.allow_remote_model_server:
             return _emit(
                 {
                     "ok": False,
-                    "error": "serve refuses --allow-remote-model-server in R1",
+                    "error": "serve refuses --allow-remote-model-server in local shadow mode",
                     "execution_authority": "NONE",
                 },
                 2,
