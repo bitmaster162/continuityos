@@ -8,6 +8,7 @@ from pathlib import Path
 from .memory import Memory
 from .sovereign_twin_admission import AdmissionQueueError, ShadowMemoryAdmissionQueue
 from .sovereign_twin_memory import TwinMemoryError, import_seed, ingest_history, memory_report
+from .sovereign_twin_memory_compat import memory_compatibility_report
 from .sovereign_twin_runtime import (
     DEFAULT_EMBEDDING_MODEL,
     LmStudioClient,
@@ -30,6 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("init")
     sub.add_parser("doctor")
     sub.add_parser("memory-doctor")
+    sub.add_parser("memory-compat")
 
     ask = sub.add_parser("ask")
     ask.add_argument("query")
@@ -113,7 +115,38 @@ def main(argv=None) -> int:
             )
 
     if args.cmd == "memory-doctor":
-        return _emit(memory_report(args.db), 0 if memory_report(args.db).get("ok") else 2)
+        result = memory_report(args.db)
+        return _emit(result, 0 if result.get("ok") else 2)
+
+    if args.cmd == "memory-compat":
+        if args.allow_remote_model_server:
+            return _emit(
+                {
+                    "ok": False,
+                    "error": "memory compatibility audit refuses --allow-remote-model-server",
+                    "execution_authority": "NONE",
+                    "can_execute": False,
+                },
+                2,
+            )
+        try:
+            result = memory_compatibility_report(
+                args.db,
+                client=LmStudioClient(args.base_url),
+                embedding_model=args.embedding_model,
+            )
+            return _emit(result, 0 if result.get("ok") else 2)
+        except (LocalModelEndpointError, OSError, ValueError) as exc:
+            return _emit(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "error_class": type(exc).__name__,
+                    "execution_authority": "NONE",
+                    "can_execute": False,
+                },
+                2,
+            )
 
     if args.cmd == "serve":
         if args.allow_remote_model_server:
