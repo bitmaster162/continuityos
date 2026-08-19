@@ -16,7 +16,12 @@ import time
 from typing import Any
 
 from .store import Store, pack_vec
-from .sovereign_twin_runtime import DEFAULT_EMBEDDING_MODEL, LmStudioClient
+from .sovereign_twin_runtime import (
+    DEFAULT_EMBEDDING_MODEL,
+    LmStudioClient,
+    NOMIC_DOCUMENT_TASK,
+    NOMIC_QUERY_TASK,
+)
 
 REEMBED_RECEIPT_SCHEMA = "sovereign-twin.memory-reembed-receipt/v1"
 MEMORY_MANIFEST_SCHEMA = "sovereign-twin.memory-manifest/v1"
@@ -92,7 +97,11 @@ def _write_target(rows: list[sqlite3.Row], target: Path, *, client: LmStudioClie
     try:
         with store._lock:
             for row in rows:
-                vec = client.embed(str(row["text"]), model=embedding_model)
+                vec = client.embed(
+                    str(row["text"]),
+                    model=embedding_model,
+                    task=NOMIC_DOCUMENT_TASK,
+                )
                 if embedding_dim is None:
                     embedding_dim = len(vec)
                     if embedding_dim <= 0:
@@ -136,7 +145,11 @@ def _write_target(rows: list[sqlite3.Row], target: Path, *, client: LmStudioClie
     else:
         store.con.close()
     if embedding_dim is None:
-        probe = client.embed("Sovereign Twin empty-memory embedding probe", model=embedding_model)
+        probe = client.embed(
+            "Sovereign Twin empty-memory embedding probe",
+            model=embedding_model,
+            task=NOMIC_DOCUMENT_TASK,
+        )
         embedding_dim = len(probe)
     return int(embedding_dim)
 
@@ -184,10 +197,18 @@ def reembed_memory(
     if source == target:
         raise TwinReembedError("source and target DB must be different paths")
     rows = _read_rows(source)
-    probe = client.embed("Sovereign Twin re-embedding dimension probe", model=embedding_model)
+    probe = client.embed(
+        "Sovereign Twin re-embedding dimension probe",
+        model=embedding_model,
+        task=NOMIC_QUERY_TASK,
+    )
     selected_dim = len(probe)
     if selected_dim <= 0:
         raise TwinReembedError("selected embedding model returned an empty vector")
+    embedding_contract = {
+        "document_task_prefix": NOMIC_DOCUMENT_TASK,
+        "query_task_prefix": NOMIC_QUERY_TASK,
+    }
     plan = {
         "ok": True,
         "commit": bool(commit),
@@ -198,6 +219,7 @@ def reembed_memory(
         "source_vector_dimension_counts": _vector_dimension_counts(rows),
         "embedding_model": embedding_model,
         "embedding_dimension": selected_dim,
+        "embedding_contract": embedding_contract,
         "execution_authority": "NONE",
         "can_execute": False,
         "source_mutated": False,
@@ -233,6 +255,7 @@ def reembed_memory(
         "db": str(target),
         "embedding_model": embedding_model,
         "embedding_dimension": selected_dim,
+        "embedding_contract": embedding_contract,
         "source_snapshot": str(snapshot),
         "source_snapshot_sha256": snapshot_sha,
         "updated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
