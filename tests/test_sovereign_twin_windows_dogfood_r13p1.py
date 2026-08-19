@@ -29,7 +29,17 @@ def test_r13p1_harness_preserves_nomic_pointer_and_has_rollback_path():
     assert "memory-nomic-768-*.db" in text
     assert "manifest DB pointer changed" in text
     assert "rollbackWheel" in text
+    assert "$targetInstallAttempted = $true" in text
+    assert "if ($targetInstallAttempted -and $rollbackWheel" in text
     assert "ROLLBACK=PASS" in text
+
+
+def test_r13p1_harness_enforces_ascii_only_unicode_emission():
+    text = _text()
+    assert "ensure_ascii" not in text  # implementation check belongs to installed Python, not the harness source
+    assert "-notmatch '[^\\x00-\\x7F]'" in text
+    assert "Unicode round-trip failed" in text
+    assert "Unicode was not escaped in CLI JSON" in text
 
 
 def test_r13p1_harness_validates_two_pass_reasoning_off_contract():
