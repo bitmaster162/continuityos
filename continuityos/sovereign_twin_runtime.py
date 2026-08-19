@@ -1,6 +1,6 @@
 """Local-only Sovereign Twin runtime for LM Studio / llmster.
 
-This module is a product/runtime bridge, not the R13 scientific evaluator.
+Product/runtime bridge only. This module is not the R13 scientific evaluator.
 It never grants execution authority and defaults to a loopback-only model server.
 """
 from __future__ import annotations
@@ -25,23 +25,30 @@ class LocalModelEndpointError(RuntimeError):
 @dataclass(frozen=True)
 class LocalModelProfile:
     model: str
-    ttl_seconds: int
-    max_tokens: int
+    context_length: int
+    reasoning: str
+    max_output_tokens: int
     temperature: float
+    unload_after_answer: bool = False
+    expected_parallel: int = 1
 
 
 DEFAULT_PROFILES: dict[str, LocalModelProfile] = {
     "fast": LocalModelProfile(
         model=os.environ.get("SOVEREIGN_TWIN_FAST_MODEL", "qwen3.5-4b"),
-        ttl_seconds=1800,
-        max_tokens=1200,
+        context_length=8192,
+        reasoning="off",
+        max_output_tokens=1200,
         temperature=0.2,
+        unload_after_answer=False,
     ),
     "deep": LocalModelProfile(
         model=os.environ.get("SOVEREIGN_TWIN_DEEP_MODEL", "qwen3.6-35b-a3b"),
-        ttl_seconds=600,
-        max_tokens=2200,
+        context_length=4096,
+        reasoning="on",
+        max_output_tokens=2200,
         temperature=0.15,
+        unload_after_answer=True,
     ),
 }
 
@@ -56,17 +63,28 @@ class TwinEvidence:
 
 
 @dataclass(frozen=True)
+class LocalChatResult:
+    text: str
+    model_instance_id: str | None
+    stats: Mapping[str, Any]
+    reasoning: str | None = None
+
+
+@dataclass(frozen=True)
 class TwinAnswer:
     text: str
     model: str
     mode: str
     evidence: tuple[TwinEvidence, ...]
+    stats: Mapping[str, Any]
+    reasoning_present: bool
     execution_authority: str = EXECUTION_AUTHORITY
     can_execute: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)
         out["evidence"] = [asdict(row) for row in self.evidence]
+        out["stats"] = dict(self.stats)
         return out
 
 
@@ -84,13 +102,13 @@ def _validate_loopback_url(base_url: str, *, allow_remote: bool = False) -> str:
 
 
 class LmStudioClient:
-    """Small stdlib-only client for LM Studio / llmster local APIs."""
+    """Small stdlib-only client for LM Studio / llmster native REST API v1."""
 
     def __init__(
         self,
         base_url: str = DEFAULT_BASE_URL,
         *,
-        timeout: float = 180.0,
+        timeout: float = 300.0,
         allow_remote: bool = False,
     ):
         self.base_url = _validate_loopback_url(base_url, allow_remote=allow_remote)
@@ -113,37 +131,74 @@ class LmStudioClient:
             ) from exc
 
     def models(self) -> list[dict[str, Any]]:
-        data = self._request("GET", "/api/v0/models")
-        rows = data.get("data") if isinstance(data, Mapping) else None
+        data = self._request("GET", "/api/v1/models")
+        rows = data.get("models") if isinstance(data, Mapping) else None
         if not isinstance(rows, list):
-            raise LocalModelEndpointError("unexpected LM Studio models response")
+            raise LocalModelEndpointError("unexpected LM Studio v1 models response")
         return [dict(row) for row in rows if isinstance(row, Mapping)]
+
+    def unload(self, instance_id: str) -> None:
+        if not instance_id:
+            return
+        self._request("POST", "/api/v1/models/unload", {"instance_id": str(instance_id)})
 
     def chat(
         self,
         *,
         model: str,
-        messages: Sequence[Mapping[str, str]],
-        ttl_seconds: int,
-        max_tokens: int,
+        system_prompt: str,
+        input_text: str,
+        context_length: int,
+        reasoning: str,
+        max_output_tokens: int,
         temperature: float,
-    ) -> str:
+    ) -> LocalChatResult:
         payload = {
             "model": model,
-            "messages": [dict(row) for row in messages],
-            "ttl": int(ttl_seconds),
-            "max_tokens": int(max_tokens),
+            "input": str(input_text),
+            "system_prompt": str(system_prompt),
+            "context_length": int(context_length),
+            "reasoning": str(reasoning),
+            "max_output_tokens": int(max_output_tokens),
             "temperature": float(temperature),
             "stream": False,
+            "store": False,
         }
-        data = self._request("POST", "/v1/chat/completions", payload)
-        try:
-            text = data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise LocalModelEndpointError("unexpected LM Studio chat response") from exc
-        if not isinstance(text, str):
-            raise LocalModelEndpointError("LM Studio chat content must be text")
-        return text
+        data = self._request("POST", "/api/v1/chat", payload)
+        if not isinstance(data, Mapping):
+            raise LocalModelEndpointError("unexpected LM Studio v1 chat response")
+
+        output = data.get("output")
+        if not isinstance(output, list):
+            raise LocalModelEndpointError("LM Studio v1 chat output must be a list")
+        messages: list[str] = []
+        reasoning_rows: list[str] = []
+        for row in output:
+            if not isinstance(row, Mapping):
+                continue
+            content = row.get("content")
+            if not isinstance(content, str):
+                continue
+            if row.get("type") == "message":
+                messages.append(content)
+            elif row.get("type") == "reasoning":
+                reasoning_rows.append(content)
+
+        text = "\n".join(x for x in messages if x).strip()
+        if not text:
+            raise LocalModelEndpointError("LM Studio v1 chat returned no text message")
+
+        stats = data.get("stats")
+        return LocalChatResult(
+            text=text,
+            model_instance_id=(
+                str(data["model_instance_id"])
+                if isinstance(data.get("model_instance_id"), str)
+                else None
+            ),
+            stats=dict(stats) if isinstance(stats, Mapping) else {},
+            reasoning="\n".join(reasoning_rows).strip() or None,
+        )
 
 
 class SovereignTwinRuntime:
@@ -211,28 +266,68 @@ class SovereignTwinRuntime:
             raise ValueError(f"unknown Sovereign Twin mode: {mode}")
         profile = self.profiles[mode]
         evidence = self.evidence(query)
-        text = self.client.chat(
-            model=profile.model,
-            messages=(
-                {"role": "system", "content": self._system_prompt(evidence)},
-                {"role": "user", "content": str(query)},
-            ),
-            ttl_seconds=profile.ttl_seconds,
-            max_tokens=profile.max_tokens,
-            temperature=profile.temperature,
-        )
-        return TwinAnswer(text=text, model=profile.model, mode=mode, evidence=evidence)
+        result: LocalChatResult | None = None
+        try:
+            result = self.client.chat(
+                model=profile.model,
+                system_prompt=self._system_prompt(evidence),
+                input_text=str(query),
+                context_length=profile.context_length,
+                reasoning=profile.reasoning,
+                max_output_tokens=profile.max_output_tokens,
+                temperature=profile.temperature,
+            )
+            return TwinAnswer(
+                text=result.text,
+                model=profile.model,
+                mode=mode,
+                evidence=evidence,
+                stats=result.stats,
+                reasoning_present=result.reasoning is not None,
+            )
+        finally:
+            if profile.unload_after_answer and result and result.model_instance_id:
+                self.client.unload(result.model_instance_id)
+
+    @staticmethod
+    def _loaded_config(row: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        instances = row.get("loaded_instances")
+        if not isinstance(instances, list) or not instances:
+            return None
+        first = instances[0]
+        if not isinstance(first, Mapping):
+            return None
+        config = first.get("config")
+        return dict(config) if isinstance(config, Mapping) else None
 
     def doctor(self) -> dict[str, Any]:
         models = self.client.models()
-        available = {str(row.get("id")) for row in models}
-        profiles = {
-            name: {**asdict(profile), "visible_to_server": profile.model in available}
-            for name, profile in self.profiles.items()
-        }
+        by_key = {str(row.get("key")): row for row in models if row.get("key")}
+        profiles: dict[str, dict[str, Any]] = {}
+        for name, profile in self.profiles.items():
+            row = by_key.get(profile.model)
+            config = self._loaded_config(row or {})
+            warnings: list[str] = []
+            if config is not None:
+                if int(config.get("context_length", -1)) != profile.context_length:
+                    warnings.append("CONTEXT_LENGTH_MISMATCH")
+                if int(config.get("parallel", profile.expected_parallel)) != profile.expected_parallel:
+                    warnings.append("PARALLEL_NOT_1")
+                if config.get("flash_attention") is False:
+                    warnings.append("FLASH_ATTENTION_OFF")
+                if config.get("offload_kv_cache_to_gpu") is False:
+                    warnings.append("KV_CACHE_NOT_ON_GPU")
+            profiles[name] = {
+                **asdict(profile),
+                "visible_to_server": row is not None,
+                "loaded": config is not None,
+                "loaded_config": dict(config) if config is not None else None,
+                "warnings": warnings,
+            }
         return {
             "ok": all(row["visible_to_server"] for row in profiles.values()),
             "server": self.client.base_url,
+            "api": "lm-studio-rest-v1",
             "profiles": profiles,
             "model_count": len(models),
             "execution_authority": EXECUTION_AUTHORITY,
