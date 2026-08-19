@@ -21,16 +21,16 @@ function FullPath([string]$PathValue) { return [IO.Path]::GetFullPath($PathValue
 function Health { return Invoke-RestMethod "$UiUrl/health" -TimeoutSec 5 }
 function Assert-Health($Value, [string]$Stage, [string]$ExpectedDb) {
     Require ([bool]$Value.ok) "health not OK at $Stage"
-    Require ([string]$Value.mode -eq "LOCAL_SHADOW") "mode changed at $Stage: $($Value.mode)"
+    Require ([string]$Value.mode -eq "LOCAL_SHADOW") "mode changed at ${Stage}: $($Value.mode)"
     Require ([string]$Value.execution_authority -eq "NONE") "authority changed at $Stage"
     Require (-not [bool]$Value.can_execute) "can_execute changed at $Stage"
     Require ((FullPath ([string]$Value.memory_db)) -eq (FullPath $ExpectedDb)) "memory DB changed at $Stage"
 }
 function Assert-LmsEmpty([string]$Stage) {
     $raw = (& lms ps --json 2>&1 | Out-String).Trim()
-    Require ($LASTEXITCODE -eq 0) "lms ps failed at $Stage: $raw"
+    Require ($LASTEXITCODE -eq 0) "lms ps failed at ${Stage}: $raw"
     $compact = $raw -replace '\s',''
-    Require ($compact -eq '[]') "LM Studio residency not empty at $Stage: $raw"
+    Require ($compact -eq '[]') "LM Studio residency not empty at ${Stage}: $raw"
     Write-Host "LMS_$Stage=EMPTY"
 }
 function Stop-ValidatedTwin([string]$ExpectedDb) {
@@ -144,11 +144,14 @@ try {
     }
 
     Step 'Verify Windows-safe JSON emitter without model call'
-    $unicodeRaw = (& $Py -c "from continuityos.sovereign_twin_deep_lite import _emit; _emit({'text':'архитектура — память'})" | Out-String).Trim()
+    $unicodeB64 = '0LDRgNGF0LjRgtC10LrRgtGD0YDQsCDigJQg0L/QsNC80Y/RgtGM'
+    $unicodeCode = "from continuityos.sovereign_twin_deep_lite import _emit; import base64; _emit({'text':base64.b64decode('$unicodeB64').decode('utf-8')})"
+    $unicodeRaw = (& $Py -c $unicodeCode | Out-String).Trim()
     Require ($LASTEXITCODE -eq 0) 'Unicode emitter smoke failed'
     Require ($unicodeRaw -notmatch '[^\x00-\x7F]') 'emitter output is not ASCII-only'
     $unicodeParsed = $unicodeRaw | ConvertFrom-Json
-    Require ([string]$unicodeParsed.text -eq 'архитектура — память') 'Unicode round-trip failed'
+    $expectedUnicode = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($unicodeB64))
+    Require ([string]$unicodeParsed.text -eq $expectedUnicode) 'Unicode round-trip failed'
     Require ($unicodeRaw -match '\\u[0-9a-fA-F]{4}') 'Unicode was not escaped in CLI JSON'
     Write-Host 'WINDOWS_UNICODE_EMITTER=PASS'
 
@@ -160,7 +163,7 @@ try {
     $raw = (& $Py -m continuityos.sovereign_twin_deep_lite $query --db $activeDb --embedding-model $EmbeddingModel --model 'qwen3.5-4b' | Out-String).Trim()
     $exitCode = $LASTEXITCODE
     $sw.Stop()
-    Require ($exitCode -eq 0) "DEEP-LITE exited $exitCode: $raw"
+    Require ($exitCode -eq 0) "DEEP-LITE exited ${exitCode}: $raw"
     $result = $raw | ConvertFrom-Json
 
     Require ([string]$result.mode -eq 'deep-lite') 'mode != deep-lite'
