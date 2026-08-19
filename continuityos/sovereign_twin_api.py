@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .sovereign_twin_admission import ShadowMemoryAdmissionQueue
+from .sovereign_twin_deep_lite import run_deep_lite
 from .sovereign_twin_runtime import DEFAULT_EMBEDDING_MODEL, LmStudioClient, SovereignTwinRuntime
 
 EXECUTION_AUTHORITY = "NONE"
@@ -23,16 +24,23 @@ pre{white-space:pre-wrap;background:#111;color:#eee;padding:16px;border-radius:1
 <h1>Sovereign Twin — Local</h1>
 <p>Local shadow mode. No execution authority.</p>
 <textarea id=q placeholder=\"Ask your local Twin\"></textarea><br>
-<button onclick=\"ask('fast')\">FAST</button><button onclick=\"ask('deep')\">DEEP</button>
+<button onclick=\"ask('fast')\">FAST</button><button onclick=\"ask('deep')\">DEEP</button><button onclick=\"askDeepLite()\">DEEP-LITE</button>
 <pre id=o>Ready.</pre>
 <script>
+async function postAsk(path,payload,label){
+ const o=document.getElementById('o');
+ o.textContent=label+' thinking...';
+ const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+ const j=await r.json();
+ o.textContent=JSON.stringify(j,null,2);
+}
 async function ask(mode){
  const q=document.getElementById('q').value;
- document.getElementById('o').textContent='Thinking...';
- const r=await fetch('/ask',{method:'POST',headers:{'Content-Type':'application/json'},
- body:JSON.stringify({query:q,mode})});
- const j=await r.json();
- document.getElementById('o').textContent=JSON.stringify(j,null,2);
+ return postAsk('/ask',{query:q,mode},mode.toUpperCase());
+}
+async function askDeepLite(){
+ const q=document.getElementById('q').value;
+ return postAsk('/ask/deep-lite',{query:q},'DEEP-LITE');
 }
 </script>"""
 
@@ -47,6 +55,28 @@ def _validate_bind(host: str) -> str:
 class _TwinServer(ThreadingHTTPServer):
     runtime: SovereignTwinRuntime
     admissions: ShadowMemoryAdmissionQueue
+
+
+def _answer_request(server: _TwinServer, path: str, body: dict[str, Any]) -> dict[str, Any] | None:
+    """Dispatch read-only Twin answers while keeping DEEP-LITE on its dedicated contract."""
+    if path not in {"/ask", "/ask/deep-lite"}:
+        return None
+
+    query = str(body.get("query", "")).strip()
+    if not query:
+        raise ValueError("query required")
+
+    if path == "/ask/deep-lite":
+        return run_deep_lite(
+            query,
+            memory_db=server.runtime.memory_db,
+            client=server.runtime.client,
+            embedding_model=server.runtime.embedding_model,
+            recall_k=server.runtime.recall_k,
+        ).to_dict()
+
+    mode = str(body.get("mode", "fast"))
+    return server.runtime.ask(query, mode=mode).to_dict()
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -111,12 +141,9 @@ class _Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             body = self._body()
-            if path == "/ask":
-                query = str(body.get("query", "")).strip()
-                mode = str(body.get("mode", "fast"))
-                if not query:
-                    raise ValueError("query required")
-                self._json(200, self.server.runtime.ask(query, mode=mode).to_dict())
+            answer = _answer_request(self.server, path, body)
+            if answer is not None:
+                self._json(200, answer)
                 return
             if path == "/admissions":
                 text = str(body.get("text", "")).strip()
