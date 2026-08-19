@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import copy
-
-import pytest
+import unittest
 
 from continuityos.unified_shadow_continuity import (
     MODERN_SOURCE_BRANCH,
@@ -78,80 +77,79 @@ def build(tx: dict | None = None, **kwargs):
     )
 
 
-def test_stale_control_transaction_becomes_hold_no_write_receipt():
-    receipt = build()
-    assert receipt["disposition"] == "HOLD_SHADOW_NO_WRITE"
-    assert receipt["modern_source"]["head_sha"] == MODERN_SOURCE_HEAD
-    assert receipt["modern_source"]["claim_ceiling"] == "MODERN_GITHUB_SOURCE_ONLY"
-    assert receipt["modern_source"]["proves_live_runtime"] is False
-    assert receipt["historical_lineage"]["live_host_state"] == "UNVERIFIED"
-    assert receipt["checkpoint_candidate"]["write_allowed"] is False
-    assert receipt["replay_candidate"]["apply_allowed"] is False
-    assert receipt["return_candidate"]["semantic_acceptance"] == "NOT_PERFORMED"
-    assert all(value is False for value in receipt["writes"].values())
-    assert receipt["authority"]["execution_authority"] == "NONE"
-    assert receipt["authority"]["apply_authorized"] is False
-    assert receipt["safety"]["can_trade"] is False
-    assert receipt["safety"]["capital_permission"] == "DENY"
+class UnifiedShadowContinuityTests(unittest.TestCase):
+    def test_stale_control_transaction_becomes_hold_no_write_receipt(self):
+        receipt = build()
+        self.assertEqual(receipt["disposition"], "HOLD_SHADOW_NO_WRITE")
+        self.assertEqual(receipt["modern_source"]["head_sha"], MODERN_SOURCE_HEAD)
+        self.assertEqual(receipt["modern_source"]["claim_ceiling"], "MODERN_GITHUB_SOURCE_ONLY")
+        self.assertFalse(receipt["modern_source"]["proves_live_runtime"])
+        self.assertEqual(receipt["historical_lineage"]["live_host_state"], "UNVERIFIED")
+        self.assertFalse(receipt["checkpoint_candidate"]["write_allowed"])
+        self.assertFalse(receipt["replay_candidate"]["apply_allowed"])
+        self.assertEqual(receipt["return_candidate"]["semantic_acceptance"], "NOT_PERFORMED")
+        self.assertTrue(all(value is False for value in receipt["writes"].values()))
+        self.assertEqual(receipt["authority"]["execution_authority"], "NONE")
+        self.assertFalse(receipt["authority"]["apply_authorized"])
+        self.assertFalse(receipt["safety"]["can_trade"])
+        self.assertEqual(receipt["safety"]["capital_permission"], "DENY")
+
+    def test_modern_github_source_and_historical_r52_cannot_be_conflated(self):
+        self.assertNotEqual(MODERN_SOURCE_HEAD, R52_LOCAL_ADOPTION_HEAD)
+        with self.assertRaisesRegex(ShadowContinuityError, "modern_source_head_mismatch"):
+            build(modern_source_head=R52_LOCAL_ADOPTION_HEAD)
+
+    def test_live_host_cannot_be_promoted_without_fresh_host_evidence(self):
+        with self.assertRaisesRegex(ShadowContinuityError, "p0_live_host_state_must_remain_unverified"):
+            build(live_host_state="VERIFIED")
+
+    def test_effectful_transaction_is_rejected_before_continuity_receipt(self):
+        tx = make_transaction()
+        tx["effect_boundary"]["continuity_write"] = True
+        tx["transaction_sha256"] = sha256_obj({k: v for k, v in tx.items() if k != "transaction_sha256"})
+        errors = validate_unified_transaction(tx)
+        self.assertIn("effect_boundary_not_false:continuity_write", errors)
+        with self.assertRaises(ShadowContinuityError):
+            build(tx)
+
+    def test_transaction_tamper_is_rejected(self):
+        tx = make_transaction()
+        tx["system_recommendation"] = "WAIT"
+        with self.assertRaisesRegex(ShadowContinuityError, "transaction_hash_mismatch"):
+            build(tx)
+
+    def test_hold_must_force_wait(self):
+        tx = make_transaction()
+        tx["control_plane_action"] = "LONG"
+        tx["transaction_sha256"] = sha256_obj({k: v for k, v in tx.items() if k != "transaction_sha256"})
+        with self.assertRaisesRegex(ShadowContinuityError, "hold_must_force_wait"):
+            build(tx)
+
+    def test_pass_shadow_is_still_read_only(self):
+        tx = make_transaction()
+        tx["control_gate"] = "PASS_SHADOW"
+        tx["control_plane_action"] = "LONG"
+        tx["hanri_freshness"] = "FRESH"
+        tx["hanri_attention_required"] = False
+        tx["transaction_sha256"] = sha256_obj({k: v for k, v in tx.items() if k != "transaction_sha256"})
+        receipt = build(tx)
+        self.assertEqual(receipt["disposition"], "READY_FOR_READ_ONLY_REVIEW")
+        self.assertTrue(all(value is False for value in receipt["writes"].values()))
+        self.assertFalse(receipt["authority"]["apply_authorized"])
+
+    def test_receipt_and_candidates_are_deterministic_and_hash_bound(self):
+        first = build()
+        second = build()
+        self.assertEqual(first, second)
+        self.assertEqual(first["continuity_receipt_sha256"], second["continuity_receipt_sha256"])
+
+        tampered = copy.deepcopy(first)
+        tampered["checkpoint_candidate"]["write_allowed"] = True
+        self.assertNotEqual(
+            tampered["continuity_receipt_sha256"],
+            sha256_obj({k: v for k, v in tampered.items() if k != "continuity_receipt_sha256"}),
+        )
 
 
-def test_modern_github_source_and_historical_r52_cannot_be_conflated():
-    assert MODERN_SOURCE_HEAD != R52_LOCAL_ADOPTION_HEAD
-    with pytest.raises(ShadowContinuityError, match="modern_source_head_mismatch"):
-        build(modern_source_head=R52_LOCAL_ADOPTION_HEAD)
-
-
-def test_live_host_cannot_be_promoted_without_fresh_host_evidence():
-    with pytest.raises(ShadowContinuityError, match="p0_live_host_state_must_remain_unverified"):
-        build(live_host_state="VERIFIED")
-
-
-def test_effectful_transaction_is_rejected_before_continuity_receipt():
-    tx = make_transaction()
-    tx["effect_boundary"]["continuity_write"] = True
-    tx["transaction_sha256"] = sha256_obj({k: v for k, v in tx.items() if k != "transaction_sha256"})
-    errors = validate_unified_transaction(tx)
-    assert "effect_boundary_not_false:continuity_write" in errors
-    with pytest.raises(ShadowContinuityError):
-        build(tx)
-
-
-def test_transaction_tamper_is_rejected():
-    tx = make_transaction()
-    tx["system_recommendation"] = "WAIT"
-    with pytest.raises(ShadowContinuityError, match="transaction_hash_mismatch"):
-        build(tx)
-
-
-def test_hold_must_force_wait():
-    tx = make_transaction()
-    tx["control_plane_action"] = "LONG"
-    tx["transaction_sha256"] = sha256_obj({k: v for k, v in tx.items() if k != "transaction_sha256"})
-    with pytest.raises(ShadowContinuityError, match="hold_must_force_wait"):
-        build(tx)
-
-
-def test_pass_shadow_is_still_read_only():
-    tx = make_transaction()
-    tx["control_gate"] = "PASS_SHADOW"
-    tx["control_plane_action"] = "LONG"
-    tx["hanri_freshness"] = "FRESH"
-    tx["hanri_attention_required"] = False
-    tx["transaction_sha256"] = sha256_obj({k: v for k, v in tx.items() if k != "transaction_sha256"})
-    receipt = build(tx)
-    assert receipt["disposition"] == "READY_FOR_READ_ONLY_REVIEW"
-    assert all(value is False for value in receipt["writes"].values())
-    assert receipt["authority"]["apply_authorized"] is False
-
-
-def test_receipt_and_candidates_are_deterministic_and_hash_bound():
-    first = build()
-    second = build()
-    assert first == second
-    assert first["continuity_receipt_sha256"] == second["continuity_receipt_sha256"]
-
-    tampered = copy.deepcopy(first)
-    tampered["checkpoint_candidate"]["write_allowed"] = True
-    assert tampered["continuity_receipt_sha256"] != sha256_obj(
-        {k: v for k, v in tampered.items() if k != "continuity_receipt_sha256"}
-    )
+if __name__ == "__main__":
+    unittest.main()
