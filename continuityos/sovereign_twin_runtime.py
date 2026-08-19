@@ -20,6 +20,8 @@ DEFAULT_EMBEDDING_MODEL = os.environ.get(
     "SOVEREIGN_TWIN_EMBEDDING_MODEL",
     "text-embedding-nomic-embed-text-v1.5",
 )
+NOMIC_DOCUMENT_TASK = "search_document"
+NOMIC_QUERY_TASK = "search_query"
 
 
 class LocalModelEndpointError(RuntimeError):
@@ -105,6 +107,18 @@ def _validate_loopback_url(base_url: str, *, allow_remote: bool = False) -> str:
     return value
 
 
+def _task_prefixed_text(text: str, task: str | None) -> str:
+    value = str(text).replace("\n", " ")
+    if task is None:
+        return value
+    if task not in {NOMIC_DOCUMENT_TASK, NOMIC_QUERY_TASK}:
+        raise ValueError(f"unsupported embedding task: {task}")
+    prefix = task + ":"
+    if value.lstrip().startswith(prefix):
+        return value
+    return f"{prefix} {value}"
+
+
 class LmStudioClient:
     """Small stdlib-only client for LM Studio / llmster local APIs."""
 
@@ -146,11 +160,17 @@ class LmStudioClient:
             return
         self._request("POST", "/api/v1/models/unload", {"instance_id": str(instance_id)})
 
-    def embed(self, text: str, *, model: str = DEFAULT_EMBEDDING_MODEL) -> list[float]:
+    def embed(
+        self,
+        text: str,
+        *,
+        model: str = DEFAULT_EMBEDDING_MODEL,
+        task: str | None = None,
+    ) -> list[float]:
         data = self._request(
             "POST",
             "/v1/embeddings",
-            {"model": str(model), "input": str(text).replace("\n", " ")},
+            {"model": str(model), "input": _task_prefixed_text(text, task)},
         )
         rows = data.get("data") if isinstance(data, Mapping) else None
         if not isinstance(rows, list) or not rows or not isinstance(rows[0], Mapping):
@@ -238,7 +258,11 @@ class SovereignTwinRuntime:
         self.embedding_model = str(embedding_model)
         self.memory = Memory(
             memory_db,
-            embedder=lambda text: self.client.embed(text, model=self.embedding_model),
+            embedder=lambda text: self.client.embed(
+                text,
+                model=self.embedding_model,
+                task=NOMIC_QUERY_TASK,
+            ),
             read_only=True,
         )
         self.recall_k = int(recall_k)
@@ -360,6 +384,8 @@ class SovereignTwinRuntime:
             "embedding": {
                 "model": self.embedding_model,
                 "visible_to_server": embedding_visible,
+                "document_task_prefix": NOMIC_DOCUMENT_TASK,
+                "query_task_prefix": NOMIC_QUERY_TASK,
             },
             "model_count": len(models),
             "execution_authority": EXECUTION_AUTHORITY,
