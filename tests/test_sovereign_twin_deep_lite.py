@@ -16,20 +16,28 @@ from continuityos.sovereign_twin_runtime import (
     DEFAULT_EMBEDDING_MODEL,
     LocalChatResult,
     LocalModelEndpointError,
-    NOMIC_DOCUMENT_TASK,
 )
 
 
 class DeepLiteClient:
     base_url = "http://127.0.0.1:1234"
 
-    def __init__(self, *, preloaded: bool = False, fail_second: bool = False):
+    def __init__(
+        self,
+        *,
+        preloaded: bool = False,
+        fail_second: bool = False,
+        final_text: str = "final grounded answer mem:1",
+        distinct_new_instance: bool = False,
+    ):
         self.preloaded = preloaded
-        self.loaded = preloaded
         self.fail_second = fail_second
+        self.final_text = final_text
+        self.distinct_new_instance = distinct_new_instance
         self.calls: list[dict] = []
         self.unloaded: list[str] = []
         self.embeds: list[tuple[str, str, str | None]] = []
+        self.active_ids: set[str] = {"existing-1"} if preloaded else set()
 
     def embed(self, text, *, model=DEFAULT_EMBEDDING_MODEL, task=None):
         self.embeds.append((text, model, task))
@@ -39,29 +47,31 @@ class DeepLiteClient:
         return [
             {
                 "key": "qwen3.5-4b",
-                "loaded_instances": (
-                    [{"id": "qwen3.5-4b", "config": {"context_length": 4096, "parallel": 1}}]
-                    if self.loaded
-                    else []
-                ),
+                "loaded_instances": [
+                    {"id": value, "config": {"context_length": 4096, "parallel": 1}}
+                    for value in sorted(self.active_ids)
+                ],
             },
             {"key": DEFAULT_EMBEDDING_MODEL, "loaded_instances": []},
         ]
 
     def chat(self, **kwargs):
-        self.loaded = True
         self.calls.append(kwargs)
         index = len(self.calls)
+        instance_id = "new-run-1" if self.distinct_new_instance else (
+            "existing-1" if self.preloaded else "qwen3.5-4b"
+        )
+        self.active_ids.add(instance_id)
         if self.fail_second and index == 2:
             raise LocalModelEndpointError(
                 "second pass failed",
-                model_instance_id="qwen3.5-4b",
+                model_instance_id=instance_id,
                 stats={"total_output_tokens": 7},
             )
         if index == 1:
             return LocalChatResult(
                 text="candidate mem:1",
-                model_instance_id="qwen3.5-4b",
+                model_instance_id=instance_id,
                 stats={
                     "input_tokens": 100,
                     "total_output_tokens": 40,
@@ -71,8 +81,8 @@ class DeepLiteClient:
                 reasoning=None,
             )
         return LocalChatResult(
-            text="final grounded answer mem:1",
-            model_instance_id="qwen3.5-4b",
+            text=self.final_text,
+            model_instance_id=instance_id,
             stats={
                 "input_tokens": 150,
                 "total_output_tokens": 55,
@@ -84,8 +94,7 @@ class DeepLiteClient:
 
     def unload(self, instance_id):
         self.unloaded.append(instance_id)
-        if not self.preloaded:
-            self.loaded = False
+        self.active_ids.discard(instance_id)
 
 
 def _seed_db(tmp: str) -> str:
@@ -135,7 +144,17 @@ def test_deep_lite_preserves_preexisting_model_residency():
         answer = run_deep_lite("Review", memory_db=db, client=client)
         assert answer.text == "final grounded answer mem:1"
         assert client.unloaded == []
-        assert client.loaded is True
+        assert client.active_ids == {"existing-1"}
+
+
+def test_deep_lite_unloads_only_new_instance_when_same_model_was_preloaded():
+    with TemporaryDirectory() as tmp:
+        db = _seed_db(tmp)
+        client = DeepLiteClient(preloaded=True, distinct_new_instance=True)
+        answer = run_deep_lite("Review", memory_db=db, client=client)
+        assert answer.text == "final grounded answer mem:1"
+        assert client.unloaded == ["new-run-1"]
+        assert client.active_ids == {"existing-1"}
 
 
 def test_deep_lite_second_pass_failure_unloads_newly_loaded_model_and_preserves_error():
@@ -145,7 +164,17 @@ def test_deep_lite_second_pass_failure_unloads_newly_loaded_model_and_preserves_
         with pytest.raises(LocalModelEndpointError, match="second pass failed"):
             run_deep_lite("Review", memory_db=db, client=client)
         assert client.unloaded == ["qwen3.5-4b"]
-        assert client.loaded is False
+        assert client.active_ids == set()
+
+
+def test_deep_lite_rejects_citation_outside_retrieved_evidence_and_cleans_up():
+    with TemporaryDirectory() as tmp:
+        db = _seed_db(tmp)
+        client = DeepLiteClient(final_text="unsupported citation mem:999")
+        with pytest.raises(LocalModelEndpointError, match="outside retrieved evidence: mem:999"):
+            run_deep_lite("Review", memory_db=db, client=client)
+        assert client.unloaded == ["qwen3.5-4b"]
+        assert client.active_ids == set()
 
 
 def test_deep_lite_query_recall_uses_runtime_embedding_contract():
