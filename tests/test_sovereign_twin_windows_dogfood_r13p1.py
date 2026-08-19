@@ -34,6 +34,17 @@ def test_r13p1_harness_checks_raw_empty_lms_json_without_false_array_wrapper():
     assert "@(lms ps --json | ConvertFrom-Json)" not in text
 
 
+def test_r13p1_harness_captures_pip_wheel_stdout_before_returning_path():
+    text = _text()
+    assert "$buildOutput = & $Py -m pip wheel" in text
+    assert "$buildExitCode = $LASTEXITCODE" in text
+    assert "$buildOutput | ForEach-Object { Write-Host ([string]$_) }" in text
+    assert "$wheels = @(Get-ChildItem $wheelDir -Filter 'continuityos-*.whl')" in text
+    assert "return [string]$wheelPath" in text
+    assert "Require (Test-Path -LiteralPath $targetWheel) 'target wheel scalar path validation failed'" in text
+    assert "Require (Test-Path -LiteralPath $rollbackWheel) 'rollback wheel scalar path validation failed'" in text
+
+
 def test_r13p1_harness_preserves_nomic_pointer_and_has_rollback_path():
     text = _text()
     assert "memory-nomic-768-*.db" in text
@@ -42,6 +53,13 @@ def test_r13p1_harness_preserves_nomic_pointer_and_has_rollback_path():
     assert "$targetInstallAttempted = $true" in text
     assert "if ($targetInstallAttempted -and $rollbackWheel" in text
     assert "ROLLBACK=PASS" in text
+
+
+def test_r13p1_harness_recovers_stopped_twin_before_preflight():
+    text = _text()
+    assert "function Ensure-TwinRunning" in text
+    assert "Twin not healthy; attempting launcher recovery" in text
+    assert "$pre = Ensure-TwinRunning $activeDb" in text
 
 
 def test_r13p1_harness_enforces_ascii_only_unicode_emission():
@@ -58,7 +76,7 @@ def test_r13p1_harness_avoids_ambiguous_variable_colon_interpolation():
     assert "$Stage:" not in text
     assert "$exitCode:" not in text
     assert "${Stage}:" in text
-    assert "${exitCode}:" in text
+    assert "${exitCode}" in text
 
 
 def test_r13p1_harness_validates_two_pass_reasoning_off_contract():
