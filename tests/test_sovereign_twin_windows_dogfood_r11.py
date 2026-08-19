@@ -41,9 +41,10 @@ def test_dogfood_r11_powershell_syntax_on_windows():
     if ps is None:
         pytest.skip("PowerShell unavailable on this runner")
 
+    escaped_script = str(SCRIPT).replace("'", "''")
     command = (
         "$ErrorActionPreference='Stop'; "
-        f"$text=Get-Content -LiteralPath '{str(SCRIPT).replace("'", "''")}' -Raw; "
+        f"$text=Get-Content -LiteralPath '{escaped_script}' -Raw; "
         "[scriptblock]::Create($text) | Out-Null"
     )
     proc = subprocess.run(
