@@ -1,5 +1,6 @@
 param(
     [Parameter(Mandatory=$true)][string]$SourceSha,
+    [string]$EmbeddingModel = "text-embedding-nomic-embed-text-v1.5",
     [switch]$NoAutostart,
     [switch]$NoStart
 )
@@ -16,6 +17,9 @@ $TaskName = "SovereignTwin-UI"
 $MemoryDb = Join-Path $HOME ".continuityos\memory.db"
 $AdmissionQueue = Join-Path $HOME ".continuityos\twin-admissions.jsonl"
 $UiUrl = "http://127.0.0.1:8765"
+$LlmUrl = "http://127.0.0.1:1234"
+$FastModel = "qwen3.5-4b"
+$DeepModel = "qwen3.6-35b-a3b"
 
 function Step([string]$Text) { Write-Host "`n=== $Text ===" -ForegroundColor Cyan }
 
@@ -30,10 +34,18 @@ if (-not $llmTask) {
     throw "SovereignTwin-LLMStudio task not found. Finish the llmster bootstrap first."
 }
 try {
-    $health = Invoke-RestMethod -Uri "http://127.0.0.1:1234/api/v1/models" -TimeoutSec 8
-    if (-not $health.models) { Write-Warning "LM Studio API is reachable but model list is empty." }
+    $catalog = Invoke-RestMethod -Uri "$LlmUrl/api/v1/models" -TimeoutSec 8
+    $keys = @($catalog.models | ForEach-Object { $_.key })
+    foreach ($required in @($FastModel, $DeepModel, $EmbeddingModel)) {
+        if (-not ($keys -contains $required)) {
+            throw "required local model is not visible to llmster: $required"
+        }
+    }
+    Write-Host "FAST model: PASS ($FastModel)"
+    Write-Host "DEEP model: PASS ($DeepModel)"
+    Write-Host "Embedding model: PASS ($EmbeddingModel)"
 } catch {
-    throw "LM Studio/llmster API is not reachable on 127.0.0.1:1234: $($_.Exception.Message)"
+    throw "LM Studio/llmster preflight failed on 127.0.0.1:1234: $($_.Exception.Message)"
 }
 
 $py = Get-Command py.exe -ErrorAction SilentlyContinue
@@ -82,7 +94,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "sovereign-twin init failed" }
 
     $manifestObj = [ordered]@{
-        schema = "sovereign-twin.windows-runtime-source/v1"
+        schema = "sovereign-twin.windows-runtime-source/v2"
         repository = $Repo
         source_sha = $SourceSha
         installed_at_utc = [DateTime]::UtcNow.ToString("o")
@@ -90,8 +102,11 @@ try {
         twin_executable = $Twin
         memory_db = $MemoryDb
         admission_queue = $AdmissionQueue
-        llm_server = "http://127.0.0.1:1234"
+        llm_server = $LlmUrl
         ui = $UiUrl
+        fast_model = $FastModel
+        deep_model = $DeepModel
+        embedding_model = $EmbeddingModel
         execution_authority = "NONE"
         can_execute = $false
     }
@@ -104,6 +119,7 @@ Step "Write local UI launcher"
 $escapedTwin = $Twin.Replace("'", "''")
 $escapedDb = $MemoryDb.Replace("'", "''")
 $escapedQueue = $AdmissionQueue.Replace("'", "''")
+$escapedEmbedding = $EmbeddingModel.Replace("'", "''")
 $launcherBody = @"
 `$ErrorActionPreference = "SilentlyContinue"
 Start-Sleep -Seconds 8
@@ -111,7 +127,7 @@ try {
     `$h = Invoke-RestMethod -Uri "$UiUrl/health" -TimeoutSec 2
     if (`$h.ok) { exit 0 }
 } catch {}
-& '$escapedTwin' --db '$escapedDb' --admission-queue '$escapedQueue' serve --host 127.0.0.1 --port 8765
+& '$escapedTwin' --db '$escapedDb' --admission-queue '$escapedQueue' --embedding-model '$escapedEmbedding' serve --host 127.0.0.1 --port 8765
 "@
 Set-Content -Path $Launcher -Value $launcherBody -Encoding UTF8
 
@@ -129,9 +145,8 @@ if (-not $NoAutostart) {
 
 if (-not $NoStart) {
     Step "Start local Twin UI now"
-    Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
-        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$Launcher`""
-    ) | Out-Null
+    $launchArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Launcher`""
+    Start-Process powershell.exe -WindowStyle Hidden -ArgumentList $launchArgs | Out-Null
 
     $ok = $false
     for ($i = 0; $i -lt 30; $i++) {

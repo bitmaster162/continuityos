@@ -21,12 +21,43 @@ function Get-LmsPath {
     return $cmd.Source
 }
 
+function Invoke-LmsJson {
+    param(
+        [Parameter(Mandatory=$true)][string]$LmsPath,
+        [Parameter(Mandatory=$true)][string[]]$Arguments
+    )
+
+    $previous = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5.1 may surface native stderr warnings as ErrorRecord objects.
+        # Do not treat warning text as failure; gate on native exit code + JSON payload instead.
+        $ErrorActionPreference = "Continue"
+        $stdout = & $LmsPath @Arguments
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+
+    if ($exitCode -ne 0) {
+        throw "lms $($Arguments -join ' ') exited with code $exitCode"
+    }
+
+    $raw = ($stdout | Out-String).Trim()
+    if (-not $raw) {
+        throw "lms $($Arguments -join ' ') returned no JSON output"
+    }
+
+    try {
+        return $raw | ConvertFrom-Json
+    } catch {
+        throw "lms $($Arguments -join ' ') returned invalid JSON: $raw"
+    }
+}
+
 function Get-LlmsterStatus([string]$LmsPath) {
     if (-not $LmsPath) { return $null }
     try {
-        $raw = (& $LmsPath daemon status --json 2>$null | Out-String).Trim()
-        if (-not $raw) { return $null }
-        return $raw | ConvertFrom-Json
+        return Invoke-LmsJson -LmsPath $LmsPath -Arguments @("daemon", "status", "--json")
     } catch {
         return $null
     }
@@ -69,9 +100,16 @@ function Show-Status {
         return
     }
     Write-Host "lms: $lms"
-    try { & $lms daemon status --json } catch { Write-Warning $_ }
-    try { & $lms server status --json --quiet } catch { Write-Warning $_ }
-    try { & $lms ps --json } catch { Write-Warning $_ }
+    try { (Invoke-LmsJson -LmsPath $lms -Arguments @("daemon", "status", "--json")) | ConvertTo-Json -Compress } catch { Write-Warning $_ }
+    try { (Invoke-LmsJson -LmsPath $lms -Arguments @("server", "status", "--json", "--quiet")) | ConvertTo-Json -Compress } catch { Write-Warning $_ }
+
+    $previous = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $lms ps --json
+    } finally {
+        $ErrorActionPreference = $previous
+    }
 
     Write-Step "Local API"
     try {
@@ -110,11 +148,19 @@ $lmsBefore = Get-LmsPath
 Assert-NoDesktopHeadlessAmbiguity -LmsPath $lmsBefore
 
 Write-Step "Install / update llmster from official LM Studio installer"
+$installerWarning = $null
+$previous = $ErrorActionPreference
 try {
+    # The official Windows installer may emit Node SEA ExperimentalWarning on stderr.
+    # Windows PowerShell 5.1 can convert that stderr into ErrorRecord objects. Let the
+    # installer continue and make daemon JSON verification authoritative below.
+    $ErrorActionPreference = "Continue"
     irm https://lmstudio.ai/install.ps1 | iex
 } catch {
-    Write-Error "Official llmster installer failed: $($_.Exception.Message)"
-    exit 2
+    $installerWarning = $_.Exception.Message
+    Write-Warning "Installer emitted an exception/warning; continuing to authoritative daemon verification: $installerWarning"
+} finally {
+    $ErrorActionPreference = $previous
 }
 
 $lms = Get-LmsPath
@@ -126,13 +172,12 @@ Write-Host "Using: $lms"
 
 Assert-NoDesktopHeadlessAmbiguity -LmsPath $lms
 
-Write-Step "Start llmster daemon"
-$daemonRaw = (& $lms daemon up --json 2>&1 | Out-String).Trim()
-Write-Host $daemonRaw
+Write-Step "Start and verify standalone llmster daemon"
 try {
-    $daemon = $daemonRaw | ConvertFrom-Json
+    $daemon = Invoke-LmsJson -LmsPath $lms -Arguments @("daemon", "up", "--json")
+    Write-Host ($daemon | ConvertTo-Json -Compress)
 } catch {
-    Write-Error "Could not parse llmster daemon status JSON."
+    Write-Error "Standalone llmster start/verification failed: $($_.Exception.Message)"
     exit 2
 }
 if ($daemon.status -ne "running" -or $daemon.isDaemon -ne $true) {
@@ -141,13 +186,32 @@ if ($daemon.status -ne "running" -or $daemon.isDaemon -ne $true) {
 }
 
 Write-Step "Start localhost API server"
+$previous = $ErrorActionPreference
 try {
+    $ErrorActionPreference = "Continue"
     & $lms server start --port $ApiPort --bind $ApiHost
-} catch {
-    Write-Warning $_
+    $serverStartExit = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $previous
+}
+if ($serverStartExit -ne 0) {
+    Write-Error "lms server start exited with code $serverStartExit"
+    exit 2
 }
 
 Start-Sleep -Seconds 2
+
+try {
+    $serverStatus = Invoke-LmsJson -LmsPath $lms -Arguments @("server", "status", "--json", "--quiet")
+    Write-Host ($serverStatus | ConvertTo-Json -Compress)
+} catch {
+    Write-Error "Could not verify LM Studio server status: $($_.Exception.Message)"
+    exit 2
+}
+if ($serverStatus.running -ne $true -or [int]$serverStatus.port -ne $ApiPort) {
+    Write-Error "LM Studio server did not report running=true on port $ApiPort."
+    exit 2
+}
 
 Write-Step "Verify models / JIT visibility"
 try {
