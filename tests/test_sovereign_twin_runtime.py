@@ -42,7 +42,7 @@ def test_runtime_grounding_and_none_authority():
             namespace="rules",
             tags=["privacy"],
         )
-        writer.store.close()
+        writer.store.con.close()
 
         client = FakeClient()
         runtime = SovereignTwinRuntime(db, client=client, recall_k=4)
@@ -64,7 +64,7 @@ def test_doctor_sees_fast_and_deep_profiles():
         db = str(Path(tmp) / "memory.db")
         writer = Memory(db)
         writer.remember("seed", namespace="facts")
-        writer.store.close()
+        writer.store.con.close()
 
         runtime = SovereignTwinRuntime(db, client=FakeClient())
         try:
