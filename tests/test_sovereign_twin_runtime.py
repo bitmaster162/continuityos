@@ -8,6 +8,7 @@ import pytest
 from continuityos.memory import Memory
 from continuityos.sovereign_twin_admission import ShadowMemoryAdmissionQueue
 from continuityos.sovereign_twin_api import _validate_bind
+from continuityos.sovereign_twin_cli import _initialize_memory_db
 from continuityos.sovereign_twin_runtime import (
     LocalChatResult,
     LocalModelEndpointError,
@@ -66,6 +67,19 @@ def _seed_db(tmp: str) -> tuple[str, int]:
     )
     writer.store.con.close()
     return db, rid
+
+
+def test_local_init_is_idempotent_and_grants_no_authority():
+    with TemporaryDirectory() as tmp:
+        db = str(Path(tmp) / "nested" / "memory.db")
+        first = _initialize_memory_db(db)
+        second = _initialize_memory_db(db)
+        assert first["ok"] is True
+        assert first["created"] is True
+        assert second["created"] is False
+        assert Path(db).exists()
+        assert first["execution_authority"] == "NONE"
+        assert first["can_execute"] is False
 
 
 def test_loopback_policy_rejects_remote_by_default():
