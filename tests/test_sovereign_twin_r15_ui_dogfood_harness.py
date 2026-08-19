@@ -14,8 +14,14 @@ TARGET = "670d83f13f23dd9a3294015c9cffa774adc043ef"
 PRIOR = "41fbbbddfdd36865ad9d661f11fc19d5babf5459"
 
 
+def _require_source_script() -> Path:
+    if not SCRIPT.is_file():
+        pytest.skip("R15 UI Windows harness is source-only and is not shipped in the wheel")
+    return SCRIPT
+
+
 def _text() -> str:
-    return SCRIPT.read_text(encoding="utf-8")
+    return _require_source_script().read_text(encoding="utf-8")
 
 
 def test_r15_harness_locks_exact_lineage_and_shadow_boundaries():
@@ -59,7 +65,7 @@ def test_r15_harness_checks_human_ui_and_real_deep_lite_contract():
 
 
 def test_r15_harness_is_ascii_only():
-    raw = SCRIPT.read_bytes()
+    raw = _require_source_script().read_bytes()
     raw.decode("ascii")
 
 
@@ -67,11 +73,12 @@ def test_r15_harness_parses_in_windows_powershell():
     if os.name != "nt":
         pytest.skip("Windows PowerShell parser gate")
 
+    source_script = _require_source_script()
     powershell = shutil.which("powershell.exe") or shutil.which("powershell")
     if not powershell:
         pytest.skip("Windows PowerShell unavailable")
 
-    escaped = str(SCRIPT).replace("'", "''")
+    escaped = str(source_script).replace("'", "''")
     command = (
         "$tokens=$null;$errors=$null;"
         f"[System.Management.Automation.Language.Parser]::ParseFile('{escaped}',[ref]$tokens,[ref]$errors)|Out-Null;"
