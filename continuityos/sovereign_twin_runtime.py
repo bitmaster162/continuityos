@@ -163,9 +163,15 @@ class SovereignTwinRuntime:
         self.profiles = dict(profiles or DEFAULT_PROFILES)
 
     def close(self) -> None:
-        close = getattr(self.memory.store, "close", None)
+        store = self.memory.store
+        close = getattr(store, "close", None)
         if callable(close):
             close()
+            return
+        connection = getattr(store, "con", None)
+        connection_close = getattr(connection, "close", None)
+        if callable(connection_close):
+            connection_close()
 
     def evidence(self, query: str) -> tuple[TwinEvidence, ...]:
         hits = self.memory.recall(query, k=self.recall_k, current_only=True)
