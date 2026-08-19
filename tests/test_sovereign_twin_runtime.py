@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -155,6 +156,7 @@ def test_doctor_reads_native_v1_and_embedding_contract():
             report = runtime.doctor()
             assert report["ok"] is True
             assert report["api"] == "lm-studio-rest-v1+openai-embeddings"
+            assert report["memory_db"] == os.path.realpath(os.path.abspath(db))
             assert report["profiles"]["fast"]["loaded"] is True
             assert report["profiles"]["fast"]["warnings"] == []
             assert report["profiles"]["deep"]["loaded"] is False

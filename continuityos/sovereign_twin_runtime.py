@@ -27,6 +27,19 @@ NOMIC_QUERY_TASK = "search_query"
 class LocalModelEndpointError(RuntimeError):
     """Raised when the model endpoint is unavailable or violates local-only policy."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        model_instance_id: str | None = None,
+        stats: Mapping[str, Any] | None = None,
+        output_types: Sequence[str] | None = None,
+    ):
+        super().__init__(message)
+        self.model_instance_id = model_instance_id
+        self.stats = dict(stats or {})
+        self.output_types = tuple(output_types or ())
+
 
 @dataclass(frozen=True)
 class LocalModelProfile:
@@ -209,35 +222,57 @@ class LmStudioClient:
         if not isinstance(data, Mapping):
             raise LocalModelEndpointError("unexpected LM Studio v1 chat response")
 
+        model_instance_id = (
+            str(data["model_instance_id"])
+            if isinstance(data.get("model_instance_id"), str)
+            else None
+        )
+        stats_raw = data.get("stats")
+        stats = dict(stats_raw) if isinstance(stats_raw, Mapping) else {}
         output = data.get("output")
         if not isinstance(output, list):
-            raise LocalModelEndpointError("LM Studio v1 chat output must be a list")
+            raise LocalModelEndpointError(
+                "LM Studio v1 chat output must be a list",
+                model_instance_id=model_instance_id,
+                stats=stats,
+            )
         messages: list[str] = []
         reasoning_rows: list[str] = []
+        output_types: list[str] = []
         for row in output:
             if not isinstance(row, Mapping):
                 continue
+            row_type = str(row.get("type") or "")
+            if row_type:
+                output_types.append(row_type)
             content = row.get("content")
             if not isinstance(content, str):
                 continue
-            if row.get("type") == "message":
+            if row_type == "message":
                 messages.append(content)
-            elif row.get("type") == "reasoning":
+            elif row_type == "reasoning":
                 reasoning_rows.append(content)
 
         text = "\n".join(x for x in messages if x).strip()
         if not text:
-            raise LocalModelEndpointError("LM Studio v1 chat returned no text message")
+            total = stats.get("total_output_tokens")
+            reasoning_tokens = stats.get("reasoning_output_tokens")
+            diagnostic = (
+                "LM Studio v1 chat returned no text message; "
+                f"output_types={output_types or ['<none>']}; "
+                f"total_output_tokens={total}; reasoning_output_tokens={reasoning_tokens}"
+            )
+            raise LocalModelEndpointError(
+                diagnostic,
+                model_instance_id=model_instance_id,
+                stats=stats,
+                output_types=output_types,
+            )
 
-        stats = data.get("stats")
         return LocalChatResult(
             text=text,
-            model_instance_id=(
-                str(data["model_instance_id"])
-                if isinstance(data.get("model_instance_id"), str)
-                else None
-            ),
-            stats=dict(stats) if isinstance(stats, Mapping) else {},
+            model_instance_id=model_instance_id,
+            stats=stats,
             reasoning="\n".join(reasoning_rows).strip() or None,
         )
 
@@ -256,8 +291,11 @@ class SovereignTwinRuntime:
     ):
         self.client = client or LmStudioClient()
         self.embedding_model = str(embedding_model)
+        self.memory_db = os.path.realpath(
+            os.path.abspath(os.path.expanduser(str(memory_db)))
+        )
         self.memory = Memory(
-            memory_db,
+            self.memory_db,
             embedder=lambda text: self.client.embed(
                 text,
                 model=self.embedding_model,
@@ -312,12 +350,31 @@ class SovereignTwinRuntime:
             "MEMORY_EVIDENCE_JSON:\n" + json.dumps(rows, ensure_ascii=False, sort_keys=True)
         )
 
+    def _loaded_instance_ids(self, model_key: str) -> list[str]:
+        rows = self.client.models()
+        for row in rows:
+            if str(row.get("key")) != str(model_key):
+                continue
+            instances = row.get("loaded_instances")
+            if not isinstance(instances, list):
+                return []
+            ids: list[str] = []
+            for instance in instances:
+                if not isinstance(instance, Mapping):
+                    continue
+                value = instance.get("id")
+                if isinstance(value, str) and value:
+                    ids.append(value)
+            return ids
+        return []
+
     def ask(self, query: str, *, mode: str = "fast") -> TwinAnswer:
         if mode not in self.profiles:
             raise ValueError(f"unknown Sovereign Twin mode: {mode}")
         profile = self.profiles[mode]
         evidence = self.evidence(query)
         result: LocalChatResult | None = None
+        error_cleanup_ids: list[str] = []
         try:
             result = self.client.chat(
                 model=profile.model,
@@ -336,9 +393,28 @@ class SovereignTwinRuntime:
                 stats=result.stats,
                 reasoning_present=result.reasoning is not None,
             )
+        except LocalModelEndpointError as exc:
+            if profile.unload_after_answer:
+                if exc.model_instance_id:
+                    error_cleanup_ids = [exc.model_instance_id]
+                else:
+                    try:
+                        error_cleanup_ids = self._loaded_instance_ids(profile.model)
+                    except LocalModelEndpointError:
+                        error_cleanup_ids = []
+            raise
         finally:
-            if profile.unload_after_answer and result and result.model_instance_id:
+            if not profile.unload_after_answer:
+                pass
+            elif result and result.model_instance_id:
                 self.client.unload(result.model_instance_id)
+            elif error_cleanup_ids:
+                for instance_id in error_cleanup_ids:
+                    try:
+                        self.client.unload(instance_id)
+                    except LocalModelEndpointError:
+                        # Never mask the original inference failure with cleanup failure.
+                        pass
 
     @staticmethod
     def _loaded_config(row: Mapping[str, Any]) -> Mapping[str, Any] | None:
@@ -380,6 +456,7 @@ class SovereignTwinRuntime:
             "ok": all(row["visible_to_server"] for row in profiles.values()) and embedding_visible,
             "server": self.client.base_url,
             "api": "lm-studio-rest-v1+openai-embeddings",
+            "memory_db": self.memory_db,
             "profiles": profiles,
             "embedding": {
                 "model": self.embedding_model,
