@@ -14,10 +14,33 @@ try:
 except Exception:
     _np = None
 
+
+def _validate_dimensions(query_vec: List[float], rows: List[dict]) -> int:
+    """Require one exact vector dimension across query and every candidate.
+
+    Silent truncation is forbidden. In particular, Python's ``zip`` would
+    otherwise score a 768-D query against 256/384-D legacy vectors using only
+    the shared prefix, which produces a plausible-looking but invalid score.
+    """
+    qdim = len(query_vec)
+    if qdim <= 0:
+        raise ValueError("query vector must be non-empty")
+    dims = sorted({len(r.get("vec") or []) for r in rows})
+    if not dims or dims == [0]:
+        raise ValueError("candidate vectors must be non-empty")
+    if len(dims) != 1 or dims[0] != qdim:
+        raise ValueError(
+            f"vector dimension mismatch: query={qdim}, candidates={dims}; "
+            "re-embed memory into one compatible vector space before semantic ranking"
+        )
+    return qdim
+
+
 def rank(query_vec: List[float], rows: List[dict], top: int = 50) -> List[Tuple[float, dict]]:
     """rows: [{'vec': [..], ...}] -> [(cosine, row)] sorted desc, top-k. Vectors are L2-normalized."""
     if not rows:
         return []
+    _validate_dimensions(query_vec, rows)
     if _np is not None:
         q = _np.asarray(query_vec, dtype=_np.float32)
         M = _np.asarray([r["vec"] for r in rows], dtype=_np.float32)   # (n, d)
