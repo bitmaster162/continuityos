@@ -108,7 +108,7 @@ $activeDb = $null
 $targetWheel = $null
 $rollbackWheel = $null
 $stopped = $false
-$installedTarget = $false
+$targetInstallAttempted = $false
 
 try {
     Step 'Preflight live runtime and authority'
@@ -134,8 +134,8 @@ try {
         Step 'Stop validated Twin and install exact green candidate'
         Stop-ValidatedTwin $activeDb
         $stopped = $true
+        $targetInstallAttempted = $true
         Install-Wheel $targetWheel
-        $installedTarget = $true
         Write-ManifestSource $TargetSha $activeDb
         [void](Start-And-VerifyTwin $activeDb)
         $stopped = $false
@@ -146,7 +146,7 @@ try {
     Step 'Verify Windows-safe JSON emitter without model call'
     $unicodeRaw = (& $Py -c "from continuityos.sovereign_twin_deep_lite import _emit; _emit({'text':'архитектура — память'})" | Out-String).Trim()
     Require ($LASTEXITCODE -eq 0) 'Unicode emitter smoke failed'
-    [void][Text.Encoding]::ASCII.GetBytes($unicodeRaw)
+    Require ($unicodeRaw -notmatch '[^\x00-\x7F]') 'emitter output is not ASCII-only'
     $unicodeParsed = $unicodeRaw | ConvertFrom-Json
     Require ([string]$unicodeParsed.text -eq 'архитектура — память') 'Unicode round-trip failed'
     Require ($unicodeRaw -match '\\u[0-9a-fA-F]{4}') 'Unicode was not escaped in CLI JSON'
@@ -227,7 +227,7 @@ catch {
     Write-Host "`nR13P1_DOGFOOD=FAIL" -ForegroundColor Red
     Write-Host "ERROR=$primary"
 
-    if ($installedTarget -and $rollbackWheel -and $oldSha -and $activeDb) {
+    if ($targetInstallAttempted -and $rollbackWheel -and $oldSha -and $activeDb) {
         try {
             if (Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue) {
                 Stop-ValidatedTwin $activeDb
