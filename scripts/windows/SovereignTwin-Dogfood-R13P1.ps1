@@ -182,7 +182,7 @@ try {
 
     $pre = Ensure-TwinRunning $activeDb
     Assert-Health $pre 'PRE' $activeDb
-    Require ((FullPath ([string]$manifest.memory_db)) -eq (FullPath ([string]$pre.memory_db)) 'manifest DB differs from live DB'
+    Require ((FullPath ([string]$manifest.memory_db)) -eq (FullPath ([string]$pre.memory_db))) 'manifest DB differs from live DB'
 
     $oldSha = [string]$manifest.source_sha
     Require (($oldSha -eq $ExpectedR13P) -or ($oldSha -eq $TargetSha)) "unexpected installed source SHA: $oldSha"
