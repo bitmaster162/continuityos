@@ -8,7 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .sovereign_twin_admission import ShadowMemoryAdmissionQueue
-from .sovereign_twin_runtime import LmStudioClient, SovereignTwinRuntime
+from .sovereign_twin_runtime import DEFAULT_EMBEDDING_MODEL, LmStudioClient, SovereignTwinRuntime
 
 EXECUTION_AUTHORITY = "NONE"
 
@@ -142,9 +142,14 @@ def serve(
     host: str = "127.0.0.1",
     port: int = 8765,
     admission_path: str | None = None,
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL,
 ) -> None:
     host = _validate_bind(host)
-    runtime = SovereignTwinRuntime(memory_db, client=LmStudioClient(base_url))
+    runtime = SovereignTwinRuntime(
+        memory_db,
+        client=LmStudioClient(base_url),
+        embedding_model=embedding_model,
+    )
     queue_path = admission_path or str(Path(memory_db).with_suffix(".twin-admissions.jsonl"))
     admissions = ShadowMemoryAdmissionQueue(queue_path)
     server = _TwinServer((host, int(port)), _Handler)
