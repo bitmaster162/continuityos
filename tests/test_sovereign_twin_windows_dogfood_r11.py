@@ -11,8 +11,15 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "windows" / "SovereignTwin-Dogfood-R11.ps1"
 
 
+def _script_or_skip() -> Path:
+    if not SCRIPT.exists():
+        pytest.skip("repo-only Windows dogfood script is not packaged in wheel")
+    return SCRIPT
+
+
 def test_dogfood_r11_contract_is_fail_closed_and_opt_in_for_fast_smoke():
-    text = SCRIPT.read_text(encoding="utf-8")
+    script = _script_or_skip()
+    text = script.read_text(encoding="utf-8")
 
     assert "[Parameter(Mandatory=$true)][string]$SourceSha" in text
     assert "$SourceSha -notmatch '^[0-9a-fA-F]{40}$'" in text
@@ -37,11 +44,12 @@ def test_dogfood_r11_contract_is_fail_closed_and_opt_in_for_fast_smoke():
 
 
 def test_dogfood_r11_powershell_syntax_on_windows():
+    script = _script_or_skip()
     ps = shutil.which("powershell.exe") or shutil.which("powershell")
     if ps is None:
         pytest.skip("PowerShell unavailable on this runner")
 
-    escaped_script = str(SCRIPT).replace("'", "''")
+    escaped_script = str(script).replace("'", "''")
     command = (
         "$ErrorActionPreference='Stop'; "
         f"$text=Get-Content -LiteralPath '{escaped_script}' -Raw; "
