@@ -16,6 +16,10 @@ from .memory import Memory
 
 EXECUTION_AUTHORITY = "NONE"
 DEFAULT_BASE_URL = "http://127.0.0.1:1234"
+DEFAULT_EMBEDDING_MODEL = os.environ.get(
+    "SOVEREIGN_TWIN_EMBEDDING_MODEL",
+    "text-embedding-nomic-embed-text-v1.5",
+)
 
 
 class LocalModelEndpointError(RuntimeError):
@@ -102,7 +106,7 @@ def _validate_loopback_url(base_url: str, *, allow_remote: bool = False) -> str:
 
 
 class LmStudioClient:
-    """Small stdlib-only client for LM Studio / llmster native REST API v1."""
+    """Small stdlib-only client for LM Studio / llmster local APIs."""
 
     def __init__(
         self,
@@ -141,6 +145,23 @@ class LmStudioClient:
         if not instance_id:
             return
         self._request("POST", "/api/v1/models/unload", {"instance_id": str(instance_id)})
+
+    def embed(self, text: str, *, model: str = DEFAULT_EMBEDDING_MODEL) -> list[float]:
+        data = self._request(
+            "POST",
+            "/v1/embeddings",
+            {"model": str(model), "input": str(text).replace("\n", " ")},
+        )
+        rows = data.get("data") if isinstance(data, Mapping) else None
+        if not isinstance(rows, list) or not rows or not isinstance(rows[0], Mapping):
+            raise LocalModelEndpointError("unexpected LM Studio embeddings response")
+        vector = rows[0].get("embedding")
+        if not isinstance(vector, list) or not vector:
+            raise LocalModelEndpointError("LM Studio embedding vector missing")
+        try:
+            return [float(value) for value in vector]
+        except (TypeError, ValueError) as exc:
+            raise LocalModelEndpointError("LM Studio embedding vector must be numeric") from exc
 
     def chat(
         self,
@@ -211,9 +232,15 @@ class SovereignTwinRuntime:
         client: LmStudioClient | None = None,
         recall_k: int = 8,
         profiles: Mapping[str, LocalModelProfile] | None = None,
+        embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     ):
-        self.memory = Memory(memory_db, read_only=True)
         self.client = client or LmStudioClient()
+        self.embedding_model = str(embedding_model)
+        self.memory = Memory(
+            memory_db,
+            embedder=lambda text: self.client.embed(text, model=self.embedding_model),
+            read_only=True,
+        )
         self.recall_k = int(recall_k)
         self.profiles = dict(profiles or DEFAULT_PROFILES)
 
@@ -324,11 +351,16 @@ class SovereignTwinRuntime:
                 "loaded_config": dict(config) if config is not None else None,
                 "warnings": warnings,
             }
+        embedding_visible = self.embedding_model in by_key
         return {
-            "ok": all(row["visible_to_server"] for row in profiles.values()),
+            "ok": all(row["visible_to_server"] for row in profiles.values()) and embedding_visible,
             "server": self.client.base_url,
-            "api": "lm-studio-rest-v1",
+            "api": "lm-studio-rest-v1+openai-embeddings",
             "profiles": profiles,
+            "embedding": {
+                "model": self.embedding_model,
+                "visible_to_server": embedding_visible,
+            },
             "model_count": len(models),
             "execution_authority": EXECUTION_AUTHORITY,
             "can_execute": False,
