@@ -5,6 +5,7 @@ import argparse
 import json
 from pathlib import Path
 
+from .sovereign_twin_admission import AdmissionQueueError, ShadowMemoryAdmissionQueue
 from .sovereign_twin_runtime import LmStudioClient, LocalModelEndpointError, SovereignTwinRuntime
 
 
@@ -13,11 +14,28 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--db", default=str(Path.home() / ".continuityos" / "memory.db"))
     p.add_argument("--base-url", default="http://127.0.0.1:1234")
     p.add_argument("--allow-remote-model-server", action="store_true")
+    p.add_argument(
+        "--admission-queue",
+        default=str(Path.home() / ".continuityos" / "twin-admissions.jsonl"),
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("doctor")
+
     ask = sub.add_parser("ask")
     ask.add_argument("query")
     ask.add_argument("--mode", choices=["fast", "deep"], default="fast")
+
+    serve = sub.add_parser("serve")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8765)
+
+    propose = sub.add_parser("admission-propose")
+    propose.add_argument("text")
+    propose.add_argument("--namespace", default="notes")
+    propose.add_argument("--tag", action="append", default=[])
+    propose.add_argument("--evidence-ref", action="append", default=[])
+
+    sub.add_parser("admission-list")
     return p
 
 
@@ -28,6 +46,50 @@ def _emit(value: dict, code: int = 0) -> int:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    if args.cmd == "serve":
+        if args.allow_remote_model_server:
+            return _emit(
+                {
+                    "ok": False,
+                    "error": "serve refuses --allow-remote-model-server in R1",
+                    "execution_authority": "NONE",
+                },
+                2,
+            )
+        from .sovereign_twin_api import serve
+
+        serve(
+            memory_db=args.db,
+            base_url=args.base_url,
+            host=args.host,
+            port=args.port,
+            admission_path=args.admission_queue,
+        )
+        return 0
+
+    if args.cmd in {"admission-propose", "admission-list"}:
+        queue = ShadowMemoryAdmissionQueue(args.admission_queue)
+        try:
+            if args.cmd == "admission-propose":
+                event = queue.propose(
+                    args.text,
+                    namespace=args.namespace,
+                    tags=args.tag,
+                    evidence_refs=args.evidence_ref,
+                    source="CLI_USER",
+                )
+                return _emit({"ok": True, "event": event, "verify": queue.verify()})
+            return _emit(
+                {
+                    "ok": True,
+                    "pending": queue.pending(),
+                    "verify": queue.verify(),
+                    "execution_authority": "NONE",
+                }
+            )
+        except AdmissionQueueError as exc:
+            return _emit({"ok": False, "error": str(exc), "execution_authority": "NONE"}, 2)
+
     client = LmStudioClient(args.base_url, allow_remote=args.allow_remote_model_server)
     runtime = None
     try:
