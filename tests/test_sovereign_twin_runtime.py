@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -9,7 +10,9 @@ from continuityos.memory import Memory
 from continuityos.sovereign_twin_admission import ShadowMemoryAdmissionQueue
 from continuityos.sovereign_twin_api import _validate_bind
 from continuityos.sovereign_twin_cli import _initialize_memory_db
+from continuityos.sovereign_twin_memory import import_seed, memory_report
 from continuityos.sovereign_twin_runtime import (
+    DEFAULT_EMBEDDING_MODEL,
     LocalChatResult,
     LocalModelEndpointError,
     SovereignTwinRuntime,
@@ -23,6 +26,7 @@ class FakeClient:
     def __init__(self):
         self.calls = []
         self.unloaded = []
+        self.embeds = []
 
     def models(self):
         return [
@@ -42,7 +46,15 @@ class FakeClient:
                 "key": "qwen3.6-35b-a3b",
                 "loaded_instances": [],
             },
+            {
+                "key": DEFAULT_EMBEDDING_MODEL,
+                "loaded_instances": [],
+            },
         ]
+
+    def embed(self, text, *, model=DEFAULT_EMBEDDING_MODEL):
+        self.embeds.append((text, model))
+        return [1.0, 0.0, 0.0]
 
     def chat(self, **kwargs):
         self.calls.append(kwargs)
@@ -59,7 +71,8 @@ class FakeClient:
 
 def _seed_db(tmp: str) -> tuple[str, int]:
     db = str(Path(tmp) / "memory.db")
-    writer = Memory(db)
+    fake = FakeClient()
+    writer = Memory(db, embedder=fake.embed)
     rid = writer.remember(
         "The owner prefers local-first AI systems.",
         namespace="rules",
@@ -90,7 +103,7 @@ def test_loopback_policy_rejects_remote_by_default():
         _validate_bind("0.0.0.0")
 
 
-def test_runtime_grounding_fast_uses_v1_profile_and_none_authority():
+def test_runtime_grounding_fast_uses_local_embedding_and_none_authority():
     with TemporaryDirectory() as tmp:
         db, rid = _seed_db(tmp)
         client = FakeClient()
@@ -101,6 +114,8 @@ def test_runtime_grounding_fast_uses_v1_profile_and_none_authority():
             assert answer.execution_authority == "NONE"
             assert answer.model == "qwen3.5-4b"
             assert answer.stats["tokens_per_second"] == 7.5
+            assert client.embeds
+            assert client.embeds[0][1] == DEFAULT_EMBEDDING_MODEL
             call = client.calls[0]
             assert call["context_length"] == 8192
             assert call["reasoning"] == "off"
@@ -126,21 +141,58 @@ def test_deep_mode_uses_4k_reasoning_and_unloads_after_answer():
             runtime.close()
 
 
-def test_doctor_reads_native_v1_model_shape():
+def test_doctor_reads_native_v1_and_embedding_model_shape():
     with TemporaryDirectory() as tmp:
         db, _ = _seed_db(tmp)
         runtime = SovereignTwinRuntime(db, client=FakeClient())
         try:
             report = runtime.doctor()
             assert report["ok"] is True
-            assert report["api"] == "lm-studio-rest-v1"
+            assert report["api"] == "lm-studio-rest-v1+openai-embeddings"
             assert report["profiles"]["fast"]["loaded"] is True
             assert report["profiles"]["fast"]["warnings"] == []
             assert report["profiles"]["deep"]["loaded"] is False
+            assert report["embedding"]["model"] == DEFAULT_EMBEDDING_MODEL
+            assert report["embedding"]["visible_to_server"] is True
             assert report["execution_authority"] == "NONE"
             assert report["can_execute"] is False
         finally:
             runtime.close()
+
+
+def test_seed_import_is_dry_run_by_default_then_commits_with_embedding_manifest():
+    with TemporaryDirectory() as tmp:
+        db = str(Path(tmp) / "memory.db")
+        _initialize_memory_db(db)
+        seed = Path(tmp) / "seed.json"
+        seed.write_text(
+            json.dumps({
+                "schema": "sovereign-twin.memory-seed/v1",
+                "entries": [
+                    {
+                        "text": "The owner prefers local-first systems.",
+                        "namespace": "rules",
+                        "tags": ["privacy"],
+                        "type": "preference",
+                        "key": "local-first",
+                    }
+                ],
+            }),
+            encoding="utf-8",
+        )
+        client = FakeClient()
+        dry = import_seed(db, str(seed), client=client, commit=False)
+        assert dry["dry_run"] is True
+        assert memory_report(db)["count"] == 0
+
+        committed = import_seed(db, str(seed), client=client, commit=True)
+        assert committed["entry_count"] == 1
+        assert committed["embedding_dimension"] == 3
+        assert committed["memory"]["count"] == 1
+        assert committed["memory"]["vector_dimensions"] == [3]
+        assert Path(committed["manifest"]["path"]).exists()
+        assert committed["execution_authority"] == "NONE"
+        assert committed["can_execute"] is False
 
 
 def test_shadow_admission_queue_does_not_mutate_memory():
