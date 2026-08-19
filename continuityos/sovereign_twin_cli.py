@@ -7,13 +7,20 @@ from pathlib import Path
 
 from .memory import Memory
 from .sovereign_twin_admission import AdmissionQueueError, ShadowMemoryAdmissionQueue
-from .sovereign_twin_runtime import LmStudioClient, LocalModelEndpointError, SovereignTwinRuntime
+from .sovereign_twin_memory import TwinMemoryError, import_seed, ingest_history, memory_report
+from .sovereign_twin_runtime import (
+    DEFAULT_EMBEDDING_MODEL,
+    LmStudioClient,
+    LocalModelEndpointError,
+    SovereignTwinRuntime,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="sovereign-twin")
     p.add_argument("--db", default=str(Path.home() / ".continuityos" / "memory.db"))
     p.add_argument("--base-url", default="http://127.0.0.1:1234")
+    p.add_argument("--embedding-model", default=DEFAULT_EMBEDDING_MODEL)
     p.add_argument("--allow-remote-model-server", action="store_true")
     p.add_argument(
         "--admission-queue",
@@ -22,6 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init")
     sub.add_parser("doctor")
+    sub.add_parser("memory-doctor")
 
     ask = sub.add_parser("ask")
     ask.add_argument("query")
@@ -30,6 +38,22 @@ def build_parser() -> argparse.ArgumentParser:
     serve = sub.add_parser("serve")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
+
+    ingest = sub.add_parser("ingest-history")
+    ingest.add_argument("path")
+    ingest.add_argument("--namespace", default="imported")
+    ingest.add_argument(
+        "--source",
+        default="auto",
+        choices=["auto", "chatgpt", "claude", "gemini", "grok", "mistral", "perplexity"],
+    )
+    ingest.add_argument("--roles", default="user,human,memory")
+    ingest.add_argument("--extract", action="store_true")
+    ingest.add_argument("--commit", action="store_true")
+
+    seed = sub.add_parser("seed-import")
+    seed.add_argument("path")
+    seed.add_argument("--commit", action="store_true")
 
     propose = sub.add_parser("admission-propose")
     propose.add_argument("text")
@@ -88,6 +112,9 @@ def main(argv=None) -> int:
                 2,
             )
 
+    if args.cmd == "memory-doctor":
+        return _emit(memory_report(args.db), 0 if memory_report(args.db).get("ok") else 2)
+
     if args.cmd == "serve":
         if args.allow_remote_model_server:
             return _emit(
@@ -106,8 +133,56 @@ def main(argv=None) -> int:
             host=args.host,
             port=args.port,
             admission_path=args.admission_queue,
+            embedding_model=args.embedding_model,
         )
         return 0
+
+    if args.cmd in {"ingest-history", "seed-import"}:
+        if args.allow_remote_model_server:
+            return _emit(
+                {
+                    "ok": False,
+                    "error": "memory ingestion refuses --allow-remote-model-server",
+                    "execution_authority": "NONE",
+                    "can_execute": False,
+                },
+                2,
+            )
+        client = LmStudioClient(args.base_url)
+        try:
+            if args.cmd == "ingest-history":
+                roles = tuple(x.strip() for x in args.roles.split(",") if x.strip())
+                result = ingest_history(
+                    args.db,
+                    args.path,
+                    client=client,
+                    embedding_model=args.embedding_model,
+                    namespace=args.namespace,
+                    source=args.source,
+                    roles=roles,
+                    extract_mode=args.extract,
+                    commit=args.commit,
+                )
+            else:
+                result = import_seed(
+                    args.db,
+                    args.path,
+                    client=client,
+                    embedding_model=args.embedding_model,
+                    commit=args.commit,
+                )
+            return _emit(result)
+        except (TwinMemoryError, LocalModelEndpointError, OSError, ValueError, json.JSONDecodeError) as exc:
+            return _emit(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "error_class": type(exc).__name__,
+                    "execution_authority": "NONE",
+                    "can_execute": False,
+                },
+                2,
+            )
 
     if args.cmd in {"admission-propose", "admission-list"}:
         queue = ShadowMemoryAdmissionQueue(args.admission_queue)
@@ -135,7 +210,11 @@ def main(argv=None) -> int:
     client = LmStudioClient(args.base_url, allow_remote=args.allow_remote_model_server)
     runtime = None
     try:
-        runtime = SovereignTwinRuntime(args.db, client=client)
+        runtime = SovereignTwinRuntime(
+            args.db,
+            client=client,
+            embedding_model=args.embedding_model,
+        )
         if args.cmd == "doctor":
             result = runtime.doctor()
             return _emit(result, 0 if result["ok"] else 2)
