@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$SourceSha,
     [string]$EmbeddingModel = "text-embedding-nomic-embed-text-v1.5",
+    [string]$MemoryDb = "",
     [switch]$NoAutostart,
     [switch]$NoStart
 )
@@ -14,12 +15,14 @@ $Twin = Join-Path $Venv "Scripts\sovereign-twin.exe"
 $Launcher = Join-Path $Root "start-sovereign-twin.ps1"
 $Manifest = Join-Path $Root "runtime-source.json"
 $TaskName = "SovereignTwin-UI"
-$MemoryDb = Join-Path $HOME ".continuityos\memory.db"
+$DefaultMemoryDb = Join-Path $HOME ".continuityos\memory.db"
 $AdmissionQueue = Join-Path $HOME ".continuityos\twin-admissions.jsonl"
 $UiUrl = "http://127.0.0.1:8765"
 $LlmUrl = "http://127.0.0.1:1234"
 $FastModel = "qwen3.5-4b"
 $DeepModel = "qwen3.6-35b-a3b"
+$ExistingRuntime = $null
+$PreserveExistingMemory = $false
 
 function Step([string]$Text) { Write-Host "`n=== $Text ===" -ForegroundColor Cyan }
 
@@ -27,6 +30,53 @@ if ($SourceSha -notmatch '^[0-9a-fA-F]{40}$') {
     throw "-SourceSha must be an exact 40-character Git commit SHA"
 }
 $SourceSha = $SourceSha.ToLowerInvariant()
+
+Step "Resolve active memory target"
+if (Test-Path -LiteralPath $Manifest) {
+    $ExistingRuntime = Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json
+    if ([string]$ExistingRuntime.execution_authority -ne "NONE" -or [bool]$ExistingRuntime.can_execute) {
+        throw "existing runtime manifest violates no-execution authority"
+    }
+
+    $existingMemoryRaw = [string]$ExistingRuntime.memory_db
+    if ([string]::IsNullOrWhiteSpace($existingMemoryRaw)) {
+        throw "existing runtime manifest has no memory_db"
+    }
+    $existingMemory = [System.IO.Path]::GetFullPath($existingMemoryRaw)
+    if (-not (Test-Path -LiteralPath $existingMemory)) {
+        throw "existing active memory DB is missing: $existingMemory"
+    }
+
+    if ($PSBoundParameters.ContainsKey("MemoryDb")) {
+        $requestedMemory = [System.IO.Path]::GetFullPath($MemoryDb)
+        if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals($requestedMemory, $existingMemory)) {
+            throw "installer refuses to change active memory DB; use SovereignTwin-Activate-Memory.ps1"
+        }
+    }
+    $MemoryDb = $existingMemory
+    $PreserveExistingMemory = $true
+
+    $existingEmbedding = [string]$ExistingRuntime.embedding_model
+    if (-not [string]::IsNullOrWhiteSpace($existingEmbedding)) {
+        if ($PSBoundParameters.ContainsKey("EmbeddingModel") -and $EmbeddingModel -ne $existingEmbedding) {
+            throw "installer refuses to change the active embedding model; re-embed and activate memory explicitly"
+        }
+        $EmbeddingModel = $existingEmbedding
+    }
+
+    $existingQueue = [string]$ExistingRuntime.admission_queue
+    if (-not [string]::IsNullOrWhiteSpace($existingQueue)) {
+        $AdmissionQueue = $existingQueue
+    }
+    Write-Host "Active memory DB preserved: $MemoryDb"
+} else {
+    if ([string]::IsNullOrWhiteSpace($MemoryDb)) {
+        $MemoryDb = $DefaultMemoryDb
+    } else {
+        $MemoryDb = [System.IO.Path]::GetFullPath($MemoryDb)
+    }
+    Write-Host "Initial memory DB: $MemoryDb"
+}
 
 Step "Preflight"
 $llmTask = Get-ScheduledTask -TaskName "SovereignTwin-LLMStudio" -ErrorAction SilentlyContinue
@@ -89,12 +139,20 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
     if (-not (Test-Path $Twin)) { throw "sovereign-twin entry point not installed" }
 
-    Step "Initialize local memory container"
-    & $Twin --db $MemoryDb init
-    if ($LASTEXITCODE -ne 0) { throw "sovereign-twin init failed" }
+    if ($PreserveExistingMemory) {
+        Step "Preserve existing active memory container"
+        if (-not (Test-Path -LiteralPath $MemoryDb)) {
+            throw "existing active memory DB disappeared during install: $MemoryDb"
+        }
+        Write-Host "Existing memory DB left untouched: $MemoryDb"
+    } else {
+        Step "Initialize local memory container"
+        & $Twin --db $MemoryDb init
+        if ($LASTEXITCODE -ne 0) { throw "sovereign-twin init failed" }
+    }
 
     $manifestObj = [ordered]@{
-        schema = "sovereign-twin.windows-runtime-source/v2"
+        schema = "sovereign-twin.windows-runtime-source/v3"
         repository = $Repo
         source_sha = $SourceSha
         installed_at_utc = [DateTime]::UtcNow.ToString("o")
@@ -110,7 +168,14 @@ try {
         execution_authority = "NONE"
         can_execute = $false
     }
-    $manifestObj | ConvertTo-Json -Depth 5 | Set-Content -Path $Manifest -Encoding UTF8
+    if ($ExistingRuntime) {
+        foreach ($prop in $ExistingRuntime.PSObject.Properties) {
+            if ($prop.Name -like "memory_*" -and $prop.Name -ne "memory_db") {
+                $manifestObj[$prop.Name] = $prop.Value
+            }
+        }
+    }
+    $manifestObj | ConvertTo-Json -Depth 8 | Set-Content -Path $Manifest -Encoding UTF8
 } finally {
     Remove-Item $Work -Recurse -Force -ErrorAction SilentlyContinue
 }
@@ -125,7 +190,7 @@ $launcherBody = @"
 Start-Sleep -Seconds 8
 try {
     `$h = Invoke-RestMethod -Uri "$UiUrl/health" -TimeoutSec 2
-    if (`$h.ok) { exit 0 }
+    if (`$h.ok -and [System.IO.Path]::GetFullPath([string]`$h.memory_db) -eq [System.IO.Path]::GetFullPath('$escapedDb')) { exit 0 }
 } catch {}
 & '$escapedTwin' --db '$escapedDb' --admission-queue '$escapedQueue' --embedding-model '$escapedEmbedding' serve --host 127.0.0.1 --port 8765
 "@
@@ -153,10 +218,13 @@ if (-not $NoStart) {
         Start-Sleep -Seconds 1
         try {
             $h = Invoke-RestMethod -Uri "$UiUrl/health" -TimeoutSec 2
-            if ($h.ok) { $ok = $true; break }
+            if ($h.ok -and [System.IO.Path]::GetFullPath([string]$h.memory_db) -eq [System.IO.Path]::GetFullPath($MemoryDb)) {
+                $ok = $true
+                break
+            }
         } catch {}
     }
-    if (-not $ok) { throw "Sovereign Twin UI did not become healthy on $UiUrl" }
+    if (-not $ok) { throw "Sovereign Twin UI did not become healthy on $UiUrl with expected memory DB $MemoryDb" }
     Write-Host "Twin health: PASS"
 }
 
