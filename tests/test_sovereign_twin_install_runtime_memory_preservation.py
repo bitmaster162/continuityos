@@ -12,6 +12,7 @@ WINDOWS = ROOT / "scripts" / "windows"
 INSTALLER = WINDOWS / "SovereignTwin-Install-Runtime.ps1"
 DOCTOR = WINDOWS / "SovereignTwin-FirstRun-Doctor.ps1"
 RUNTIME_STATUS = WINDOWS / "SovereignTwin-Runtime-Status.ps1"
+OPEN_UI = WINDOWS / "SovereignTwin-Open.ps1"
 
 
 def _script_or_skip(path: Path) -> Path:
@@ -94,7 +95,25 @@ def test_runtime_status_reports_manifest_bound_memory_path():
     assert 'MemoryDb = (Test-Path -LiteralPath $MemoryDb)' in text
 
 
-@pytest.mark.parametrize("script", [INSTALLER, DOCTOR, RUNTIME_STATUS])
+def test_ui_opener_requires_manifest_bound_runtime_identity():
+    text = _script_or_skip(OPEN_UI).read_text(encoding="utf-8")
+
+    assert '$Manifest = Join-Path $Root "runtime-source.json"' in text
+    assert 'runtime manifest authority mismatch' in text
+    assert 'runtime manifest unexpectedly grants execution' in text
+    assert 'runtime manifest memory_db missing' in text
+    assert '$ExpectedMemoryDb = [System.IO.Path]::GetFullPath([string]$runtime.memory_db)' in text
+    assert 'runtime manifest memory_db does not exist:' in text
+    assert 'function Test-ExpectedHealth' in text
+    assert '[string]$Health.execution_authority -ne "NONE"' in text
+    assert '[bool]$Health.can_execute' in text
+    assert '[System.StringComparer]::OrdinalIgnoreCase.Equals($active, $ExpectedMemoryDb)' in text
+    assert 'refusing to open UI: live health does not match runtime manifest' in text
+    assert 'started Twin health does not match runtime manifest' in text
+    assert 'Sovereign Twin UI did not become healthy with expected runtime identity' in text
+
+
+@pytest.mark.parametrize("script", [INSTALLER, DOCTOR, RUNTIME_STATUS, OPEN_UI])
 def test_r16_windows_scripts_parse_on_windows(script: Path):
     script = _script_or_skip(script)
     ps = shutil.which("powershell.exe") or shutil.which("powershell")
