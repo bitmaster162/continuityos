@@ -23,8 +23,26 @@ $FastModel = "qwen3.5-4b"
 $DeepModel = "qwen3.6-35b-a3b"
 $ExistingRuntime = $null
 $PreserveExistingMemory = $false
+$StoppedTwinForUpgrade = $false
 
 function Step([string]$Text) { Write-Host "`n=== $Text ===" -ForegroundColor Cyan }
+function Stop-KnownTwinListener {
+    $listener = Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $listener) { return $false }
+    $pidValue = [int]$listener.OwningProcess
+    $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $pidValue" -ErrorAction Stop
+    $cmd = [string]$proc.CommandLine
+    if ($cmd -notmatch 'sovereign-twin' -or $cmd -notmatch 'serve') {
+        throw "refusing to stop unknown listener on 127.0.0.1:8765 (PID=$pidValue)"
+    }
+    Stop-Process -Id $pidValue -Force -ErrorAction Stop
+    for ($i = 0; $i -lt 20; $i++) {
+        Start-Sleep -Milliseconds 250
+        $still = Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue
+        if (-not $still) { return $true }
+    }
+    throw "Twin listener did not stop on port 8765"
+}
 
 if ($SourceSha -notmatch '^[0-9a-fA-F]{40}$') {
     throw "-SourceSha must be an exact 40-character Git commit SHA"
@@ -134,9 +152,17 @@ try {
     }
     if (-not (Test-Path $Python)) { throw "venv Python was not created" }
 
+    Step "Stop validated Twin listener before in-place runtime upgrade"
+    $StoppedTwinForUpgrade = [bool](Stop-KnownTwinListener)
+    if ($StoppedTwinForUpgrade) {
+        Write-Host "Validated Twin listener stopped before runtime upgrade: PASS"
+    } else {
+        Write-Host "No active Twin listener before runtime upgrade: PASS"
+    }
+
     Step "Install exact source into venv"
     & $Python -m pip install --disable-pip-version-check --no-deps --upgrade $Source.FullName
-    if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
+    if ($LASTEXITCODE -ne 0) { throw "pip install failed; Twin remains stopped fail-closed" }
     if (-not (Test-Path $Twin)) { throw "sovereign-twin entry point not installed" }
 
     if ($PreserveExistingMemory) {
