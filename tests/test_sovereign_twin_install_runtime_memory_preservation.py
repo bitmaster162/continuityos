@@ -13,6 +13,7 @@ INSTALLER = WINDOWS / "SovereignTwin-Install-Runtime.ps1"
 DOCTOR = WINDOWS / "SovereignTwin-FirstRun-Doctor.ps1"
 RUNTIME_STATUS = WINDOWS / "SovereignTwin-Runtime-Status.ps1"
 OPEN_UI = WINDOWS / "SovereignTwin-Open.ps1"
+REEMBED = WINDOWS / "SovereignTwin-Reembed-Memory.ps1"
 
 
 def _script_or_skip(path: Path) -> Path:
@@ -113,7 +114,22 @@ def test_ui_opener_requires_manifest_bound_runtime_identity():
     assert 'Sovereign Twin UI did not become healthy with expected runtime identity' in text
 
 
-@pytest.mark.parametrize("script", [INSTALLER, DOCTOR, RUNTIME_STATUS, OPEN_UI])
+def test_reembed_defaults_to_manifest_bound_active_memory():
+    text = _script_or_skip(REEMBED).read_text(encoding="utf-8")
+
+    assert '[string]$SourceDb = ""' in text
+    assert '$Manifest = Join-Path $Root "runtime-source.json"' in text
+    assert 'runtime manifest violates no-execution authority' in text
+    assert '$SourceDb = [System.IO.Path]::GetFullPath([string]$runtime.memory_db)' in text
+    assert 'Source memory bound to active runtime manifest:' in text
+    assert 'Explicit source override differs from active runtime memory:' in text
+    assert 'SourceDb must be provided when runtime manifest is missing' in text
+    assert '$PSBoundParameters.ContainsKey("EmbeddingModel")' in text
+    assert '$EmbeddingModel = $runtimeEmbedding' in text
+    assert '[System.StringComparer]::OrdinalIgnoreCase.Equals($SourceDb, $TargetDb)' in text
+
+
+@pytest.mark.parametrize("script", [INSTALLER, DOCTOR, RUNTIME_STATUS, OPEN_UI, REEMBED])
 def test_r16_windows_scripts_parse_on_windows(script: Path):
     script = _script_or_skip(script)
     ps = shutil.which("powershell.exe") or shutil.which("powershell")
