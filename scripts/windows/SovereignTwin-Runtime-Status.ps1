@@ -1,11 +1,25 @@
 $ErrorActionPreference = "Continue"
 $Root = Join-Path $env:LOCALAPPDATA "SovereignTwin"
 $Manifest = Join-Path $Root "runtime-source.json"
-$MemoryDb = Join-Path $HOME ".continuityos\memory.db"
+$DefaultMemoryDb = Join-Path $HOME ".continuityos\memory.db"
 $Twin = Join-Path $Root "runtime-venv\Scripts\sovereign-twin.exe"
+$MemoryDb = $DefaultMemoryDb
+$ManifestObj = $null
 
 Write-Host "=== Sovereign Twin runtime ===" -ForegroundColor Cyan
-if (Test-Path $Manifest) { Get-Content $Manifest } else { Write-Warning "runtime-source.json missing" }
+if (Test-Path $Manifest) {
+    try {
+        $ManifestObj = Get-Content $Manifest -Raw | ConvertFrom-Json
+        Get-Content $Manifest
+        if (-not [string]::IsNullOrWhiteSpace([string]$ManifestObj.memory_db)) {
+            $MemoryDb = [System.IO.Path]::GetFullPath([string]$ManifestObj.memory_db)
+        }
+    } catch {
+        Write-Warning "runtime-source.json could not be parsed: $_"
+    }
+} else {
+    Write-Warning "runtime-source.json missing"
+}
 
 Write-Host "`n=== Scheduled Tasks ===" -ForegroundColor Cyan
 Get-ScheduledTask -TaskName "SovereignTwin-LLMStudio" -ErrorAction SilentlyContinue | Select-Object TaskName,State
@@ -23,7 +37,8 @@ try { Invoke-RestMethod "http://127.0.0.1:8765/doctor" -TimeoutSec 20 | ConvertT
 Write-Host "`n=== Local state ===" -ForegroundColor Cyan
 [pscustomobject]@{
     TwinExecutable = (Test-Path $Twin)
-    MemoryDb = (Test-Path $MemoryDb)
+    MemoryDbPath = $MemoryDb
+    MemoryDb = (Test-Path -LiteralPath $MemoryDb)
     RuntimeManifest = (Test-Path $Manifest)
     UI = "http://127.0.0.1:8765"
     LLM = "http://127.0.0.1:1234"
