@@ -1,0 +1,18 @@
+{
+  "admissible_evidence_pool": "Same admitted raw evidence pool as Arm C at the frozen cutoff. Assistant-authored content and SCT-only derived/structured claims are forbidden; only HUMAN_USER and OBSERVED_HUMAN_CHOICE authorship classes are eligible.",
+  "builder_module": "sct.baseline_r13",
+  "builder_schema": "sct.r13-arm-b-profile-rag-builder/v1",
+  "context_selection_policy": "Initial 40% profile / 60% retrieval byte allocation with deterministic spill, whole segments preferred, final UTF-8-safe prefix truncation allowed, and existing 1.15 B/C payload parity ceiling retained.",
+  "context_selection_policy_sha256": "3f4173bc006051deeb5bfd2437db0b818704eed122319b4060c5c51685f84f4a",
+  "disallow_sct_structured_claims": true,
+  "execution_authority": "NONE",
+  "manifest_sha256": "c332f8e69459cc551ee3ed40e45b10bab14aa5aa6bab427f42ecbaf31831c069",
+  "payload_parity_ratio": 1.15,
+  "profile_builder_sha256": "20639b31990f00ad77e45541cc0e25e5afe75ecef3b0ee50a3e1fc42e7381f29",
+  "profile_construction_policy": "Deterministic verbatim human-authored profile-eligible excerpts from the same admitted raw evidence pool as Arm C; exact content-hash dedupe; most-recent-first stable provenance order.",
+  "retrieval_policy": "Deterministic Unicode lexical-overlap retrieval over the same admitted raw evidence pool as Arm C; no embeddings, no learned ranker; recency/source/segment stable tie-breaks.",
+  "retrieval_policy_sha256": "037383911b76752b663a6099e7f7c95e9d6550734877fba3374c8a0fcd301214",
+  "schema": "sct.epoch001-arm-b-baseline/v1",
+  "source_cutoff_policy": "Only evidence with observed_at <= the case-frozen source cutoff is eligible; post-cutoff/future evidence is forbidden.",
+  "source_cutoff_sha256": "a1ddfece0b73a5ff7563dd8e18cd7d82f21445999b4be75f09483e0c0476c9b2"
+}

@@ -1,0 +1,67 @@
+{
+  "schema": "sct.r13-precase-qualification/v1",
+  "status": "PROSPECTIVE_NOT_EXECUTED",
+  "parent": {
+    "r12_source_sha": "61929ee088cd83f61b4bc3df97559da2f58bc6c9",
+    "r12_tree_sha": "143f6da481909bb83167f12c102d5be10e4faba3",
+    "r12_artifact_sha256": "a67404f2a3fd0778d86e2ec2fe6ca6f677a8e2056eaf1d38fb7f64825dd6d8c2",
+    "r12_evidence_db_sha256": "9223b6e78c76918c8f33ffe02cbbf2ddaad6212330661747908117017850be61",
+    "r11_receipt_sha256": "1c5937da898e89e92d9c9a1f905cb29b8e0aec133fb4fb3dffcfe74a94f1fd0c",
+    "r2_diagnostic_sha256": "beebc38d4dd32317a3b83c6dba9fbc02054ca4cfbe3a73c1c29ea3c82783d6fc"
+  },
+  "adapter": {
+    "id": "sct.r13-direct-constrained-label-logits/v2",
+    "temperature": 1.0,
+    "uniform_mix": 0.0,
+    "rationale_before_choice": false,
+    "fallback_distribution": null,
+    "choice_prefix": "Selected option: ",
+    "exact_sealed_alias_token_ids_required": true,
+    "raw_allowed_token_logits_must_be_persisted": true
+  },
+  "sentinel": {
+    "schema": "sct.r13-balanced-context-sentinel/v1",
+    "scenarios": 2,
+    "mapping_order_variants_per_scenario": 3,
+    "directed_contexts_per_variant": 3,
+    "planned_calls": 18,
+    "pass_rule": "FOR_EACH_SCENARIO_MAPPING_TARGET: q_target(ctx_target) > q_target(ctx_other) FOR_ALL_OTHER_CONTEXTS",
+    "minimum_gap": null,
+    "entropy_threshold": null,
+    "confidence_threshold": null,
+    "p_value": null
+  },
+  "determinism_preflight_calls": 2,
+  "stable_void": {
+    "cases": 10,
+    "cardinalities": [2, 3, 4, 5, 6, 7, 8, 10, 12, 15],
+    "arms_per_case": 3,
+    "planned_calls": 30
+  },
+  "arm_b_baseline": {
+    "must_be_sealed_before_scientific_pass": true,
+    "implementation_hashes_required": true,
+    "sct_only_structured_claims_forbidden": true,
+    "payload_parity_ratio": 1.15
+  },
+  "analysis_protocol": {
+    "confirmatory_primary": "brier_skill_delta_c_minus_b",
+    "descriptive_secondary": ["accuracy_delta_c_minus_b", "log_loss_delta_c_minus_b"],
+    "n_ge_100_k_ge_6_semantics": "MINIMUM_INFERENCE_ADMISSION_FLOOR_NOT_POWER_OR_INDEPENDENCE_PROOF",
+    "sign_flip_interpretation": "SIGN_FLIP_SENSITIVITY_UNDER_SYMMETRY_NOT_RANDOM_ASSIGNMENT_INFERENCE",
+    "non_significant_superiority_test_does_not_prove_equivalence": true
+  },
+  "operator_attestation": {
+    "content_validation_required": true,
+    "source_commit_and_tree_required": true,
+    "model_weight_and_tokenizer_hashes_required": true,
+    "receipt_hash_bindings_required": true
+  },
+  "max_planned_real_model_calls_successful_run": 50,
+  "automatic_retry": false,
+  "replacement_cases": 0,
+  "replacement_models": 0,
+  "valid_live_n": 0,
+  "case_001_authorized": false,
+  "execution_authority": "NONE"
+}
