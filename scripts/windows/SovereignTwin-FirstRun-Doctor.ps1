@@ -23,6 +23,13 @@ Require (Test-Path $Twin) "sovereign-twin executable is missing"
 $manifestObj = Get-Content $Manifest -Raw | ConvertFrom-Json
 Require ($manifestObj.execution_authority -eq "NONE") "runtime manifest authority mismatch"
 Require ($manifestObj.can_execute -eq $false) "runtime manifest unexpectedly grants execution"
+Require (-not [string]::IsNullOrWhiteSpace([string]$manifestObj.memory_db)) "runtime manifest memory_db missing"
+$MemoryDb = [System.IO.Path]::GetFullPath([string]$manifestObj.memory_db)
+Require (Test-Path -LiteralPath $MemoryDb) "runtime manifest memory_db does not exist: $MemoryDb"
+$EmbeddingModel = [string]$manifestObj.embedding_model
+if ([string]::IsNullOrWhiteSpace($EmbeddingModel)) {
+    $EmbeddingModel = "text-embedding-nomic-embed-text-v1.5"
+}
 
 $llmTask = Get-ScheduledTask -TaskName "SovereignTwin-LLMStudio" -ErrorAction SilentlyContinue
 $uiTask = Get-ScheduledTask -TaskName "SovereignTwin-UI" -ErrorAction SilentlyContinue
@@ -31,7 +38,7 @@ Require ($null -ne $uiTask) "SovereignTwin-UI task missing"
 
 $models = Invoke-RestMethod -Uri "$Llm/api/v1/models" -TimeoutSec 10
 $keys = @($models.models | ForEach-Object { $_.key })
-foreach ($required in @("qwen3.5-4b", "qwen3.6-35b-a3b", "text-embedding-nomic-embed-text-v1.5")) {
+foreach ($required in @("qwen3.5-4b", "qwen3.6-35b-a3b", $EmbeddingModel)) {
     Require ($keys -contains $required) "required local model missing: $required"
 }
 
@@ -39,18 +46,21 @@ $health = Invoke-RestMethod -Uri "$Ui/health" -TimeoutSec 10
 Require ($health.ok -eq $true) "Twin UI health is not OK"
 Require ($health.execution_authority -eq "NONE") "Twin UI authority mismatch"
 Require ($health.can_execute -eq $false) "Twin UI unexpectedly grants execution"
+Require (-not [string]::IsNullOrWhiteSpace([string]$health.memory_db)) "Twin UI health memory_db missing"
+$HealthMemoryDb = [System.IO.Path]::GetFullPath([string]$health.memory_db)
+Require ([System.StringComparer]::OrdinalIgnoreCase.Equals($HealthMemoryDb, $MemoryDb)) "Twin UI health memory_db does not match runtime manifest"
 
-$doctorRaw = & $Twin doctor
+$doctorRaw = & $Twin --db $MemoryDb --embedding-model $EmbeddingModel doctor
 Require ($LASTEXITCODE -eq 0) "sovereign-twin doctor failed"
 $doctor = $doctorRaw | ConvertFrom-Json
-$memoryRaw = & $Twin memory-doctor
+$memoryRaw = & $Twin --db $MemoryDb --embedding-model $EmbeddingModel memory-doctor
 $memoryExit = $LASTEXITCODE
 $memoryDoctor = $null
 try { $memoryDoctor = $memoryRaw | ConvertFrom-Json } catch { $memoryDoctor = @{ ok = $false; raw = ($memoryRaw | Out-String) } }
 
 $smoke = $null
 if ($SmokeFast) {
-    $smokeRaw = & $Twin ask "Reply with exactly LOCAL_TWIN_OK and nothing else." --mode fast
+    $smokeRaw = & $Twin --db $MemoryDb --embedding-model $EmbeddingModel ask "Reply with exactly LOCAL_TWIN_OK and nothing else." --mode fast
     $smokeExit = $LASTEXITCODE
     $smoke = @{ exit_code = $smokeExit; raw = ($smokeRaw | Out-String).Trim() }
 }
@@ -63,9 +73,11 @@ $ram = [ordered]@{
 }
 
 $receiptObj = [ordered]@{
-    schema = "sovereign-twin.first-run-receipt/v1"
+    schema = "sovereign-twin.first-run-receipt/v2"
     created_at = (Get-Date).ToString("o")
     source_sha = $manifestObj.source_sha
+    memory_db = $MemoryDb
+    embedding_model = $EmbeddingModel
     llmster_task = $llmTask.State.ToString()
     ui_task = $uiTask.State.ToString()
     model_keys = $keys
