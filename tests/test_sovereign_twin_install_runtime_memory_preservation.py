@@ -8,18 +8,20 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "windows" / "SovereignTwin-Install-Runtime.ps1"
+WINDOWS = ROOT / "scripts" / "windows"
+INSTALLER = WINDOWS / "SovereignTwin-Install-Runtime.ps1"
+DOCTOR = WINDOWS / "SovereignTwin-FirstRun-Doctor.ps1"
+RUNTIME_STATUS = WINDOWS / "SovereignTwin-Runtime-Status.ps1"
 
 
-def _script_or_skip() -> Path:
-    if not SCRIPT.exists():
-        pytest.skip("repo-only Windows installer script is not packaged in wheel")
-    return SCRIPT
+def _script_or_skip(path: Path) -> Path:
+    if not path.exists():
+        pytest.skip(f"repo-only Windows script is not packaged in wheel: {path.name}")
+    return path
 
 
 def test_runtime_installer_preserves_existing_active_memory_contract():
-    script = _script_or_skip()
-    text = script.read_text(encoding="utf-8")
+    text = _script_or_skip(INSTALLER).read_text(encoding="utf-8")
 
     assert '[string]$MemoryDb = ""' in text
     assert '$PSBoundParameters.ContainsKey("MemoryDb")' in text
@@ -47,8 +49,34 @@ def test_runtime_installer_preserves_existing_active_memory_contract():
     assert preserve_block.count('& $Twin --db $MemoryDb init') == 1
 
 
-def test_runtime_installer_powershell_syntax_on_windows():
-    script = _script_or_skip()
+def test_first_run_doctor_uses_manifest_bound_memory_and_embedding_model():
+    text = _script_or_skip(DOCTOR).read_text(encoding="utf-8")
+
+    assert 'runtime manifest memory_db missing' in text
+    assert '$MemoryDb = [System.IO.Path]::GetFullPath([string]$manifestObj.memory_db)' in text
+    assert 'runtime manifest memory_db does not exist:' in text
+    assert '$EmbeddingModel = [string]$manifestObj.embedding_model' in text
+    assert 'Twin UI health memory_db does not match runtime manifest' in text
+    assert '& $Twin --db $MemoryDb --embedding-model $EmbeddingModel doctor' in text
+    assert '& $Twin --db $MemoryDb --embedding-model $EmbeddingModel memory-doctor' in text
+    assert '& $Twin --db $MemoryDb --embedding-model $EmbeddingModel ask' in text
+    assert 'schema = "sovereign-twin.first-run-receipt/v2"' in text
+    assert 'memory_db = $MemoryDb' in text
+    assert 'embedding_model = $EmbeddingModel' in text
+
+
+def test_runtime_status_reports_manifest_bound_memory_path():
+    text = _script_or_skip(RUNTIME_STATUS).read_text(encoding="utf-8")
+
+    assert '$ManifestObj = Get-Content $Manifest -Raw | ConvertFrom-Json' in text
+    assert '$MemoryDb = [System.IO.Path]::GetFullPath([string]$ManifestObj.memory_db)' in text
+    assert 'MemoryDbPath = $MemoryDb' in text
+    assert 'MemoryDb = (Test-Path -LiteralPath $MemoryDb)' in text
+
+
+@pytest.mark.parametrize("script", [INSTALLER, DOCTOR, RUNTIME_STATUS])
+def test_r16_windows_scripts_parse_on_windows(script: Path):
+    script = _script_or_skip(script)
     ps = shutil.which("powershell.exe") or shutil.which("powershell")
     if ps is None:
         pytest.skip("PowerShell unavailable on this runner")
