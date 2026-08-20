@@ -49,6 +49,26 @@ def test_runtime_installer_preserves_existing_active_memory_contract():
     assert preserve_block.count('& $Twin --db $MemoryDb init') == 1
 
 
+def test_runtime_installer_stops_only_validated_twin_before_in_place_upgrade():
+    text = _script_or_skip(INSTALLER).read_text(encoding="utf-8")
+
+    assert 'function Stop-KnownTwinListener' in text
+    assert 'Get-NetTCPConnection -LocalPort 8765 -State Listen' in text
+    assert "if ($cmd -notmatch 'sovereign-twin' -or $cmd -notmatch 'serve')" in text
+    assert 'refusing to stop unknown listener on 127.0.0.1:8765' in text
+    assert 'Twin listener did not stop on port 8765' in text
+    assert 'Step "Stop validated Twin listener before in-place runtime upgrade"' in text
+    assert '$StoppedTwinForUpgrade = [bool](Stop-KnownTwinListener)' in text
+    assert 'pip install failed; Twin remains stopped fail-closed' in text
+
+    stop_pos = text.index('Step "Stop validated Twin listener before in-place runtime upgrade"')
+    install_pos = text.index('Step "Install exact source into venv"')
+    manifest_pos = text.index('$manifestObj = [ordered]@{')
+    launcher_pos = text.index('Step "Write local UI launcher"')
+    start_pos = text.index('Step "Start local Twin UI now"')
+    assert stop_pos < install_pos < manifest_pos < launcher_pos < start_pos
+
+
 def test_first_run_doctor_uses_manifest_bound_memory_and_embedding_model():
     text = _script_or_skip(DOCTOR).read_text(encoding="utf-8")
 
