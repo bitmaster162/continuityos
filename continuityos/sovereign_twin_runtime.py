@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass
 import json
 import os
 from threading import RLock
+from time import perf_counter
 from typing import Any, Mapping, Sequence
 from urllib.error import HTTPError
 from urllib.parse import urlparse
@@ -591,9 +592,20 @@ class SovereignTwinRuntime:
                 failures.append(f"{instance_id}: {exc}")
         return failures
 
-    def _acquire_deep(self, profile: LocalModelProfile) -> str:
+    @staticmethod
+    def _elapsed_ms(started_at: float) -> float:
+        return round((perf_counter() - started_at) * 1000.0, 3)
+
+    def _acquire_deep(
+        self,
+        profile: LocalModelProfile,
+    ) -> tuple[str, dict[str, float]]:
         """Explicitly acquire exactly one configured DEEP instance or fail closed."""
+        phase_timings_ms: dict[str, float] = {}
+
+        phase_started = perf_counter()
         existing = self._strict_loaded_instance_ids(profile.model, label="DEEP")
+        phase_timings_ms["deep_pre_acquire_proof"] = self._elapsed_ms(phase_started)
         if existing:
             raise LocalModelEndpointError(
                 "DEEP already resident before explicit acquisition; refusing native DEEP"
@@ -604,6 +616,7 @@ class SovereignTwinRuntime:
             raise LocalModelEndpointError(
                 "DEEP is cold and client cannot explicitly load it"
             )
+        phase_started = perf_counter()
         try:
             acquired_id = str(
                 load(model=profile.model, context_length=profile.context_length)
@@ -615,11 +628,14 @@ class SovereignTwinRuntime:
                 f"DEEP explicit load failed before chat: {exc}"
             ) from exc
 
+        phase_timings_ms["deep_load"] = self._elapsed_ms(phase_started)
+
         if not acquired_id:
             raise LocalModelEndpointError(
                 "DEEP explicit load returned an empty instance id"
             )
 
+        phase_started = perf_counter()
         try:
             instances = self._strict_loaded_instances(profile.model, label="DEEP")
             ids = [str(instance["id"]) for instance in instances]
@@ -654,14 +670,18 @@ class SovereignTwinRuntime:
             self._cleanup_deep_ids_best_effort(cleanup_ids)
             raise
 
-        return acquired_id
+        phase_timings_ms["deep_acquisition_proof"] = self._elapsed_ms(phase_started)
+        return acquired_id, phase_timings_ms
 
     def _release_deep_after_request(
         self,
         profile: LocalModelProfile,
         acquired_id: str,
-    ) -> None:
+    ) -> dict[str, float]:
         """Unload exact acquired DEEP id and prove configured DEEP is absent."""
+        phase_timings_ms: dict[str, float] = {}
+
+        phase_started = perf_counter()
         try:
             self.client.unload(acquired_id)
         except LocalModelEndpointError as exc:
@@ -674,6 +694,9 @@ class SovereignTwinRuntime:
                 f"DEEP exact unload failed after native DEEP: {exc}"
             ) from exc
 
+        phase_timings_ms["deep_unload"] = self._elapsed_ms(phase_started)
+
+        phase_started = perf_counter()
         remaining = self._strict_loaded_instance_ids(profile.model, label="DEEP")
         if remaining:
             cleanup_failures = self._cleanup_deep_ids_best_effort(remaining)
@@ -686,6 +709,8 @@ class SovereignTwinRuntime:
                 "DEEP remains resident after exact unload; "
                 f"residual_ids={remaining}{detail}"
             )
+        phase_timings_ms["deep_post_unload_proof"] = self._elapsed_ms(phase_started)
+        return phase_timings_ms
 
     def _ask_deep(
         self,
@@ -693,8 +718,13 @@ class SovereignTwinRuntime:
         *,
         profile: LocalModelProfile,
         evidence: Sequence[TwinEvidence],
+        phase_timings_ms: dict[str, float],
+        request_started_at: float,
     ) -> TwinAnswer:
-        acquired_id = self._acquire_deep(profile)
+        acquired_id, acquisition_timings = self._acquire_deep(profile)
+        phase_timings_ms.update(acquisition_timings)
+
+        phase_started = perf_counter()
         try:
             result = self.client.chat(
                 model=profile.model,
@@ -710,6 +740,7 @@ class SovereignTwinRuntime:
                     "native DEEP chat instance mismatch: "
                     f"expected={acquired_id} actual={result.model_instance_id}"
                 )
+            phase_timings_ms["deep_chat"] = self._elapsed_ms(phase_started)
         except Exception as exc:
             try:
                 self._release_deep_after_request(profile, acquired_id)
@@ -719,27 +750,48 @@ class SovereignTwinRuntime:
                 ) from exc
             raise
 
-        self._release_deep_after_request(profile, acquired_id)
+        release_timings = self._release_deep_after_request(profile, acquired_id)
+        phase_timings_ms.update(release_timings)
+        phase_timings_ms["total_request"] = self._elapsed_ms(request_started_at)
+
+        stats = dict(result.stats)
+        stats["deep_phase_timings_ms"] = dict(phase_timings_ms)
         return TwinAnswer(
             text=result.text,
             model=profile.model,
             mode="deep",
             evidence=tuple(evidence),
-            stats=result.stats,
+            stats=stats,
             reasoning_present=result.reasoning is not None,
         )
 
     def ask(self, query: str, *, mode: str = "fast") -> TwinAnswer:
+        request_started_at = perf_counter() if mode == "deep" else None
         with self._model_lock:
             if mode not in self.profiles:
                 raise ValueError(f"unknown Sovereign Twin mode: {mode}")
             profile = self.profiles[mode]
             if mode == "deep":
+                assert request_started_at is not None
+                phase_timings_ms = {
+                    "model_lock_wait": self._elapsed_ms(request_started_at),
+                }
+                phase_started = perf_counter()
                 self._release_fast_for_deep()
-            evidence = self.evidence(query)
-            if mode == "deep":
-                return self._ask_deep(query, profile=profile, evidence=evidence)
+                phase_timings_ms["fast_release"] = self._elapsed_ms(phase_started)
 
+                phase_started = perf_counter()
+                evidence = self.evidence(query)
+                phase_timings_ms["evidence_retrieval"] = self._elapsed_ms(phase_started)
+                return self._ask_deep(
+                    query,
+                    profile=profile,
+                    evidence=evidence,
+                    phase_timings_ms=phase_timings_ms,
+                    request_started_at=request_started_at,
+                )
+
+            evidence = self.evidence(query)
             self._ensure_fast_loaded(profile)
             result = self.client.chat(
                 model=profile.model,
