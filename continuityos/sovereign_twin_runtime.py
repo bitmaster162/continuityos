@@ -140,12 +140,21 @@ class LmStudioClient:
         base_url: str = DEFAULT_BASE_URL,
         *,
         timeout: float = 300.0,
+        load_timeout: float = 600.0,
         allow_remote: bool = False,
     ):
         self.base_url = _validate_loopback_url(base_url, allow_remote=allow_remote)
         self.timeout = float(timeout)
+        self.load_timeout = float(load_timeout)
 
-    def _request(self, method: str, path: str, payload: Mapping[str, Any] | None = None) -> Any:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        payload: Mapping[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> Any:
         body = None if payload is None else json.dumps(payload).encode("utf-8")
         req = Request(
             self.base_url + path,
@@ -153,8 +162,9 @@ class LmStudioClient:
             method=method,
             headers={"Content-Type": "application/json", "Accept": "application/json"},
         )
+        request_timeout = self.timeout if timeout is None else float(timeout)
         try:
-            with urlopen(req, timeout=self.timeout) as response:  # noqa: S310 - loopback validated
+            with urlopen(req, timeout=request_timeout) as response:  # noqa: S310 - loopback validated
                 return json.loads(response.read().decode("utf-8"))
         except Exception as exc:
             raise LocalModelEndpointError(
@@ -167,6 +177,46 @@ class LmStudioClient:
         if not isinstance(rows, list):
             raise LocalModelEndpointError("unexpected LM Studio v1 models response")
         return [dict(row) for row in rows if isinstance(row, Mapping)]
+
+    def load(self, *, model: str, context_length: int) -> str:
+        try:
+            data = self._request(
+                "POST",
+                "/api/v1/models/load",
+                {
+                    "model": str(model),
+                    "context_length": int(context_length),
+                    "echo_load_config": True,
+                },
+                timeout=self.load_timeout,
+            )
+        except LocalModelEndpointError as exc:
+            raise LocalModelEndpointError(
+                f"LM Studio model load failed with load_timeout={self.load_timeout:g}s: {exc}"
+            ) from exc
+        if not isinstance(data, Mapping) or data.get("status") != "loaded":
+            raise LocalModelEndpointError("LM Studio model load did not report status=loaded")
+        instance_id_raw = data.get("instance_id")
+        if not isinstance(instance_id_raw, str) or not instance_id_raw:
+            # Older v1 beta builds used model_instance_id before the field was renamed.
+            instance_id_raw = data.get("model_instance_id")
+        if not isinstance(instance_id_raw, str) or not instance_id_raw:
+            raise LocalModelEndpointError("LM Studio model load response missing instance_id")
+        load_config = data.get("load_config")
+        if not isinstance(load_config, Mapping):
+            raise LocalModelEndpointError("LM Studio model load response missing load_config")
+        try:
+            loaded_context = int(load_config.get("context_length"))
+        except (TypeError, ValueError) as exc:
+            raise LocalModelEndpointError(
+                "LM Studio model load response missing numeric context_length"
+            ) from exc
+        if loaded_context != int(context_length):
+            raise LocalModelEndpointError(
+                "LM Studio model load context_length mismatch: "
+                f"expected={int(context_length)} actual={loaded_context}"
+            )
+        return instance_id_raw
 
     def unload(self, instance_id: str) -> None:
         if not instance_id:
@@ -350,7 +400,7 @@ class SovereignTwinRuntime:
             "MEMORY_EVIDENCE_JSON:\n" + json.dumps(rows, ensure_ascii=False, sort_keys=True)
         )
 
-    def _loaded_instance_ids(self, model_key: str) -> list[str]:
+    def _loaded_instances(self, model_key: str) -> list[Mapping[str, Any]]:
         rows = self.client.models()
         for row in rows:
             if str(row.get("key")) != str(model_key):
@@ -358,21 +408,51 @@ class SovereignTwinRuntime:
             instances = row.get("loaded_instances")
             if not isinstance(instances, list):
                 return []
-            ids: list[str] = []
-            for instance in instances:
-                if not isinstance(instance, Mapping):
-                    continue
-                value = instance.get("id")
-                if isinstance(value, str) and value:
-                    ids.append(value)
-            return ids
+            return [instance for instance in instances if isinstance(instance, Mapping)]
         return []
+
+    def _loaded_instance_ids(self, model_key: str) -> list[str]:
+        ids: list[str] = []
+        for instance in self._loaded_instances(model_key):
+            value = instance.get("id")
+            if isinstance(value, str) and value:
+                ids.append(value)
+        return ids
+
+    def _ensure_fast_loaded(self, profile: LocalModelProfile) -> str:
+        instances = self._loaded_instances(profile.model)
+        if instances:
+            first = instances[0]
+            config = first.get("config")
+            if not isinstance(config, Mapping):
+                raise LocalModelEndpointError("loaded FAST model instance is missing config")
+            try:
+                loaded_context = int(config.get("context_length"))
+            except (TypeError, ValueError) as exc:
+                raise LocalModelEndpointError(
+                    "loaded FAST model has invalid context_length"
+                ) from exc
+            if loaded_context != profile.context_length:
+                raise LocalModelEndpointError(
+                    "loaded FAST model context_length mismatch: "
+                    f"expected={profile.context_length} actual={loaded_context}"
+                )
+            value = first.get("id")
+            if isinstance(value, str) and value:
+                return value
+            raise LocalModelEndpointError("loaded FAST model instance is missing id")
+        load = getattr(self.client, "load", None)
+        if not callable(load):
+            raise LocalModelEndpointError("FAST model is not loaded and client cannot load it")
+        return str(load(model=profile.model, context_length=profile.context_length))
 
     def ask(self, query: str, *, mode: str = "fast") -> TwinAnswer:
         if mode not in self.profiles:
             raise ValueError(f"unknown Sovereign Twin mode: {mode}")
         profile = self.profiles[mode]
         evidence = self.evidence(query)
+        if mode == "fast":
+            self._ensure_fast_loaded(profile)
         result: LocalChatResult | None = None
         error_cleanup_ids: list[str] = []
         try:
