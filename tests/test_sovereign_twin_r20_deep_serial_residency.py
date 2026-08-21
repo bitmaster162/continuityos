@@ -58,7 +58,10 @@ class _SerialResidencyClient:
             rows.append({"key": "qwen3.5-4b", "loaded_instances": fast_instances})
         rows.append({
             "key": "qwen3.6-35b-a3b",
-            "loaded_instances": ([{"id": "deep-r20-1", "config": {}}] if self.deep_loaded else []),
+            "loaded_instances": ([{
+                "id": "deep-r20-1",
+                "config": {"context_length": 4096},
+            }] if self.deep_loaded else []),
         })
         return rows
 
@@ -67,6 +70,9 @@ class _SerialResidencyClient:
         if model == "qwen3.5-4b":
             self.fast_loaded = True
             return "fast-r20-1"
+        if model == "qwen3.6-35b-a3b":
+            self.deep_loaded = True
+            return "deep-r20-1"
         raise AssertionError(f"unexpected explicit load: {model}")
 
     def unload(self, instance_id: str):
@@ -83,7 +89,6 @@ class _SerialResidencyClient:
     def chat(self, **kwargs):
         self.events.append(("chat", kwargs["model"], kwargs["context_length"], kwargs["reasoning"]))
         if kwargs["model"] == "qwen3.6-35b-a3b":
-            self.deep_loaded = True
             if self.deep_error:
                 raise LocalModelEndpointError(
                     "simulated DEEP inference failure",
@@ -126,6 +131,7 @@ def test_r20_deep_with_fast_already_cold_does_not_unload_fast_and_cleans_deep():
     assert answer.execution_authority == "NONE"
     assert answer.can_execute is False
     assert ("unload", "fast-r20-1") not in client.events
+    assert ("load", "qwen3.6-35b-a3b", 4096) in client.events
     assert client.events[-1] == ("unload", "deep-r20-1")
     assert client.fast_loaded is False
     assert client.deep_loaded is False
@@ -138,9 +144,10 @@ def test_r20_deep_releases_fast_before_chat_then_leaves_fast_cold():
     runtime.ask("deep", mode="deep")
 
     fast_unload = client.events.index(("unload", "fast-r20-1"))
+    deep_load = client.events.index(("load", "qwen3.6-35b-a3b", 4096))
     deep_chat = client.events.index(("chat", "qwen3.6-35b-a3b", 4096, "on"))
     deep_unload = client.events.index(("unload", "deep-r20-1"))
-    assert fast_unload < deep_chat < deep_unload
+    assert fast_unload < deep_load < deep_chat < deep_unload
     assert client.fast_loaded is False
     assert client.deep_loaded is False
 

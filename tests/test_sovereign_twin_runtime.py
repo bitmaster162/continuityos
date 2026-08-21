@@ -32,6 +32,7 @@ class FakeClient:
         self.unloaded = []
         self.embeds = []
         self.fast_loaded = True
+        self.deep_loaded = False
 
     def models(self):
         fast_instances = []
@@ -45,14 +46,29 @@ class FakeClient:
                     "offload_kv_cache_to_gpu": True,
                 },
             }]
+        deep_instances = []
+        if self.deep_loaded:
+            deep_instances = [{
+                "id": "deep-1",
+                "config": {"context_length": 4096},
+            }]
         return [
             {
                 "key": "qwen3.5-4b",
                 "loaded_instances": fast_instances,
             },
-            {"key": "qwen3.6-35b-a3b", "loaded_instances": []},
+            {"key": "qwen3.6-35b-a3b", "loaded_instances": deep_instances},
             {"key": DEFAULT_EMBEDDING_MODEL, "loaded_instances": []},
         ]
+
+    def load(self, *, model, context_length):
+        if model == "qwen3.5-4b":
+            self.fast_loaded = True
+            return "fast-1"
+        if model == "qwen3.6-35b-a3b":
+            self.deep_loaded = True
+            return "deep-1"
+        raise LocalModelEndpointError(f"unexpected model load: {model}")
 
     def embed(self, text, *, model=DEFAULT_EMBEDDING_MODEL, task=None):
         self.embeds.append((text, model, task))
@@ -71,6 +87,8 @@ class FakeClient:
         self.unloaded.append(instance_id)
         if instance_id == "fast-1":
             self.fast_loaded = False
+        elif instance_id == "deep-1":
+            self.deep_loaded = False
 
 
 def _seed_db(tmp: str) -> tuple[str, int]:
@@ -151,6 +169,7 @@ def test_deep_mode_uses_4k_reasoning_and_serial_residency_cleanup():
             assert client.calls[0]["reasoning"] == "on"
             assert client.unloaded == ["fast-1", "deep-1"]
             assert client.fast_loaded is False
+            assert client.deep_loaded is False
         finally:
             runtime.close()
 
