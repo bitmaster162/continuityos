@@ -1,122 +1,293 @@
-"""R21C Sovereign Twin runtime overlay: residency-authoritative native DEEP acquisition.
+"""R21D Sovereign Twin runtime overlay: chat-coupled streaming JIT DEEP acquisition.
 
-The R21B runtime is kept byte-exact in sovereign_twin_runtime_r21b.py. This module
-re-exports its public contract and changes only native DEEP acquisition semantics:
-a bounded load-ACK timeout may be reconciled by exact read-only residency proof.
+R21C is retained byte-exact in sovereign_twin_runtime_r21c.py. The production
+LM Studio client changes native DEEP only: one streaming /api/v1/chat request
+owns JIT load, readiness evidence, inference, and final instance identity.
 """
 from __future__ import annotations
 
+import json
 from time import perf_counter as _system_perf_counter, sleep as _system_sleep
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
-from . import sovereign_twin_runtime_r21b as _base
-from .sovereign_twin_runtime_r21b import *  # noqa: F401,F403
+from . import sovereign_twin_runtime_r21c as _r21c
+from .sovereign_twin_runtime_r21c import *  # noqa: F401,F403
 
-# R21B historically exposes several underscore-prefixed helpers that are imported
-# directly by tests and local callers. Python star-import intentionally omits them,
-# so mirror every non-dunder base attribute before applying the R21C overrides.
-for _legacy_name, _legacy_value in vars(_base).items():
+# Preserve the complete R21C import surface, including underscore-prefixed helpers.
+for _legacy_name, _legacy_value in vars(_r21c).items():
     if not _legacy_name.startswith("__"):
         globals().setdefault(_legacy_name, _legacy_value)
 del _legacy_name, _legacy_value
 
-# Keep R21B timing monkeypatch semantics for existing tests/callers importing this module.
+# Keep timing/sleep monkeypatch semantics for inherited R21C compatibility paths.
 perf_counter = _system_perf_counter
 sleep = _system_sleep
-_base.perf_counter = lambda: perf_counter()
-
-DEEP_LOAD_ACK_TIMEOUT_SECONDS = 20.0
-DEEP_ACQUISITION_POLL_SECONDS = 0.5
+_r21c.perf_counter = lambda: perf_counter()
+_r21c.sleep = lambda seconds: sleep(seconds)
 
 
-def _looks_like_load_ack_timeout(exc: BaseException) -> bool:
-    """Accept only transport-level timeout evidence, never HTTP/capacity failures."""
-    if _base._looks_like_capacity_error(str(exc)):
-        return False
-
-    current: BaseException | None = exc
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if isinstance(current, HTTPError):
-            return False
-        if isinstance(current, TimeoutError):
-            return True
-        next_exc = current.__cause__ if current.__cause__ is not None else current.__context__
-        current = next_exc if isinstance(next_exc, BaseException) else None
-
+def _looks_like_already_unloaded_error(exc: BaseException) -> bool:
+    """Recognize only the exact idempotent-cleanup case observed from LM Studio."""
     value = str(exc).lower()
-    if "httperror:" in value or "http error " in value:
-        return False
-    return "timeouterror: timed out" in value
+    return "http error 404" in value and "not loaded" in value
 
 
-class _DeepResidencyUnsafeError(LocalModelEndpointError):
-    """Observed DEEP residency exists but cannot satisfy the exact acquisition contract."""
-
-
-class LmStudioClient(_base.LmStudioClient):
-    """R21B client plus a bounded ACK-only loader for native DEEP acquisition."""
+class LmStudioClient(_r21c.LmStudioClient):
+    """R21C-compatible client plus R21D chat-coupled streaming JIT acquisition."""
 
     @staticmethod
-    def _validate_load_response(data: Any, *, context_length: int) -> str:
-        if not isinstance(data, Mapping) or data.get("status") != "loaded":
-            raise LocalModelEndpointError("LM Studio model load did not report status=loaded")
-        instance_id_raw = data.get("instance_id")
-        if not isinstance(instance_id_raw, str) or not instance_id_raw:
-            instance_id_raw = data.get("model_instance_id")
-        if not isinstance(instance_id_raw, str) or not instance_id_raw:
-            raise LocalModelEndpointError("LM Studio model load response missing instance_id")
-        load_config = data.get("load_config")
-        if not isinstance(load_config, Mapping):
-            raise LocalModelEndpointError("LM Studio model load response missing load_config")
-        try:
-            loaded_context = int(load_config.get("context_length"))
-        except (TypeError, ValueError) as exc:
+    def _chat_result_from_payload(data: Mapping[str, Any]) -> LocalChatResult:
+        model_instance_id = (
+            str(data["model_instance_id"])
+            if isinstance(data.get("model_instance_id"), str)
+            else None
+        )
+        stats_raw = data.get("stats")
+        stats = dict(stats_raw) if isinstance(stats_raw, Mapping) else {}
+        output = data.get("output")
+        if not isinstance(output, list):
             raise LocalModelEndpointError(
-                "LM Studio model load response missing numeric context_length"
-            ) from exc
-        if loaded_context != int(context_length):
-            raise LocalModelEndpointError(
-                "LM Studio model load context_length mismatch: "
-                f"expected={int(context_length)} actual={loaded_context}"
+                "LM Studio v1 streaming chat output must be a list",
+                model_instance_id=model_instance_id,
+                stats=stats,
             )
-        return instance_id_raw
 
-    def load_for_acquisition(
+        messages: list[str] = []
+        reasoning_rows: list[str] = []
+        output_types: list[str] = []
+        for row in output:
+            if not isinstance(row, Mapping):
+                continue
+            row_type = str(row.get("type") or "")
+            if row_type:
+                output_types.append(row_type)
+            content = row.get("content")
+            if not isinstance(content, str):
+                continue
+            if row_type == "message":
+                messages.append(content)
+            elif row_type == "reasoning":
+                reasoning_rows.append(content)
+
+        text = "\n".join(value for value in messages if value).strip()
+        if not text:
+            total = stats.get("total_output_tokens")
+            reasoning_tokens = stats.get("reasoning_output_tokens")
+            raise LocalModelEndpointError(
+                "LM Studio v1 streaming chat returned no text message; "
+                f"output_types={output_types or ['<none>']}; "
+                f"total_output_tokens={total}; reasoning_output_tokens={reasoning_tokens}",
+                model_instance_id=model_instance_id,
+                stats=stats,
+                output_types=output_types,
+            )
+
+        return LocalChatResult(
+            text=text,
+            model_instance_id=model_instance_id,
+            stats=stats,
+            reasoning="\n".join(reasoning_rows).strip() or None,
+        )
+
+    def chat_streaming_jit(
         self,
         *,
         model: str,
+        system_prompt: str,
+        input_text: str,
         context_length: int,
-        ack_timeout: float,
-    ) -> str:
-        """Issue exactly one explicit load with bounded ACK wait; residency is proven separately."""
-        request_timeout = min(
-            self.load_timeout,
-            max(0.001, float(ack_timeout)),
+        reasoning: str,
+        max_output_tokens: int,
+        temperature: float,
+        on_model_load_end: Callable[[str, float], None] | None = None,
+    ) -> tuple[LocalChatResult, dict[str, Any]]:
+        """Run one SSE chat transaction and bind JIT load completion to the same instance."""
+        payload = {
+            "model": str(model),
+            "input": str(input_text),
+            "system_prompt": str(system_prompt),
+            "context_length": int(context_length),
+            "reasoning": str(reasoning),
+            "max_output_tokens": int(max_output_tokens),
+            "temperature": float(temperature),
+            "stream": True,
+            "store": False,
+        }
+        req = Request(
+            self.base_url + "/api/v1/chat",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+            },
         )
+
+        chat_start_id: str | None = None
+        model_load_end_id: str | None = None
+        model_load_time_seconds: float | None = None
+        chat_end_result: Mapping[str, Any] | None = None
+        event_types: list[str] = []
+        stream_errors: list[str] = []
+
+        def dispatch(event_name: str | None, data_lines: list[str]) -> None:
+            nonlocal chat_start_id, model_load_end_id, model_load_time_seconds
+            nonlocal chat_end_result
+            if not data_lines:
+                return
+            try:
+                event_data = json.loads("\n".join(data_lines))
+            except Exception as exc:
+                raise LocalModelEndpointError(
+                    f"LM Studio SSE event contained invalid JSON: {exc}"
+                ) from exc
+            if not isinstance(event_data, Mapping):
+                raise LocalModelEndpointError("LM Studio SSE event data must be an object")
+
+            event_type = str(event_data.get("type") or event_name or "")
+            if not event_type:
+                raise LocalModelEndpointError("LM Studio SSE event type is missing")
+            event_types.append(event_type)
+
+            if event_type == "chat.start":
+                value = event_data.get("model_instance_id")
+                if not isinstance(value, str) or not value:
+                    raise LocalModelEndpointError(
+                        "LM Studio chat.start missing model_instance_id"
+                    )
+                if chat_start_id is not None and chat_start_id != value:
+                    raise LocalModelEndpointError(
+                        "LM Studio chat.start model_instance_id changed within one stream"
+                    )
+                chat_start_id = value
+                return
+
+            if event_type == "model_load.end":
+                if model_load_end_id is not None:
+                    raise LocalModelEndpointError(
+                        "LM Studio emitted multiple model_load.end events for one native DEEP chat"
+                    )
+                value = event_data.get("model_instance_id")
+                if not isinstance(value, str) or not value:
+                    raise LocalModelEndpointError(
+                        "LM Studio model_load.end missing model_instance_id"
+                    )
+                if chat_start_id is not None and chat_start_id != value:
+                    raise LocalModelEndpointError(
+                        "LM Studio model_load.end instance mismatch: "
+                        f"chat_start={chat_start_id} load_end={value}"
+                    )
+                try:
+                    load_seconds = float(event_data.get("load_time_seconds"))
+                except (TypeError, ValueError) as exc:
+                    raise LocalModelEndpointError(
+                        "LM Studio model_load.end missing numeric load_time_seconds"
+                    ) from exc
+                if load_seconds < 0:
+                    raise LocalModelEndpointError(
+                        "LM Studio model_load.end load_time_seconds must be non-negative"
+                    )
+                if on_model_load_end is not None:
+                    on_model_load_end(value, load_seconds)
+                model_load_end_id = value
+                model_load_time_seconds = load_seconds
+                return
+
+            if event_type == "error":
+                error = event_data.get("error")
+                if isinstance(error, Mapping):
+                    kind = str(error.get("type") or "unknown")
+                    message = str(error.get("message") or "stream error")
+                    stream_errors.append(f"{kind}: {message}")
+                else:
+                    stream_errors.append("unknown: malformed error event")
+                return
+
+            if event_type == "chat.end":
+                result = event_data.get("result")
+                if not isinstance(result, Mapping):
+                    raise LocalModelEndpointError(
+                        "LM Studio chat.end missing result object"
+                    )
+                chat_end_result = result
+
+        event_name: str | None = None
+        data_lines: list[str] = []
         try:
-            data = self._request(
-                "POST",
-                "/api/v1/models/load",
-                {
-                    "model": str(model),
-                    "context_length": int(context_length),
-                    "echo_load_config": True,
-                },
-                timeout=request_timeout,
-            )
-        except LocalModelEndpointError as exc:
+            with urlopen(req, timeout=self.timeout) as response:  # noqa: S310 - loopback validated
+                for raw_line in response:
+                    line = raw_line.decode("utf-8").rstrip("\r\n")
+                    if line == "":
+                        dispatch(event_name, data_lines)
+                        event_name = None
+                        data_lines = []
+                        continue
+                    if line.startswith(":"):
+                        continue
+                    if line.startswith("event:"):
+                        event_name = line[6:].strip()
+                    elif line.startswith("data:"):
+                        data_lines.append(line[5:].lstrip())
+                dispatch(event_name, data_lines)
+        except LocalModelEndpointError:
+            raise
+        except HTTPError as exc:
+            detail = _r21c._base._http_error_detail(exc)
+            suffix = f": {detail}" if detail else ""
             raise LocalModelEndpointError(
-                "LM Studio model load failed with "
-                f"load_ack_timeout={request_timeout:g}s: {exc}"
+                "LM Studio/llmster streaming chat failed: "
+                f"HTTPError: HTTP Error {exc.code}: {exc.reason}{suffix}"
             ) from exc
-        return self._validate_load_response(data, context_length=context_length)
+        except Exception as exc:
+            raise LocalModelEndpointError(
+                f"LM Studio/llmster streaming chat failed: {type(exc).__name__}: {exc}"
+            ) from exc
+
+        if chat_start_id is None:
+            raise LocalModelEndpointError("LM Studio streaming chat emitted no chat.start")
+        if model_load_end_id is None:
+            raise LocalModelEndpointError(
+                "LM Studio native DEEP streaming chat emitted no model_load.end after cold pre-proof",
+                model_instance_id=chat_start_id,
+            )
+        if chat_end_result is None:
+            raise LocalModelEndpointError(
+                "LM Studio streaming chat emitted no chat.end",
+                model_instance_id=model_load_end_id,
+            )
+        if stream_errors:
+            raise LocalModelEndpointError(
+                "LM Studio streaming chat emitted error event(s): " + "; ".join(stream_errors),
+                model_instance_id=model_load_end_id,
+            )
+
+        result = self._chat_result_from_payload(chat_end_result)
+        if result.model_instance_id != model_load_end_id:
+            raise LocalModelEndpointError(
+                "LM Studio chat.end instance mismatch: "
+                f"load_end={model_load_end_id} chat_end={result.model_instance_id}",
+                model_instance_id=result.model_instance_id,
+                stats=result.stats,
+            )
+        if chat_start_id != model_load_end_id:
+            raise LocalModelEndpointError(
+                "LM Studio chat.start instance mismatch: "
+                f"chat_start={chat_start_id} load_end={model_load_end_id}",
+                model_instance_id=result.model_instance_id,
+                stats=result.stats,
+            )
+        assert model_load_time_seconds is not None
+        return result, {
+            "model_instance_id": model_load_end_id,
+            "model_load_time_seconds": model_load_time_seconds,
+            "event_types": tuple(event_types),
+        }
 
 
-class SovereignTwinRuntime(_base.SovereignTwinRuntime):
-    """R21B runtime with residency-authoritative native DEEP acquisition."""
+class SovereignTwinRuntime(_r21c.SovereignTwinRuntime):
+    """R21D runtime: streaming JIT native DEEP with R21C compatibility fallback."""
 
     def __init__(
         self,
@@ -135,193 +306,162 @@ class SovereignTwinRuntime(_base.SovereignTwinRuntime):
             embedding_model=embedding_model,
         )
 
-    def _probe_exact_deep_residency(
+    def _release_deep_after_request(
         self,
         profile: LocalModelProfile,
-        *,
-        expected_id: str | None = None,
-    ) -> str | None:
-        """Return exact DEEP id, None if cold, or fail if observed residency is unsafe."""
-        rows = self.client.models()
-        row = next(
-            (item for item in rows if str(item.get("key")) == str(profile.model)),
-            None,
-        )
-        if row is None:
-            return None
+        acquired_id: str,
+    ) -> dict[str, float]:
+        """Unload exact DEEP id; a 404 is success only when read-back proves absence."""
+        phase_timings_ms: dict[str, float] = {}
 
-        raw_instances = row.get("loaded_instances")
-        if raw_instances in (None, []):
-            return None
-        if not isinstance(raw_instances, list):
-            raise _DeepResidencyUnsafeError(
-                "DEEP loaded_instances is invalid during acquisition proof"
-            )
-        if len(raw_instances) != 1:
-            raise _DeepResidencyUnsafeError(
-                "DEEP acquisition did not produce exactly one resident instance"
-            )
-
-        instance = raw_instances[0]
-        if not isinstance(instance, Mapping):
-            raise _DeepResidencyUnsafeError(
-                "DEEP loaded instance is invalid during acquisition proof"
-            )
-        instance_id = instance.get("id")
-        if not isinstance(instance_id, str) or not instance_id:
-            raise _DeepResidencyUnsafeError(
-                "DEEP loaded instance is missing id during acquisition proof"
-            )
-        if expected_id is not None and instance_id != expected_id:
-            raise _DeepResidencyUnsafeError(
-                "DEEP explicit acquisition instance id mismatch: "
-                f"expected={expected_id} actual={instance_id}"
-            )
+        phase_started = perf_counter()
         try:
-            loaded_context = self._instance_context(instance, label="DEEP")
+            self.client.unload(acquired_id)
         except LocalModelEndpointError as exc:
-            raise _DeepResidencyUnsafeError(str(exc)) from exc
-        if loaded_context != profile.context_length:
-            raise _DeepResidencyUnsafeError(
-                "DEEP explicit acquisition context_length mismatch: "
-                f"expected={profile.context_length} actual={loaded_context}"
-            )
-        return instance_id
+            if not _looks_like_already_unloaded_error(exc):
+                try:
+                    remaining = self._strict_loaded_instance_ids(profile.model, label="DEEP")
+                except LocalModelEndpointError:
+                    remaining = []
+                self._cleanup_deep_ids_best_effort(remaining)
+                raise LocalModelEndpointError(
+                    f"DEEP exact unload failed after native DEEP: {exc}"
+                ) from exc
 
-    def _wait_for_deep_residency(
-        self,
-        profile: LocalModelProfile,
-        *,
-        deadline: float,
-    ) -> str:
-        """Poll read-only residency until exact DEEP appears or acquisition budget expires."""
-        last_endpoint_error: LocalModelEndpointError | None = None
-        while True:
-            try:
-                instance_id = self._probe_exact_deep_residency(profile)
-            except _DeepResidencyUnsafeError:
-                raise
-            except LocalModelEndpointError as exc:
-                last_endpoint_error = exc
-            else:
-                if instance_id is not None:
-                    return instance_id
-
-            remaining = deadline - perf_counter()
-            if remaining <= 0:
+            remaining = self._strict_loaded_instance_ids(profile.model, label="DEEP")
+            if remaining:
+                cleanup_failures = self._cleanup_deep_ids_best_effort(remaining)
                 detail = (
-                    f"; last residency read error={last_endpoint_error}"
-                    if last_endpoint_error is not None
+                    f"; residual cleanup failures={cleanup_failures}"
+                    if cleanup_failures
                     else ""
                 )
                 raise LocalModelEndpointError(
-                    "DEEP did not become exactly resident before acquisition deadline"
-                    + detail
-                )
-            sleep(min(DEEP_ACQUISITION_POLL_SECONDS, remaining))
+                    "DEEP unload returned already-absent 404 but configured DEEP remains resident; "
+                    f"residual_ids={remaining}{detail}"
+                ) from exc
+        phase_timings_ms["deep_unload"] = self._elapsed_ms(phase_started)
 
-    def _cleanup_failed_deep_acquisition(
+        phase_started = perf_counter()
+        remaining = self._strict_loaded_instance_ids(profile.model, label="DEEP")
+        if remaining:
+            cleanup_failures = self._cleanup_deep_ids_best_effort(remaining)
+            detail = (
+                f"; residual cleanup failures={cleanup_failures}"
+                if cleanup_failures
+                else ""
+            )
+            raise LocalModelEndpointError(
+                "DEEP remains resident after exact unload; "
+                f"residual_ids={remaining}{detail}"
+            )
+        phase_timings_ms["deep_post_unload_proof"] = self._elapsed_ms(phase_started)
+        return phase_timings_ms
+
+    def _ask_deep(
         self,
-        profile: LocalModelProfile,
+        query: str,
         *,
-        acquired_id: str | None = None,
-    ) -> None:
-        cleanup_ids: list[str] = []
-        if acquired_id:
-            cleanup_ids.append(acquired_id)
-        try:
-            for value in self._strict_loaded_instance_ids(profile.model, label="DEEP"):
-                if value not in cleanup_ids:
-                    cleanup_ids.append(value)
-        except LocalModelEndpointError:
-            pass
-        self._cleanup_deep_ids_best_effort(cleanup_ids)
-
-    def _acquire_deep(
-        self,
         profile: LocalModelProfile,
-    ) -> tuple[str, dict[str, float]]:
-        """Issue one load; after ACK timeout, exact residency becomes authoritative."""
-        phase_timings_ms: dict[str, float] = {}
+        evidence: Any,
+        phase_timings_ms: dict[str, float],
+        request_started_at: float,
+    ) -> TwinAnswer:
+        """Use one streaming chat transaction for native DEEP JIT load + inference."""
+        stream_chat = getattr(self.client, "chat_streaming_jit", None)
+        if not callable(stream_chat):
+            return super()._ask_deep(
+                query,
+                profile=profile,
+                evidence=evidence,
+                phase_timings_ms=phase_timings_ms,
+                request_started_at=request_started_at,
+            )
 
         phase_started = perf_counter()
         existing = self._strict_loaded_instance_ids(profile.model, label="DEEP")
         phase_timings_ms["deep_pre_acquire_proof"] = self._elapsed_ms(phase_started)
         if existing:
             raise LocalModelEndpointError(
-                "DEEP already resident before explicit acquisition; refusing native DEEP"
+                "DEEP already resident before chat-coupled JIT acquisition; refusing native DEEP"
             )
 
-        load = getattr(self.client, "load", None)
-        load_for_acquisition = getattr(self.client, "load_for_acquisition", None)
-        if not callable(load) and not callable(load_for_acquisition):
-            raise LocalModelEndpointError(
-                "DEEP is cold and client cannot explicitly load it"
-            )
-
-        acquisition_started = perf_counter()
-        load_timeout = max(
-            0.001,
-            float(getattr(self.client, "load_timeout", 600.0)),
-        )
+        stream_started = perf_counter()
         acquired_id: str | None = None
-        load_ack_timed_out = False
-        try:
-            if callable(load_for_acquisition):
-                acquired_id = str(
-                    load_for_acquisition(
-                        model=profile.model,
-                        context_length=profile.context_length,
-                        ack_timeout=min(DEEP_LOAD_ACK_TIMEOUT_SECONDS, load_timeout),
-                    )
-                )
-            else:
-                assert callable(load)
-                acquired_id = str(
-                    load(model=profile.model, context_length=profile.context_length)
-                )
-        except LocalModelEndpointError as exc:
-            phase_timings_ms["deep_load"] = self._elapsed_ms(acquisition_started)
-            if _base._looks_like_capacity_error(str(exc)):
-                self._cleanup_failed_deep_acquisition(profile)
-                raise DeepCapacityBlockedError(DEEP_CAPACITY_BLOCKED_MESSAGE) from exc
-            if not callable(load_for_acquisition) or not _looks_like_load_ack_timeout(exc):
-                self._cleanup_failed_deep_acquisition(profile)
-                raise LocalModelEndpointError(
-                    f"DEEP explicit load failed before chat: {exc}"
-                ) from exc
-            load_ack_timed_out = True
-        else:
-            phase_timings_ms["deep_load"] = self._elapsed_ms(acquisition_started)
+        acquisition_completed_at: float | None = None
+        server_load_seconds: float | None = None
 
-        phase_started = perf_counter()
-        try:
-            if load_ack_timed_out:
-                acquired_id = self._wait_for_deep_residency(
-                    profile,
-                    deadline=acquisition_started + load_timeout,
-                )
-            else:
-                if not acquired_id:
-                    raise LocalModelEndpointError(
-                        "DEEP explicit load returned an empty instance id"
-                    )
-                proven_id = self._probe_exact_deep_residency(
-                    profile,
-                    expected_id=acquired_id,
-                )
-                if proven_id is None:
-                    raise LocalModelEndpointError(
-                        "DEEP explicit acquisition did not produce a resident instance"
-                    )
-                acquired_id = proven_id
-        except LocalModelEndpointError:
-            self._cleanup_failed_deep_acquisition(
+        def on_model_load_end(instance_id: str, load_time_seconds: float) -> None:
+            nonlocal acquired_id, acquisition_completed_at, server_load_seconds
+            phase_timings_ms["deep_load"] = self._elapsed_ms(stream_started)
+            proof_started = perf_counter()
+            proven_id = self._probe_exact_deep_residency(
                 profile,
-                acquired_id=acquired_id,
+                expected_id=instance_id,
             )
+            if proven_id is None:
+                raise LocalModelEndpointError(
+                    "DEEP model_load.end was emitted but exact resident instance is absent"
+                )
+            acquired_id = proven_id
+            server_load_seconds = float(load_time_seconds)
+            phase_timings_ms["deep_acquisition_proof"] = self._elapsed_ms(proof_started)
+            acquisition_completed_at = perf_counter()
+
+        metadata: Mapping[str, Any] = {}
+        try:
+            result, metadata = stream_chat(
+                model=profile.model,
+                system_prompt=self._system_prompt(evidence),
+                input_text=str(query),
+                context_length=profile.context_length,
+                reasoning=profile.reasoning,
+                max_output_tokens=profile.max_output_tokens,
+                temperature=profile.temperature,
+                on_model_load_end=on_model_load_end,
+            )
+            if acquired_id is None or acquisition_completed_at is None:
+                raise LocalModelEndpointError(
+                    "native DEEP streaming chat completed without exact acquisition proof"
+                )
+            if result.model_instance_id != acquired_id:
+                raise LocalModelEndpointError(
+                    "native DEEP streaming chat instance mismatch: "
+                    f"expected={acquired_id} actual={result.model_instance_id}"
+                )
+            phase_timings_ms["deep_chat"] = round(
+                (perf_counter() - acquisition_completed_at) * 1000.0,
+                3,
+            )
+        except Exception as exc:
+            if acquired_id is not None:
+                try:
+                    self._release_deep_after_request(profile, acquired_id)
+                except LocalModelEndpointError as cleanup_exc:
+                    raise LocalModelEndpointError(
+                        f"{exc}; DEEP cleanup failed: {cleanup_exc}"
+                    ) from exc
+            else:
+                self._cleanup_failed_deep_acquisition(profile)
             raise
 
-        phase_timings_ms["deep_acquisition_proof"] = self._elapsed_ms(phase_started)
-        assert acquired_id is not None
-        return acquired_id, phase_timings_ms
+        release_timings = self._release_deep_after_request(profile, acquired_id)
+        phase_timings_ms.update(release_timings)
+        phase_timings_ms["total_request"] = self._elapsed_ms(request_started_at)
+
+        stats = dict(result.stats)
+        stats["deep_phase_timings_ms"] = dict(phase_timings_ms)
+        if server_load_seconds is not None:
+            stats["deep_jit_load_time_seconds"] = server_load_seconds
+        event_types = metadata.get("event_types") if isinstance(metadata, Mapping) else None
+        if isinstance(event_types, (list, tuple)):
+            stats["deep_jit_stream_event_types"] = list(event_types)
+
+        return TwinAnswer(
+            text=result.text,
+            model=profile.model,
+            mode="deep",
+            evidence=tuple(evidence),
+            stats=stats,
+            reasoning_present=result.reasoning is not None,
+        )
