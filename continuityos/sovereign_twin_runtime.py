@@ -10,6 +10,7 @@ import json
 import os
 from threading import RLock
 from typing import Any, Mapping, Sequence
+from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
@@ -23,6 +24,10 @@ DEFAULT_EMBEDDING_MODEL = os.environ.get(
 )
 NOMIC_DOCUMENT_TASK = "search_document"
 NOMIC_QUERY_TASK = "search_query"
+DEEP_CAPACITY_BLOCKED_MESSAGE = (
+    "DEEP blocked by local memory capacity. "
+    "Use DEEP-LITE or select a smaller native DEEP profile."
+)
 
 
 class LocalModelEndpointError(RuntimeError):
@@ -40,6 +45,10 @@ class LocalModelEndpointError(RuntimeError):
         self.model_instance_id = model_instance_id
         self.stats = dict(stats or {})
         self.output_types = tuple(output_types or ())
+
+
+class DeepCapacityBlockedError(LocalModelEndpointError):
+    """Raised when LM Studio refuses native DEEP because local capacity is unsafe."""
 
 
 @dataclass(frozen=True)
@@ -133,6 +142,47 @@ def _task_prefixed_text(text: str, task: str | None) -> str:
     return f"{prefix} {value}"
 
 
+def _http_error_detail(exc: HTTPError) -> str:
+    try:
+        raw = exc.read().decode("utf-8", errors="replace").strip()
+    except Exception:
+        return ""
+    if not raw:
+        return ""
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return raw[:1000]
+    if isinstance(data, Mapping):
+        error = data.get("error")
+        if isinstance(error, Mapping):
+            message = error.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()[:1000]
+        if isinstance(error, str) and error.strip():
+            return error.strip()[:1000]
+        message = data.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()[:1000]
+    return raw[:1000]
+
+
+def _looks_like_capacity_error(message: str) -> bool:
+    value = str(message).lower()
+    return any(
+        marker in value
+        for marker in (
+            "insufficient system resources",
+            "not enough memory",
+            "out of memory",
+            "would likely overload",
+            "likely overload your system",
+            "model loading guardrails",
+            "resource guardrails",
+        )
+    )
+
+
 class LmStudioClient:
     """Small stdlib-only client for LM Studio / llmster local APIs."""
 
@@ -167,6 +217,13 @@ class LmStudioClient:
         try:
             with urlopen(req, timeout=request_timeout) as response:  # noqa: S310 - loopback validated
                 return json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            detail = _http_error_detail(exc)
+            suffix = f": {detail}" if detail else ""
+            raise LocalModelEndpointError(
+                "LM Studio/llmster request failed: "
+                f"HTTPError: HTTP Error {exc.code}: {exc.reason}{suffix}"
+            ) from exc
         except Exception as exc:
             raise LocalModelEndpointError(
                 f"LM Studio/llmster request failed: {type(exc).__name__}: {exc}"
@@ -199,7 +256,6 @@ class LmStudioClient:
             raise LocalModelEndpointError("LM Studio model load did not report status=loaded")
         instance_id_raw = data.get("instance_id")
         if not isinstance(instance_id_raw, str) or not instance_id_raw:
-            # Older v1 beta builds used model_instance_id before the field was renamed.
             instance_id_raw = data.get("model_instance_id")
         if not isinstance(instance_id_raw, str) or not instance_id_raw:
             raise LocalModelEndpointError("LM Studio model load response missing instance_id")
@@ -421,8 +477,13 @@ class SovereignTwinRuntime:
                 ids.append(value)
         return ids
 
-    def _strict_loaded_instance_ids(self, model_key: str, *, label: str) -> list[str]:
-        """Enumerate one model's loaded instances without hiding malformed residency state."""
+    def _strict_loaded_instances(
+        self,
+        model_key: str,
+        *,
+        label: str,
+    ) -> list[Mapping[str, Any]]:
+        """Enumerate one model's residency without hiding malformed state."""
         rows = self.client.models()
         row = next((item for item in rows if str(item.get("key")) == str(model_key)), None)
         if row is None:
@@ -437,7 +498,7 @@ class SovereignTwinRuntime:
                 f"{label} loaded_instances is invalid; cannot prove serial residency"
             )
 
-        ids: list[str] = []
+        instances: list[Mapping[str, Any]] = []
         for instance in raw_instances:
             if not isinstance(instance, Mapping):
                 raise LocalModelEndpointError(
@@ -448,12 +509,19 @@ class SovereignTwinRuntime:
                 raise LocalModelEndpointError(
                     f"{label} loaded instance is missing id; cannot prove serial residency"
                 )
+            instances.append(instance)
+        return instances
+
+    def _strict_loaded_instance_ids(self, model_key: str, *, label: str) -> list[str]:
+        ids: list[str] = []
+        for instance in self._strict_loaded_instances(model_key, label=label):
+            value = str(instance["id"])
             if value not in ids:
                 ids.append(value)
         return ids
 
     def _release_fast_for_deep(self) -> None:
-        """Fail closed unless native DEEP can start with the configured FAST model absent."""
+        """Fail closed unless native DEEP can start with configured FAST absent."""
         fast_profile = self.profiles.get("fast")
         if fast_profile is None:
             return
@@ -500,6 +568,167 @@ class SovereignTwinRuntime:
             raise LocalModelEndpointError("FAST model is not loaded and client cannot load it")
         return str(load(model=profile.model, context_length=profile.context_length))
 
+    @staticmethod
+    def _instance_context(instance: Mapping[str, Any], *, label: str) -> int:
+        config = instance.get("config")
+        if not isinstance(config, Mapping):
+            raise LocalModelEndpointError(
+                f"{label} loaded instance is missing config; cannot prove acquisition"
+            )
+        try:
+            return int(config.get("context_length"))
+        except (TypeError, ValueError) as exc:
+            raise LocalModelEndpointError(
+                f"{label} loaded instance has invalid context_length; cannot prove acquisition"
+            ) from exc
+
+    def _cleanup_deep_ids_best_effort(self, instance_ids: Sequence[str]) -> list[str]:
+        failures: list[str] = []
+        for instance_id in instance_ids:
+            try:
+                self.client.unload(instance_id)
+            except LocalModelEndpointError as exc:
+                failures.append(f"{instance_id}: {exc}")
+        return failures
+
+    def _acquire_deep(self, profile: LocalModelProfile) -> str:
+        """Explicitly acquire exactly one configured DEEP instance or fail closed."""
+        existing = self._strict_loaded_instance_ids(profile.model, label="DEEP")
+        if existing:
+            raise LocalModelEndpointError(
+                "DEEP already resident before explicit acquisition; refusing native DEEP"
+            )
+
+        load = getattr(self.client, "load", None)
+        if not callable(load):
+            raise LocalModelEndpointError(
+                "DEEP is cold and client cannot explicitly load it"
+            )
+        try:
+            acquired_id = str(
+                load(model=profile.model, context_length=profile.context_length)
+            )
+        except LocalModelEndpointError as exc:
+            if _looks_like_capacity_error(str(exc)):
+                raise DeepCapacityBlockedError(DEEP_CAPACITY_BLOCKED_MESSAGE) from exc
+            raise LocalModelEndpointError(
+                f"DEEP explicit load failed before chat: {exc}"
+            ) from exc
+
+        if not acquired_id:
+            raise LocalModelEndpointError(
+                "DEEP explicit load returned an empty instance id"
+            )
+
+        try:
+            instances = self._strict_loaded_instances(profile.model, label="DEEP")
+            ids = [str(instance["id"]) for instance in instances]
+            if len(instances) != 1:
+                raise LocalModelEndpointError(
+                    "DEEP explicit acquisition did not produce exactly one resident instance"
+                )
+            if ids[0] != acquired_id:
+                raise LocalModelEndpointError(
+                    "DEEP explicit acquisition instance id mismatch: "
+                    f"expected={acquired_id} actual={ids[0]}"
+                )
+            loaded_context = self._instance_context(instances[0], label="DEEP")
+            if loaded_context != profile.context_length:
+                raise LocalModelEndpointError(
+                    "DEEP explicit acquisition context_length mismatch: "
+                    f"expected={profile.context_length} actual={loaded_context}"
+                )
+        except LocalModelEndpointError:
+            cleanup_ids = [acquired_id]
+            try:
+                cleanup_ids.extend(
+                    value
+                    for value in self._strict_loaded_instance_ids(
+                        profile.model,
+                        label="DEEP",
+                    )
+                    if value not in cleanup_ids
+                )
+            except LocalModelEndpointError:
+                pass
+            self._cleanup_deep_ids_best_effort(cleanup_ids)
+            raise
+
+        return acquired_id
+
+    def _release_deep_after_request(
+        self,
+        profile: LocalModelProfile,
+        acquired_id: str,
+    ) -> None:
+        """Unload exact acquired DEEP id and prove configured DEEP is absent."""
+        try:
+            self.client.unload(acquired_id)
+        except LocalModelEndpointError as exc:
+            try:
+                remaining = self._strict_loaded_instance_ids(profile.model, label="DEEP")
+            except LocalModelEndpointError:
+                remaining = []
+            self._cleanup_deep_ids_best_effort(remaining)
+            raise LocalModelEndpointError(
+                f"DEEP exact unload failed after native DEEP: {exc}"
+            ) from exc
+
+        remaining = self._strict_loaded_instance_ids(profile.model, label="DEEP")
+        if remaining:
+            cleanup_failures = self._cleanup_deep_ids_best_effort(remaining)
+            detail = (
+                f"; residual cleanup failures={cleanup_failures}"
+                if cleanup_failures
+                else ""
+            )
+            raise LocalModelEndpointError(
+                "DEEP remains resident after exact unload; "
+                f"residual_ids={remaining}{detail}"
+            )
+
+    def _ask_deep(
+        self,
+        query: str,
+        *,
+        profile: LocalModelProfile,
+        evidence: Sequence[TwinEvidence],
+    ) -> TwinAnswer:
+        acquired_id = self._acquire_deep(profile)
+        try:
+            result = self.client.chat(
+                model=profile.model,
+                system_prompt=self._system_prompt(evidence),
+                input_text=str(query),
+                context_length=profile.context_length,
+                reasoning=profile.reasoning,
+                max_output_tokens=profile.max_output_tokens,
+                temperature=profile.temperature,
+            )
+            if result.model_instance_id != acquired_id:
+                raise LocalModelEndpointError(
+                    "native DEEP chat instance mismatch: "
+                    f"expected={acquired_id} actual={result.model_instance_id}"
+                )
+        except Exception as exc:
+            try:
+                self._release_deep_after_request(profile, acquired_id)
+            except LocalModelEndpointError as cleanup_exc:
+                raise LocalModelEndpointError(
+                    f"{exc}; DEEP cleanup failed: {cleanup_exc}"
+                ) from exc
+            raise
+
+        self._release_deep_after_request(profile, acquired_id)
+        return TwinAnswer(
+            text=result.text,
+            model=profile.model,
+            mode="deep",
+            evidence=tuple(evidence),
+            stats=result.stats,
+            reasoning_present=result.reasoning is not None,
+        )
+
     def ask(self, query: str, *, mode: str = "fast") -> TwinAnswer:
         with self._model_lock:
             if mode not in self.profiles:
@@ -508,50 +737,27 @@ class SovereignTwinRuntime:
             if mode == "deep":
                 self._release_fast_for_deep()
             evidence = self.evidence(query)
-            if mode == "fast":
-                self._ensure_fast_loaded(profile)
-            result: LocalChatResult | None = None
-            error_cleanup_ids: list[str] = []
-            try:
-                result = self.client.chat(
-                    model=profile.model,
-                    system_prompt=self._system_prompt(evidence),
-                    input_text=str(query),
-                    context_length=profile.context_length,
-                    reasoning=profile.reasoning,
-                    max_output_tokens=profile.max_output_tokens,
-                    temperature=profile.temperature,
-                )
-                return TwinAnswer(
-                    text=result.text,
-                    model=profile.model,
-                    mode=mode,
-                    evidence=evidence,
-                    stats=result.stats,
-                    reasoning_present=result.reasoning is not None,
-                )
-            except LocalModelEndpointError as exc:
-                if profile.unload_after_answer:
-                    if exc.model_instance_id:
-                        error_cleanup_ids = [exc.model_instance_id]
-                    else:
-                        try:
-                            error_cleanup_ids = self._loaded_instance_ids(profile.model)
-                        except LocalModelEndpointError:
-                            error_cleanup_ids = []
-                raise
-            finally:
-                if not profile.unload_after_answer:
-                    pass
-                elif result and result.model_instance_id:
-                    self.client.unload(result.model_instance_id)
-                elif error_cleanup_ids:
-                    for instance_id in error_cleanup_ids:
-                        try:
-                            self.client.unload(instance_id)
-                        except LocalModelEndpointError:
-                            # Never mask the original inference failure with cleanup failure.
-                            pass
+            if mode == "deep":
+                return self._ask_deep(query, profile=profile, evidence=evidence)
+
+            self._ensure_fast_loaded(profile)
+            result = self.client.chat(
+                model=profile.model,
+                system_prompt=self._system_prompt(evidence),
+                input_text=str(query),
+                context_length=profile.context_length,
+                reasoning=profile.reasoning,
+                max_output_tokens=profile.max_output_tokens,
+                temperature=profile.temperature,
+            )
+            return TwinAnswer(
+                text=result.text,
+                model=profile.model,
+                mode=mode,
+                evidence=evidence,
+                stats=result.stats,
+                reasoning_present=result.reasoning is not None,
+            )
 
     @staticmethod
     def _loaded_config(row: Mapping[str, Any]) -> Mapping[str, Any] | None:
