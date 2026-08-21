@@ -31,20 +31,24 @@ class FakeClient:
         self.calls = []
         self.unloaded = []
         self.embeds = []
+        self.fast_loaded = True
 
     def models(self):
+        fast_instances = []
+        if self.fast_loaded:
+            fast_instances = [{
+                "id": "fast-1",
+                "config": {
+                    "context_length": 8192,
+                    "parallel": 1,
+                    "flash_attention": True,
+                    "offload_kv_cache_to_gpu": True,
+                },
+            }]
         return [
             {
                 "key": "qwen3.5-4b",
-                "loaded_instances": [{
-                    "id": "fast-1",
-                    "config": {
-                        "context_length": 8192,
-                        "parallel": 1,
-                        "flash_attention": True,
-                        "offload_kv_cache_to_gpu": True,
-                    },
-                }],
+                "loaded_instances": fast_instances,
             },
             {"key": "qwen3.6-35b-a3b", "loaded_instances": []},
             {"key": DEFAULT_EMBEDDING_MODEL, "loaded_instances": []},
@@ -65,6 +69,8 @@ class FakeClient:
 
     def unload(self, instance_id):
         self.unloaded.append(instance_id)
+        if instance_id == "fast-1":
+            self.fast_loaded = False
 
 
 def _seed_db(tmp: str) -> tuple[str, int]:
@@ -133,7 +139,7 @@ def test_runtime_grounding_fast_uses_query_embedding_and_none_authority():
             runtime.close()
 
 
-def test_deep_mode_uses_4k_reasoning_and_unloads_after_answer():
+def test_deep_mode_uses_4k_reasoning_and_serial_residency_cleanup():
     with TemporaryDirectory() as tmp:
         db, _ = _seed_db(tmp)
         client = FakeClient()
@@ -143,7 +149,8 @@ def test_deep_mode_uses_4k_reasoning_and_unloads_after_answer():
             assert answer.reasoning_present is True
             assert client.calls[0]["context_length"] == 4096
             assert client.calls[0]["reasoning"] == "on"
-            assert client.unloaded == ["deep-1"]
+            assert client.unloaded == ["fast-1", "deep-1"]
+            assert client.fast_loaded is False
         finally:
             runtime.close()
 

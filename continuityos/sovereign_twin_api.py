@@ -185,13 +185,15 @@ async function postAsk(path,payload,label,busyMessage){
 async function ask(mode){
  const q=document.getElementById('q').value;
  let state=readinessBadge().dataset.state;
- if(mode==='fast'&&state==='UNKNOWN'){
+ if((mode==='fast'||mode==='deep')&&state==='UNKNOWN'){
   const readiness=await refreshReadiness();
   state=readiness&&readiness.state?String(readiness.state).toUpperCase():'UNAVAILABLE';
  }
  const busyMessage=mode==='fast'&&state==='COLD'
   ?'Loading FAST locally, then answering...'
-  :mode.toUpperCase()+' thinking...';
+  :mode==='deep'&&state==='READY'
+   ?'Releasing FAST, then running DEEP locally...'
+   :mode.toUpperCase()+' thinking...';
  return postAsk('/ask',{query:q,mode},mode.toUpperCase(),busyMessage);
 }
 async function askDeepLite(){

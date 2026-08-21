@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import json
 import os
+from threading import RLock
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -355,6 +356,7 @@ class SovereignTwinRuntime:
         )
         self.recall_k = int(recall_k)
         self.profiles = dict(profiles or DEFAULT_PROFILES)
+        self._model_lock = RLock()
 
     def close(self) -> None:
         store = self.memory.store
@@ -419,6 +421,58 @@ class SovereignTwinRuntime:
                 ids.append(value)
         return ids
 
+    def _strict_loaded_instance_ids(self, model_key: str, *, label: str) -> list[str]:
+        """Enumerate one model's loaded instances without hiding malformed residency state."""
+        rows = self.client.models()
+        row = next((item for item in rows if str(item.get("key")) == str(model_key)), None)
+        if row is None:
+            raise LocalModelEndpointError(
+                f"{label} model is not visible; cannot prove serial residency"
+            )
+        raw_instances = row.get("loaded_instances")
+        if raw_instances in (None, []):
+            return []
+        if not isinstance(raw_instances, list):
+            raise LocalModelEndpointError(
+                f"{label} loaded_instances is invalid; cannot prove serial residency"
+            )
+
+        ids: list[str] = []
+        for instance in raw_instances:
+            if not isinstance(instance, Mapping):
+                raise LocalModelEndpointError(
+                    f"{label} loaded instance is invalid; cannot prove serial residency"
+                )
+            value = instance.get("id")
+            if not isinstance(value, str) or not value:
+                raise LocalModelEndpointError(
+                    f"{label} loaded instance is missing id; cannot prove serial residency"
+                )
+            if value not in ids:
+                ids.append(value)
+        return ids
+
+    def _release_fast_for_deep(self) -> None:
+        """Fail closed unless native DEEP can start with the configured FAST model absent."""
+        fast_profile = self.profiles.get("fast")
+        if fast_profile is None:
+            return
+
+        instance_ids = self._strict_loaded_instance_ids(fast_profile.model, label="FAST")
+        for instance_id in instance_ids:
+            try:
+                self.client.unload(instance_id)
+            except LocalModelEndpointError as exc:
+                raise LocalModelEndpointError(
+                    f"FAST unload failed before native DEEP: {exc}"
+                ) from exc
+
+        remaining = self._strict_loaded_instance_ids(fast_profile.model, label="FAST")
+        if remaining:
+            raise LocalModelEndpointError(
+                "FAST remains resident after unload; refusing native DEEP"
+            )
+
     def _ensure_fast_loaded(self, profile: LocalModelProfile) -> str:
         instances = self._loaded_instances(profile.model)
         if instances:
@@ -447,54 +501,57 @@ class SovereignTwinRuntime:
         return str(load(model=profile.model, context_length=profile.context_length))
 
     def ask(self, query: str, *, mode: str = "fast") -> TwinAnswer:
-        if mode not in self.profiles:
-            raise ValueError(f"unknown Sovereign Twin mode: {mode}")
-        profile = self.profiles[mode]
-        evidence = self.evidence(query)
-        if mode == "fast":
-            self._ensure_fast_loaded(profile)
-        result: LocalChatResult | None = None
-        error_cleanup_ids: list[str] = []
-        try:
-            result = self.client.chat(
-                model=profile.model,
-                system_prompt=self._system_prompt(evidence),
-                input_text=str(query),
-                context_length=profile.context_length,
-                reasoning=profile.reasoning,
-                max_output_tokens=profile.max_output_tokens,
-                temperature=profile.temperature,
-            )
-            return TwinAnswer(
-                text=result.text,
-                model=profile.model,
-                mode=mode,
-                evidence=evidence,
-                stats=result.stats,
-                reasoning_present=result.reasoning is not None,
-            )
-        except LocalModelEndpointError as exc:
-            if profile.unload_after_answer:
-                if exc.model_instance_id:
-                    error_cleanup_ids = [exc.model_instance_id]
-                else:
-                    try:
-                        error_cleanup_ids = self._loaded_instance_ids(profile.model)
-                    except LocalModelEndpointError:
-                        error_cleanup_ids = []
-            raise
-        finally:
-            if not profile.unload_after_answer:
-                pass
-            elif result and result.model_instance_id:
-                self.client.unload(result.model_instance_id)
-            elif error_cleanup_ids:
-                for instance_id in error_cleanup_ids:
-                    try:
-                        self.client.unload(instance_id)
-                    except LocalModelEndpointError:
-                        # Never mask the original inference failure with cleanup failure.
-                        pass
+        with self._model_lock:
+            if mode not in self.profiles:
+                raise ValueError(f"unknown Sovereign Twin mode: {mode}")
+            profile = self.profiles[mode]
+            if mode == "deep":
+                self._release_fast_for_deep()
+            evidence = self.evidence(query)
+            if mode == "fast":
+                self._ensure_fast_loaded(profile)
+            result: LocalChatResult | None = None
+            error_cleanup_ids: list[str] = []
+            try:
+                result = self.client.chat(
+                    model=profile.model,
+                    system_prompt=self._system_prompt(evidence),
+                    input_text=str(query),
+                    context_length=profile.context_length,
+                    reasoning=profile.reasoning,
+                    max_output_tokens=profile.max_output_tokens,
+                    temperature=profile.temperature,
+                )
+                return TwinAnswer(
+                    text=result.text,
+                    model=profile.model,
+                    mode=mode,
+                    evidence=evidence,
+                    stats=result.stats,
+                    reasoning_present=result.reasoning is not None,
+                )
+            except LocalModelEndpointError as exc:
+                if profile.unload_after_answer:
+                    if exc.model_instance_id:
+                        error_cleanup_ids = [exc.model_instance_id]
+                    else:
+                        try:
+                            error_cleanup_ids = self._loaded_instance_ids(profile.model)
+                        except LocalModelEndpointError:
+                            error_cleanup_ids = []
+                raise
+            finally:
+                if not profile.unload_after_answer:
+                    pass
+                elif result and result.model_instance_id:
+                    self.client.unload(result.model_instance_id)
+                elif error_cleanup_ids:
+                    for instance_id in error_cleanup_ids:
+                        try:
+                            self.client.unload(instance_id)
+                        except LocalModelEndpointError:
+                            # Never mask the original inference failure with cleanup failure.
+                            pass
 
     @staticmethod
     def _loaded_config(row: Mapping[str, Any]) -> Mapping[str, Any] | None:
