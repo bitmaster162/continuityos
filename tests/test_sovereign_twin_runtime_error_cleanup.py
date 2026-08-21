@@ -43,8 +43,13 @@ class ErrorCleanupClient:
     def embed(self, text, *, model=DEFAULT_EMBEDDING_MODEL, task=None):
         return [1.0, 0.0, 0.0]
 
-    def chat(self, **kwargs):
+    def load(self, *, model: str, context_length: int):
+        assert model == "qwen3.6-35b-a3b"
+        assert context_length == 4096
         self.deep_loaded = True
+        return "deep-timeout-1"
+
+    def chat(self, **kwargs):
         raise LocalModelEndpointError("simulated timeout")
 
     def models(self):
@@ -52,7 +57,10 @@ class ErrorCleanupClient:
             {"key": "qwen3.5-4b", "loaded_instances": []},
             {
                 "key": "qwen3.6-35b-a3b",
-                "loaded_instances": ([{"id": "deep-timeout-1", "config": {}}] if self.deep_loaded else []),
+                "loaded_instances": ([{
+                    "id": "deep-timeout-1",
+                    "config": {"context_length": 4096},
+                }] if self.deep_loaded else []),
             },
             {"key": DEFAULT_EMBEDDING_MODEL, "loaded_instances": []},
         ]

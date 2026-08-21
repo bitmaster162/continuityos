@@ -21,6 +21,7 @@ class ColdFastClient:
 
     def __init__(self, *, loaded: bool = False):
         self.fast_loaded = loaded
+        self.deep_loaded = False
         self.loads: list[tuple[str, int]] = []
         self.chats: list[dict] = []
         self.unloaded: list[str] = []
@@ -40,14 +41,23 @@ class ColdFastClient:
                     "offload_kv_cache_to_gpu": True,
                 },
             }]
+        deep_instances = []
+        if self.deep_loaded:
+            deep_instances = [{
+                "id": "deep-r18-1",
+                "config": {"context_length": 4096},
+            }]
         return [
             {"key": "qwen3.5-4b", "loaded_instances": fast_instances},
-            {"key": "qwen3.6-35b-a3b", "loaded_instances": []},
+            {"key": "qwen3.6-35b-a3b", "loaded_instances": deep_instances},
             {"key": DEFAULT_EMBEDDING_MODEL, "loaded_instances": []},
         ]
 
     def load(self, *, model: str, context_length: int):
         self.loads.append((model, context_length))
+        if model == "qwen3.6-35b-a3b":
+            self.deep_loaded = True
+            return "deep-r18-1"
         self.fast_loaded = True
         return "fast-r18-1"
 
@@ -65,6 +75,8 @@ class ColdFastClient:
 
     def unload(self, instance_id: str):
         self.unloaded.append(instance_id)
+        if instance_id == "deep-r18-1":
+            self.deep_loaded = False
 
 
 class RecordingRequestClient(LmStudioClient):
@@ -179,8 +191,9 @@ def test_deep_mode_does_not_use_r18_fast_preloader():
         runtime = SovereignTwinRuntime(db, client=client, profiles=profiles)
         try:
             runtime.ask("deep", mode="deep")
-            assert client.loads == []
+            assert client.loads == [("qwen3.6-35b-a3b", 4096)]
             assert client.unloaded == ["deep-r18-1"]
+            assert client.deep_loaded is False
         finally:
             runtime.close()
 
