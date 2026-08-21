@@ -507,6 +507,116 @@ class SovereignTwinRuntime:
         config = first.get("config")
         return dict(config) if isinstance(config, Mapping) else None
 
+    def fast_readiness(self) -> dict[str, Any]:
+        """Inspect FAST residency/configuration without loading, unloading, or mutating memory."""
+        profile = self.profiles.get("fast")
+        if profile is None:
+            return {
+                "ok": True,
+                "state": "UNAVAILABLE",
+                "ready": False,
+                "model": None,
+                "visible_to_server": False,
+                "loaded": False,
+                "expected_context_length": None,
+                "loaded_context_length": None,
+                "warnings": ["FAST_PROFILE_MISSING"],
+                "execution_authority": EXECUTION_AUTHORITY,
+                "can_execute": False,
+            }
+
+        rows = self.client.models()
+        row = next((item for item in rows if str(item.get("key")) == profile.model), None)
+        base = {
+            "ok": True,
+            "model": profile.model,
+            "expected_context_length": profile.context_length,
+            "execution_authority": EXECUTION_AUTHORITY,
+            "can_execute": False,
+        }
+        if row is None:
+            return {
+                **base,
+                "state": "UNAVAILABLE",
+                "ready": False,
+                "visible_to_server": False,
+                "loaded": False,
+                "loaded_context_length": None,
+                "warnings": ["FAST_MODEL_NOT_VISIBLE"],
+            }
+
+        raw_instances = row.get("loaded_instances")
+        if raw_instances in (None, []):
+            return {
+                **base,
+                "state": "COLD",
+                "ready": False,
+                "visible_to_server": True,
+                "loaded": False,
+                "loaded_context_length": None,
+                "warnings": [],
+            }
+        if not isinstance(raw_instances, list):
+            return {
+                **base,
+                "state": "MISCONFIGURED",
+                "ready": False,
+                "visible_to_server": True,
+                "loaded": True,
+                "loaded_context_length": None,
+                "warnings": ["LOADED_INSTANCES_INVALID"],
+            }
+
+        instances = [item for item in raw_instances if isinstance(item, Mapping)]
+        if not instances:
+            return {
+                **base,
+                "state": "MISCONFIGURED",
+                "ready": False,
+                "visible_to_server": True,
+                "loaded": True,
+                "loaded_context_length": None,
+                "warnings": ["LOADED_INSTANCE_INVALID"],
+            }
+
+        warnings: list[str] = []
+        if len(instances) != 1:
+            warnings.append("MULTIPLE_LOADED_INSTANCES")
+        config = instances[0].get("config")
+        loaded_context: int | None = None
+        if not isinstance(config, Mapping):
+            warnings.append("LOADED_CONFIG_MISSING")
+        else:
+            try:
+                loaded_context = int(config.get("context_length"))
+            except (TypeError, ValueError):
+                warnings.append("CONTEXT_LENGTH_INVALID")
+            else:
+                if loaded_context != profile.context_length:
+                    warnings.append("CONTEXT_LENGTH_MISMATCH")
+            try:
+                loaded_parallel = int(config.get("parallel", profile.expected_parallel))
+            except (TypeError, ValueError):
+                warnings.append("PARALLEL_INVALID")
+            else:
+                if loaded_parallel != profile.expected_parallel:
+                    warnings.append("PARALLEL_NOT_1")
+            if config.get("flash_attention") is False:
+                warnings.append("FLASH_ATTENTION_OFF")
+            if config.get("offload_kv_cache_to_gpu") is False:
+                warnings.append("KV_CACHE_NOT_ON_GPU")
+
+        ready = not warnings
+        return {
+            **base,
+            "state": "READY" if ready else "MISCONFIGURED",
+            "ready": ready,
+            "visible_to_server": True,
+            "loaded": True,
+            "loaded_context_length": loaded_context,
+            "warnings": warnings,
+        }
+
     def doctor(self) -> dict[str, Any]:
         models = self.client.models()
         by_key = {str(row.get("key")): row for row in models if row.get("key")}

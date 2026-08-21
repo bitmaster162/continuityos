@@ -52,6 +52,7 @@ summary{cursor:pointer;color:#aeb9c4}pre{white-space:pre-wrap;overflow-wrap:anyw
  <div class="badges">
   <span class="badge">LOCAL_SHADOW</span>
   <span class="badge">AUTHORITY NONE</span>
+  <span id="fast-readiness" class="badge" data-state="UNKNOWN">FAST CHECKING</span>
  </div>
 </header>
 <div class="panel">
@@ -80,11 +81,39 @@ summary{cursor:pointer;color:#aeb9c4}pre{white-space:pre-wrap;overflow-wrap:anyw
 </section>
 <script>
 const buttons=()=>Array.from(document.querySelectorAll('[data-ask]'));
-function setBusy(label,busy){
+function setBusy(message,busy){
  const status=document.getElementById('status');
  status.classList.remove('error');
- status.textContent=busy?label+' thinking...':'Ready.';
+ status.textContent=busy?message:'Ready.';
  buttons().forEach(b=>b.disabled=busy);
+}
+function readinessBadge(){return document.getElementById('fast-readiness')}
+function applyReadiness(payload){
+ const badge=readinessBadge();
+ const state=String(payload&&payload.state?payload.state:'UNAVAILABLE').toUpperCase();
+ badge.dataset.state=state;
+ if(state==='READY'){
+  badge.textContent='FAST READY';
+  badge.title='FAST profile is resident with the required configuration.';
+ }else if(state==='COLD'){
+  badge.textContent='FAST COLD';
+  badge.title='First FAST answer will load the local model.';
+ }else{
+  badge.textContent='FAST BLOCKED';
+  badge.title='FAST is unavailable or misconfigured; inspect readiness or doctor.';
+ }
+}
+async function refreshReadiness(){
+ try{
+  const response=await fetch('/readiness',{method:'GET'});
+  const data=await response.json();
+  if(!response.ok||data.error)throw new Error(String(data.error||('HTTP '+response.status)));
+  applyReadiness(data);
+  return data;
+ }catch(error){
+  applyReadiness({state:'UNAVAILABLE'});
+  return null;
+ }
 }
 function clearNode(node){while(node.firstChild)node.removeChild(node.firstChild)}
 function evidenceLabel(item){
@@ -130,7 +159,7 @@ function renderAnswer(payload,label){
  wrap.hidden=evidence.length===0;
  result.hidden=false;
 }
-async function postAsk(path,payload,label){
+async function postAsk(path,payload,label,busyMessage){
  const query=String(payload.query||'').trim();
  const status=document.getElementById('status');
  if(!query){
@@ -138,7 +167,7 @@ async function postAsk(path,payload,label){
   status.textContent='Query required.';
   return;
  }
- setBusy(label,true);
+ setBusy(busyMessage||label+' thinking...',true);
  try{
   const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
   const data=await response.json();
@@ -150,16 +179,26 @@ async function postAsk(path,payload,label){
   status.textContent='Error: '+String(error&&error.message?error.message:error);
  }finally{
   buttons().forEach(b=>b.disabled=false);
+  await refreshReadiness();
  }
 }
 async function ask(mode){
  const q=document.getElementById('q').value;
- return postAsk('/ask',{query:q,mode},mode.toUpperCase());
+ let state=readinessBadge().dataset.state;
+ if(mode==='fast'&&state==='UNKNOWN'){
+  const readiness=await refreshReadiness();
+  state=readiness&&readiness.state?String(readiness.state).toUpperCase():'UNAVAILABLE';
+ }
+ const busyMessage=mode==='fast'&&state==='COLD'
+  ?'Loading FAST locally, then answering...'
+  :mode.toUpperCase()+' thinking...';
+ return postAsk('/ask',{query:q,mode},mode.toUpperCase(),busyMessage);
 }
 async function askDeepLite(){
  const q=document.getElementById('q').value;
  return postAsk('/ask/deep-lite',{query:q},'DEEP-LITE');
 }
+refreshReadiness();
 </script>"""
 
 
@@ -239,6 +278,9 @@ class _Handler(BaseHTTPRequestHandler):
                     "execution_authority": EXECUTION_AUTHORITY,
                     "can_execute": False,
                 })
+                return
+            if path == "/readiness":
+                self._json(200, self.server.runtime.fast_readiness())
                 return
             if path == "/doctor":
                 report = self.server.runtime.doctor()
