@@ -13,6 +13,14 @@ from urllib.error import HTTPError
 from . import sovereign_twin_runtime_r21b as _base
 from .sovereign_twin_runtime_r21b import *  # noqa: F401,F403
 
+# R21B historically exposes several underscore-prefixed helpers that are imported
+# directly by tests and local callers. Python star-import intentionally omits them,
+# so mirror every non-dunder base attribute before applying the R21C overrides.
+for _legacy_name, _legacy_value in vars(_base).items():
+    if not _legacy_name.startswith("__"):
+        globals().setdefault(_legacy_name, _legacy_value)
+del _legacy_name, _legacy_value
+
 # Keep R21B timing monkeypatch semantics for existing tests/callers importing this module.
 perf_counter = _system_perf_counter
 sleep = _system_sleep
