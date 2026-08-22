@@ -102,6 +102,40 @@ def lease_currentness(
     return Result(Decision.ALLOW, "LEASE_CURRENT")  # noqa: F405
 
 
+def dependencies_satisfied(
+    work_order: Mapping[str, Any],
+    receipts: Sequence[Mapping[str, Any]],
+) -> Result:  # noqa: F405
+    valid = _base.validate_work_order_m1(work_order)
+    if not valid.ok:
+        return valid
+    observed: dict[tuple[str, str], set[str]] = {}
+    try:
+        if isinstance(receipts, (str, bytes)):
+            raise ValueError("dependency receipts must be a sequence of objects")
+        for row in receipts:
+            if not isinstance(row, Mapping):
+                raise ValueError("dependency receipt must be an object")
+            key = (
+                _base._text(row.get("work_order_id"), "dependency_receipt.work_order_id"),
+                _base._digest(row.get("work_order_digest"), "dependency_receipt.work_order_digest"),
+            )
+            terminal = _base._text(row.get("terminal"), "dependency_receipt.terminal")
+            observed.setdefault(key, set()).add(terminal)
+    except (KeyError, TypeError, ValueError) as exc:
+        return Result(
+            Decision.HOLD, "DEPENDENCY_RECEIPT_INVALID", (str(exc),)
+        )  # noqa: F405
+
+    for dep in work_order["dependencies"]:
+        key = (dep["work_order_id"], dep["work_order_digest"])
+        if dep["required_terminal"] not in observed.get(key, set()):
+            return Result(
+                Decision.HOLD, "DEPENDENCY_UNSATISFIED", (dep["work_order_id"],)
+            )  # noqa: F405
+    return Result(Decision.ALLOW, "DEPENDENCIES_SATISFIED")  # noqa: F405
+
+
 def coordinate_m1_admission(
     work_order: Mapping[str, Any],
     *,
@@ -121,11 +155,30 @@ def coordinate_m1_admission(
     if work_order["base_sha"] is not None and provider_base_sha != work_order["base_sha"]:
         return Result(Decision.HOLD, "PROVIDER_BASE_MISMATCH")  # noqa: F405
 
-    deps = _base.dependencies_satisfied(work_order, terminal_dependency_receipts)
+    deps = dependencies_satisfied(work_order, terminal_dependency_receipts)
     if not deps.ok:
         return deps
 
-    for lease, leased_wo in active_leases:
+    try:
+        if isinstance(active_leases, (str, bytes)):
+            raise ValueError("active_leases must be lease/work-order pairs")
+        lease_rows = list(active_leases)
+    except (TypeError, ValueError) as exc:
+        return Result(
+            Decision.HOLD, "ACTIVE_LEASE_EVIDENCE_INVALID", (str(exc),)
+        )  # noqa: F405
+
+    for item in lease_rows:
+        if (
+            not isinstance(item, (tuple, list))
+            or len(item) != 2
+        ):
+            return Result(
+                Decision.HOLD,
+                "ACTIVE_LEASE_EVIDENCE_INVALID",
+                ("lease/work-order pair required",),
+            )  # noqa: F405
+        lease, leased_wo = item
         relation = validate_lease_against_work_order(lease, leased_wo)
         if not relation.ok:
             lease_id = ""
@@ -135,15 +188,20 @@ def coordinate_m1_admission(
             return Result(
                 Decision.HOLD, "ACTIVE_LEASE_EVIDENCE_INVALID", details
             )  # noqa: F405
-        if (
-            lease["status"] == "ACTIVE"
-            and _base.conflict_sets_overlap(
-                work_order["conflict_keys"], lease["conflict_keys"]
-            )
+        if lease["status"] != "ACTIVE":
+            continue
+        if _base.conflict_sets_overlap(
+            work_order["conflict_keys"], lease["conflict_keys"]
         ):
             return Result(
                 Decision.SERIALIZE,
                 "ACTIVE_LEASE_CONFLICT",
+                (str(lease["lease_id"]),),
+            )  # noqa: F405
+        if work_order["write_set"] and lease["mode"] == "CANDIDATE_WRITE":
+            return Result(
+                Decision.SERIALIZE,
+                "M1_CANDIDATE_WRITES_SERIAL",
                 (str(lease["lease_id"]),),
             )  # noqa: F405
     return Result(Decision.ALLOW, "M1_COORDINATION_ALLOW")  # noqa: F405
@@ -281,6 +339,10 @@ def validate_fanout_group(
             output_digest = shard.get("output_digest")
             if output_digest is not None:
                 output_digest = _base._digest(output_digest, "output_digest")
+            if output_digest is not None and worker_run_id is None:
+                return Result(
+                    Decision.HOLD, "FANOUT_OUTPUT_WITHOUT_WORKER", (sid,)
+                )  # noqa: F405
 
             work_order = by_id.get(wid)
             if work_order is None or digest != _base.work_order_digest(work_order):
@@ -323,6 +385,49 @@ def validate_fanout_group(
         return Result(Decision.HOLD, "FANOUT_INVALID", (str(exc),))  # noqa: F405
 
     return Result(Decision.ALLOW, "FANOUT_RELATIONS_VALID")  # noqa: F405
+
+
+def validate_scope_observation(
+    work_order: Mapping[str, Any],
+    *,
+    observed_writes: Sequence[str],
+    observed_effects: Sequence[str],
+) -> Result:  # noqa: F405
+    valid = _base.validate_work_order_m1(work_order)
+    if not valid.ok:
+        return valid
+    try:
+        if isinstance(observed_writes, (str, bytes)) or isinstance(observed_effects, (str, bytes)):
+            raise ValueError("observed scope must be string sequences")
+        writes = list(observed_writes)
+        effects = list(observed_effects)
+        if not all(isinstance(item, str) and item for item in writes + effects):
+            raise ValueError("observed scope items must be non-empty strings")
+    except (TypeError, ValueError) as exc:
+        return Result(
+            Decision.HOLD, "OBSERVED_SCOPE_INVALID", (str(exc),)
+        )  # noqa: F405
+    extra = sorted(set(writes) - set(work_order["write_set"]))
+    if extra:
+        return Result(
+            Decision.REJECT, "SCOPE_EXPANSION_REQUIRED", tuple(extra)
+        )  # noqa: F405
+    if effects:
+        return Result(
+            Decision.REJECT,
+            "EFFECT_SCOPE_ESCALATION",
+            tuple(sorted(set(effects))),
+        )  # noqa: F405
+    return Result(Decision.ALLOW, "OBSERVED_SCOPE_WITHIN_CONTRACT")  # noqa: F405
+
+
+def verify_coordination_event(event: Mapping[str, Any]) -> Result:  # noqa: F405
+    if not isinstance(event, Mapping):
+        return Result(Decision.HOLD, "EVENT_INVALID", ("event must be an object",))  # noqa: F405
+    try:
+        return _base.verify_coordination_event(event)
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        return Result(Decision.HOLD, "EVENT_INVALID", (str(exc),))  # noqa: F405
 
 
 def _canonical_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
