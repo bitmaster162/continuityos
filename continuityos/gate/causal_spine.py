@@ -110,7 +110,10 @@ class Frontier:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {"event_id": self.event_id, "evidence": [item.to_dict() for item in self.evidence]}
+        return {
+            "event_id": self.event_id,
+            "evidence": [item.to_dict() for item in self.evidence],
+        }
 
 
 @dataclass(frozen=True)
@@ -165,7 +168,16 @@ class CurrentPhysicalState:
         ):
             return False
         provider = self.provider.strip().casefold()
-        return any(item.source_system.strip().casefold() == provider for item in self.evidence)
+        state_id = self.state_id.strip()
+        provider_refs = [
+            item for item in self.evidence
+            if item.source_system.strip().casefold() == provider
+        ]
+        return bool(provider_refs) and any(
+            item.object_id.strip() == state_id
+            or (item.revision_id is not None and item.revision_id.strip() == state_id)
+            for item in provider_refs
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -267,9 +279,38 @@ def _result(
     )
 
 
+def _receipt_is_authority_safe(receipt: Mapping[str, Any]) -> bool:
+    if receipt.get("schema") != RECEIPT_SCHEMA:
+        return False
+    passed = receipt.get("causal_gate_passed")
+    if not isinstance(passed, bool):
+        return False
+    terminal = receipt.get("terminal")
+    status = receipt.get("status")
+    if passed:
+        if terminal != "CAUSAL_SPINE_PASS" or status != CausalSpineStatus.COMPLETE.value:
+            return False
+    else:
+        if terminal != "CAUSAL_SPINE_INCOMPLETE" or status == CausalSpineStatus.COMPLETE.value:
+            return False
+    for key in (
+        "grants_source_authority",
+        "grants_canonical_authority",
+        "grants_merge_authority",
+        "grants_deploy_authority",
+        "grants_runtime_authority",
+        "grants_effect_authority",
+    ):
+        if receipt.get(key) is not False:
+            return False
+    return receipt.get("effects") == fixed_effects()
+
+
 def _current_state_resolution_check(
     current: CurrentPhysicalState,
     resolution: Optional[Mapping[str, Any]],
+    *,
+    expected_subject_id: str,
 ) -> Optional[CausalGateResult]:
     if resolution is None:
         return _result(
@@ -287,12 +328,26 @@ def _current_state_resolution_check(
             ("current_physical_state_resolution",),
             state_resolution_terminal=str(terminal) if terminal is not None else None,
         )
+    if resolution.get("subject") != expected_subject_id:
+        return _result(
+            CausalSpineStatus.INCOMPLETE_CURRENT_STATE,
+            "CURRENT_STATE_SUBJECT_MISMATCH",
+            ("current_physical_state",),
+            state_resolution_terminal=str(terminal),
+        )
     selected = resolution.get("selected")
     if not isinstance(selected, Mapping):
         return _result(
             CausalSpineStatus.INCOMPLETE_CURRENT_STATE,
             "CURRENT_STATE_RESOLUTION_SELECTED_MISSING",
             ("current_physical_state_resolution",),
+            state_resolution_terminal=str(terminal),
+        )
+    if selected.get("subject") != expected_subject_id:
+        return _result(
+            CausalSpineStatus.INCOMPLETE_CURRENT_STATE,
+            "CURRENT_STATE_SELECTED_SUBJECT_MISMATCH",
+            ("current_physical_state",),
             state_resolution_terminal=str(terminal),
         )
     if selected.get("kind") != "PROVIDER_READBACK":
@@ -370,7 +425,11 @@ def evaluate_causal_spine(
             ("current_physical_state",),
         )
 
-    resolution_failure = _current_state_resolution_check(spine.current_state, current_state_resolution)
+    resolution_failure = _current_state_resolution_check(
+        spine.current_state,
+        current_state_resolution,
+        expected_subject_id=spine.subject_id,
+    )
     if resolution_failure is not None:
         return resolution_failure
 
@@ -414,6 +473,10 @@ def build_evaluation_event(
     if prev_event_sha256 is not None and not SHA256_RE.fullmatch(prev_event_sha256):
         raise ValueError("prev_event_sha256 must be lowercase SHA-256 or null")
 
+    result_payload = result.to_dict()
+    if not _receipt_is_authority_safe(result_payload):
+        raise ValueError("causal gate result is not authority-safe")
+
     core = {
         "schema": EVENT_SCHEMA,
         "sequence": sequence,
@@ -426,7 +489,7 @@ def build_evaluation_event(
         "spine_sha256": hashlib.sha256(
             canonical_json_text(spine.to_dict()).encode("utf-8")
         ).hexdigest(),
-        "result": result.to_dict(),
+        "result": result_payload,
         "prev_event_sha256": prev_event_sha256,
         "effects": fixed_effects(),
     }
@@ -441,14 +504,39 @@ def verify_evaluation_event(
     *,
     expected_prev_event_sha256: Optional[str] = None,
 ) -> bool:
-    """Verify one event readback and optional chain predecessor identity."""
+    """Verify hash integrity, chain linkage, and semantic no-effect invariants."""
 
     if event.get("schema") != EVENT_SCHEMA:
+        return False
+    if event.get("event_type") != "CAUSAL_SPINE_EVALUATED":
+        return False
+    actor = event.get("actor")
+    if not isinstance(actor, Mapping) or actor.get("role") != "CAUSAL_SPINE_GATE" or not _nonempty(actor.get("id")):
+        return False
+    sequence = event.get("sequence")
+    if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 0:
+        return False
+    if _parse_time(event.get("recorded_at_utc")) is None:
+        return False
+    if not all(_nonempty(event.get(key)) for key in ("spine_id", "subject_type", "subject_id")):
+        return False
+    spine_sha = event.get("spine_sha256")
+    if not isinstance(spine_sha, str) or not SHA256_RE.fullmatch(spine_sha):
+        return False
+    if event.get("effects") != fixed_effects():
+        return False
+    result = event.get("result")
+    if not isinstance(result, Mapping) or not _receipt_is_authority_safe(result):
         return False
     observed = event.get("event_sha256")
     if not isinstance(observed, str) or not SHA256_RE.fullmatch(observed):
         return False
-    if expected_prev_event_sha256 is not None and event.get("prev_event_sha256") != expected_prev_event_sha256:
+    previous = event.get("prev_event_sha256")
+    if previous is not None and not (
+        isinstance(previous, str) and SHA256_RE.fullmatch(previous)
+    ):
+        return False
+    if expected_prev_event_sha256 is not None and previous != expected_prev_event_sha256:
         return False
     core = dict(event)
     core.pop("event_sha256", None)
