@@ -1,4 +1,14 @@
-from bench.causalbench import run
+import pytest
+
+try:
+    from bench.causalbench import run
+except ModuleNotFoundError as exc:
+    if exc.name != "bench":
+        raise
+    pytest.skip(
+        "CausalBench is a source-only regression corpus and is intentionally not shipped in the wheel",
+        allow_module_level=True,
+    )
 
 
 def test_causalbench_v0_exact_regression_receipt_passes():
