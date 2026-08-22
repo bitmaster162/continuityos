@@ -77,13 +77,17 @@ class EvidenceRef:
     def is_bound(self) -> bool:
         if not (_nonempty(self.source_system) and _nonempty(self.object_id)):
             return False
-        revision_bound = self.revision_id is not None and _nonempty(self.revision_id)
-        sha_bound = self.sha256 is not None and bool(SHA256_RE.fullmatch(self.sha256))
-        if not (revision_bound or sha_bound):
+        if self.revision_id is not None and not _nonempty(self.revision_id):
+            return False
+        if self.sha256 is not None and not (
+            isinstance(self.sha256, str) and SHA256_RE.fullmatch(self.sha256)
+        ):
             return False
         if self.locator is not None and not _nonempty(self.locator):
             return False
-        return True
+        revision_bound = self.revision_id is not None
+        sha_bound = self.sha256 is not None
+        return revision_bound or sha_bound
 
     def to_dict(self) -> dict[str, Any]:
         return {
