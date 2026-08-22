@@ -1,5 +1,10 @@
+from dataclasses import replace
+
+import pytest
+
 from continuityos.gate.causal_spine import (
     BoundedSearchReceipt,
+    CausalGateResult,
     CausalSpine,
     CausalSpineStatus,
     CurrentPhysicalState,
@@ -10,14 +15,20 @@ from continuityos.gate.causal_spine import (
     evaluate_causal_spine,
     verify_evaluation_event,
 )
+from continuityos.gate.evidence_common import canonical_json_text, fixed_effects
 
 GOOD_SHA = "a" * 64
 
 
-def evidence(tag: str = "x", source: str = "github") -> EvidenceRef:
+def evidence(
+    tag: str = "x",
+    source: str = "github",
+    *,
+    object_id: str | None = None,
+) -> EvidenceRef:
     return EvidenceRef(
         source_system=source,
-        object_id=f"object-{tag}",
+        object_id=object_id or f"object-{tag}",
         revision_id=f"rev-{tag}",
         sha256=GOOD_SHA,
         locator=f"{source}://{tag}",
@@ -37,7 +48,7 @@ def complete_current() -> CurrentPhysicalState:
         provider="github",
         state_id="commit:abc",
         observed_at="2026-08-22T00:52:00Z",
-        evidence=(evidence("current"),),
+        evidence=(evidence("current", object_id="commit:abc"),),
         resolution_artifact_id="github-branch-readback",
         resolution_artifact_sha256=GOOD_SHA,
     )
@@ -51,10 +62,14 @@ def state_resolution(
     artifact_sha256: str = GOOD_SHA,
     observed_at_utc: str = "2026-08-22T00:52:00Z",
     reason: str | None = None,
+    subject: str = "p1",
+    selected_subject: str | None = None,
 ):
     out = {
         "terminal": terminal,
+        "subject": subject,
         "selected": {
+            "subject": selected_subject if selected_subject is not None else subject,
             "kind": kind,
             "status": "PASS",
             "artifact_id": artifact_id,
@@ -188,6 +203,24 @@ def test_current_state_must_be_provider_readback():
     assert result.reason_code == "CURRENT_STATE_NOT_PROVIDER_READBACK"
 
 
+def test_resolution_subject_must_match_spine_subject():
+    result = evaluate_causal_spine(
+        complete_spine(),
+        current_state_resolution=state_resolution(subject="other-project"),
+    )
+    assert result.status is CausalSpineStatus.INCOMPLETE_CURRENT_STATE
+    assert result.reason_code == "CURRENT_STATE_SUBJECT_MISMATCH"
+
+
+def test_selected_subject_must_match_spine_subject():
+    result = evaluate_causal_spine(
+        complete_spine(),
+        current_state_resolution=state_resolution(selected_subject="other-project"),
+    )
+    assert result.status is CausalSpineStatus.INCOMPLETE_CURRENT_STATE
+    assert result.reason_code == "CURRENT_STATE_SELECTED_SUBJECT_MISMATCH"
+
+
 def test_current_state_resolution_sha_mismatch_fails():
     result = evaluate_causal_spine(
         complete_spine(),
@@ -212,6 +245,7 @@ def test_fresh_current_contradiction_is_not_laundered():
         current_state_resolution={
             "terminal": "STATE_RESOLUTION_HOLD",
             "reason": "FRESH_CURRENT_CONTRADICTION",
+            "subject": "p1",
             "selected": None,
         },
     )
@@ -249,6 +283,22 @@ def test_current_evidence_provider_must_match_provider():
         complete_spine(current_state=bad), current_state_resolution=state_resolution()
     )
     assert result.status is CausalSpineStatus.INCOMPLETE_CURRENT_STATE
+
+
+def test_current_state_id_must_be_bound_to_provider_evidence():
+    bad = CurrentPhysicalState(
+        provider="github",
+        state_id="commit:abc",
+        observed_at="2026-08-22T00:52:00Z",
+        evidence=(evidence("other-state", object_id="commit:def"),),
+        resolution_artifact_id="github-branch-readback",
+        resolution_artifact_sha256=GOOD_SHA,
+    )
+    result = evaluate_causal_spine(
+        complete_spine(current_state=bad), current_state_resolution=state_resolution()
+    )
+    assert result.status is CausalSpineStatus.INCOMPLETE_CURRENT_STATE
+    assert result.reason_code == "CURRENT_PHYSICAL_STATE_MISSING_OR_UNBOUND"
 
 
 def test_contradiction_flag_requires_bound_evidence():
@@ -294,3 +344,68 @@ def test_event_hash_readback_and_tamper_rejection():
     assert not verify_evaluation_event(
         tampered, expected_prev_event_sha256=event1["event_sha256"]
     )
+
+
+def test_rehashed_effect_forgery_is_rejected():
+    import hashlib
+
+    spine = complete_spine()
+    result = evaluate_causal_spine(spine, current_state_resolution=state_resolution())
+    event = build_evaluation_event(
+        spine,
+        result,
+        sequence=0,
+        actor_id="gate",
+        recorded_at_utc="2026-08-22T01:00:00Z",
+    )
+    forged = dict(event)
+    forged["effects"] = dict(fixed_effects())
+    forged["effects"]["deployment"] = True
+    core = dict(forged)
+    core.pop("event_sha256")
+    forged["event_sha256"] = hashlib.sha256(
+        canonical_json_text(core).encode("utf-8")
+    ).hexdigest()
+    assert not verify_evaluation_event(forged)
+
+
+def test_rehashed_result_authority_forgery_is_rejected():
+    import hashlib
+
+    spine = complete_spine()
+    result = evaluate_causal_spine(spine, current_state_resolution=state_resolution())
+    event = build_evaluation_event(
+        spine,
+        result,
+        sequence=0,
+        actor_id="gate",
+        recorded_at_utc="2026-08-22T01:00:00Z",
+    )
+    forged = dict(event)
+    forged["result"] = dict(event["result"])
+    forged["result"]["grants_merge_authority"] = True
+    core = dict(forged)
+    core.pop("event_sha256")
+    forged["event_sha256"] = hashlib.sha256(
+        canonical_json_text(core).encode("utf-8")
+    ).hexdigest()
+    assert not verify_evaluation_event(forged)
+
+
+def test_event_builder_rejects_authority_unsafe_result():
+    unsafe = CausalGateResult(
+        status=CausalSpineStatus.COMPLETE,
+        reason_code="unsafe",
+        missing_frontiers=(),
+        causal_gate_passed=True,
+        state_resolution_terminal="STATE_RESOLUTION_PASS",
+        grants_merge_authority=True,
+    )
+    with pytest.raises(ValueError, match="authority-safe"):
+        build_evaluation_event(
+            complete_spine(),
+            unsafe,
+            sequence=0,
+            actor_id="gate",
+            recorded_at_utc="2026-08-22T01:00:00Z",
+        )
