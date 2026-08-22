@@ -357,6 +357,13 @@ def _current_state_resolution_check(
             ("current_physical_state",),
             state_resolution_terminal=str(terminal),
         )
+    if selected.get("current_observation") is not True:
+        return _result(
+            CausalSpineStatus.INCOMPLETE_CURRENT_STATE,
+            "CURRENT_STATE_NOT_CURRENT_OBSERVATION",
+            ("current_physical_state",),
+            state_resolution_terminal=str(terminal),
+        )
     if selected.get("artifact_id") != current.resolution_artifact_id:
         return _result(
             CausalSpineStatus.INCOMPLETE_CURRENT_STATE,
@@ -413,6 +420,12 @@ def evaluate_causal_spine(
         if spine.pivot is None or not spine.pivot.has_provenance():
             return _result(CausalSpineStatus.INCOMPLETE_PIVOT, "PIVOT_MISSING_OR_UNBOUND", ("pivot",))
     elif spine.pivot_status is PivotStatus.NO_MATERIAL_PIVOT_FOUND:
+        if spine.pivot is not None:
+            return _result(
+                CausalSpineStatus.INCOMPLETE_PIVOT,
+                "PIVOT_PRESENT_WHILE_DECLARED_NO_MATERIAL_PIVOT",
+                ("pivot",),
+            )
         if spine.pivot_search is None or not spine.pivot_search.is_complete():
             return _result(CausalSpineStatus.SEARCH_INCOMPLETE, "NO_PIVOT_SEARCH_PROOF_INCOMPLETE", ("pivot_search",))
     else:

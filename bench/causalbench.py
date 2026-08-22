@@ -15,11 +15,13 @@ from continuityos.gate.causal_spine import (
     PivotStatus,
     build_evaluation_event,
     evaluate_causal_spine,
+    resolve_and_evaluate_causal_spine,
     verify_evaluation_event,
 )
 from continuityos.gate.evidence_common import canonical_json_text, fixed_effects
 
 SHA = "a" * 64
+SHA_B = "b" * 64
 
 
 def ev(
@@ -64,6 +66,7 @@ def resolution(**overrides):
         "artifact_id": "github-readback",
         "artifact_sha256": SHA,
         "observed_at_utc": "2026-08-22T00:52:00Z",
+        "current_observation": True,
     }
     selected.update(overrides.pop("selected", {}))
     out = {
@@ -72,6 +75,12 @@ def resolution(**overrides):
         "selected": selected,
     }
     out.update(overrides)
+    return out
+
+
+def resolution_without_current_marker():
+    out = resolution()
+    out["selected"].pop("current_observation")
     return out
 
 
@@ -87,6 +96,27 @@ def spine(**overrides):
     )
     data.update(overrides)
     return CausalSpine(**data)
+
+
+def provider_candidate(
+    *,
+    status: str = "PASS",
+    artifact_id: str = "github-readback",
+    artifact_sha256: str = SHA,
+    current_observation: bool = True,
+):
+    return {
+        "schema": "continuityos.state_resolution.candidate/v1",
+        "subject": "p1",
+        "artifact_id": artifact_id,
+        "kind": "PROVIDER_READBACK",
+        "status": status,
+        "observed_at_utc": "2026-08-22T00:52:00Z",
+        "production_qualified": False,
+        "evidence_debt": False,
+        "current_observation": current_observation,
+        "artifact_sha256": artifact_sha256,
+    }
 
 
 def run():
@@ -105,6 +135,14 @@ def run():
         resolution_artifact_id="github-readback",
         resolution_artifact_sha256=SHA,
     )
+    wrong_provider = CurrentPhysicalState(
+        provider="vercel",
+        state_id="commit:abc",
+        observed_at="2026-08-22T00:52:00Z",
+        evidence=(ev("current", source="github", object_id="commit:abc"),),
+        resolution_artifact_id="github-readback",
+        resolution_artifact_sha256=SHA,
+    )
     cases = [
         ("missing-origin", spine(origin=None), resolution(), "INCOMPLETE_ORIGIN"),
         ("missing-pivot", spine(pivot_status=PivotStatus.UNKNOWN, pivot=None), resolution(), "INCOMPLETE_PIVOT"),
@@ -117,6 +155,10 @@ def run():
         ("cross-subject-current", spine(), resolution(subject="other", selected={"subject": "other"}), "INCOMPLETE_CURRENT_STATE"),
         ("selected-cross-subject-current", spine(), resolution(selected={"subject": "other"}), "INCOMPLETE_CURRENT_STATE"),
         ("state-id-not-evidence-bound", spine(current_state=wrong_state), resolution(), "INCOMPLETE_CURRENT_STATE"),
+        ("stale-current-observation", spine(), resolution(selected={"current_observation": False}), "INCOMPLETE_CURRENT_STATE"),
+        ("missing-current-observation-marker", spine(), resolution_without_current_marker(), "INCOMPLETE_CURRENT_STATE"),
+        ("provider-mismatch-current", spine(current_state=wrong_provider), resolution(), "INCOMPLETE_CURRENT_STATE"),
+        ("no-pivot-with-pivot-present", spine(pivot_status=PivotStatus.NO_MATERIAL_PIVOT_FOUND, pivot=pivot(), pivot_search=no_pivot), resolution(), "INCOMPLETE_PIVOT"),
     ]
     rows = []
     passed = True
@@ -125,6 +167,35 @@ def run():
         ok = result.status.value == expected
         rows.append({"case_id": case_id, "expected": expected, "observed": result.status.value, "ok": ok})
         passed &= ok
+
+    duplicate = provider_candidate()
+    duplicate_result = resolve_and_evaluate_causal_spine(
+        spine(), [duplicate, dict(duplicate)]
+    )
+    duplicate_ok = duplicate_result.status.value == "COMPLETE"
+    rows.append({
+        "case_id": "duplicate-equivalent-current-cards",
+        "expected": "COMPLETE",
+        "observed": duplicate_result.status.value,
+        "ok": duplicate_ok,
+    })
+    passed &= duplicate_ok
+
+    conflict_result = resolve_and_evaluate_causal_spine(
+        spine(),
+        [
+            provider_candidate(status="PASS", artifact_sha256=SHA),
+            provider_candidate(status="REJECT", artifact_sha256=SHA_B),
+        ],
+    )
+    conflict_ok = conflict_result.status.value == "CONTRADICTED"
+    rows.append({
+        "case_id": "duplicate-conflicting-current-cards",
+        "expected": "CONTRADICTED",
+        "observed": conflict_result.status.value,
+        "ok": conflict_ok,
+    })
+    passed &= conflict_ok
 
     good_spine = spine()
     good = evaluate_causal_spine(good_spine, current_state_resolution=resolution())

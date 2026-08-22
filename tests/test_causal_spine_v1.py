@@ -1,5 +1,3 @@
-from dataclasses import replace
-
 import pytest
 
 from continuityos.gate.causal_spine import (
@@ -61,6 +59,7 @@ def state_resolution(
     artifact_id: str = "github-branch-readback",
     artifact_sha256: str = GOOD_SHA,
     observed_at_utc: str = "2026-08-22T00:52:00Z",
+    current_observation: bool = True,
     reason: str | None = None,
     subject: str = "p1",
     selected_subject: str | None = None,
@@ -75,6 +74,7 @@ def state_resolution(
             "artifact_id": artifact_id,
             "artifact_sha256": artifact_sha256,
             "observed_at_utc": observed_at_utc,
+            "current_observation": current_observation,
         },
     }
     if reason is not None:
@@ -176,6 +176,25 @@ def test_no_pivot_with_bounded_completed_search_can_pass():
     assert result.causal_gate_passed
 
 
+def test_no_pivot_declaration_rejects_non_null_pivot():
+    result = evaluate_causal_spine(
+        complete_spine(
+            pivot_status=PivotStatus.NO_MATERIAL_PIVOT_FOUND,
+            pivot=complete_pivot(),
+            pivot_search=BoundedSearchReceipt(
+                search_id="search-1",
+                scope="all accepted project events 2025-01-01..2026-08-22",
+                sources_checked=(evidence("search"),),
+                completed=True,
+                completed_at="2026-08-22T00:50:00Z",
+            ),
+        ),
+        current_state_resolution=state_resolution(),
+    )
+    assert result.status is CausalSpineStatus.INCOMPLETE_PIVOT
+    assert result.reason_code == "PIVOT_PRESENT_WHILE_DECLARED_NO_MATERIAL_PIVOT"
+
+
 def test_weak_provenance_does_not_complete_origin():
     weak = EvidenceRef(source_system="github", object_id="obj")
     result = evaluate_causal_spine(
@@ -201,6 +220,25 @@ def test_current_state_must_be_provider_readback():
     )
     assert result.status is CausalSpineStatus.INCOMPLETE_CURRENT_STATE
     assert result.reason_code == "CURRENT_STATE_NOT_PROVIDER_READBACK"
+
+
+def test_current_state_must_be_marked_current_observation():
+    result = evaluate_causal_spine(
+        complete_spine(),
+        current_state_resolution=state_resolution(current_observation=False),
+    )
+    assert result.status is CausalSpineStatus.INCOMPLETE_CURRENT_STATE
+    assert result.reason_code == "CURRENT_STATE_NOT_CURRENT_OBSERVATION"
+
+
+def test_current_state_missing_current_observation_fails_closed():
+    resolution = state_resolution()
+    del resolution["selected"]["current_observation"]
+    result = evaluate_causal_spine(
+        complete_spine(), current_state_resolution=resolution
+    )
+    assert result.status is CausalSpineStatus.INCOMPLETE_CURRENT_STATE
+    assert result.reason_code == "CURRENT_STATE_NOT_CURRENT_OBSERVATION"
 
 
 def test_resolution_subject_must_match_spine_subject():

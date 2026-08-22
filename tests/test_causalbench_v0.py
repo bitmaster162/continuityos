@@ -15,7 +15,7 @@ def test_causalbench_v0_exact_regression_receipt_passes():
     receipt = run()
 
     assert receipt["status"] == "PASS"
-    assert receipt["case_count"] == 11
+    assert receipt["case_count"] == 17
     assert all(case["ok"] for case in receipt["cases"])
     assert receipt["event_readback_ok"] is True
     assert receipt["tamper_rejected"] is True
