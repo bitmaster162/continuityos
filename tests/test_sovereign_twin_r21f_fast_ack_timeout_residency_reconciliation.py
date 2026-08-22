@@ -5,6 +5,7 @@ import pytest
 import continuityos.sovereign_twin_runtime as runtime_module
 from continuityos.sovereign_twin_runtime import (
     DEFAULT_PROFILES,
+    LmStudioClient,
     LocalModelEndpointError,
     SovereignTwinRuntime,
     _FastResidencyUnsafeError,
@@ -30,7 +31,7 @@ class FakeClient:
         self.load_calls = []
         self.models_calls = 0
         if legacy:
-            self.load_for_acquisition = None
+            self.load_fast_for_acquisition = None
 
     def models(self):
         self.models_calls += 1
@@ -41,12 +42,16 @@ class FakeClient:
             raise value
         return value
 
-    def load_for_acquisition(self, **kwargs):
+    def load_fast_for_acquisition(self, **kwargs):
         self.load_calls.append(("bounded", kwargs))
         outcome = self.load_outcome
         if isinstance(outcome, BaseException):
             raise outcome
         return outcome
+
+    def load_for_acquisition(self, **kwargs):
+        self.load_calls.append(("deep-bounded", kwargs))
+        raise AssertionError("FAST must never call historical DEEP load_for_acquisition")
 
     def load(self, **kwargs):
         self.load_calls.append(("legacy", kwargs))
@@ -252,6 +257,52 @@ def test_custom_legacy_client_falls_back_to_r21e_behavior():
     assert c.load_calls == [
         ("legacy", {"model": FAST.model, "context_length": 8192})
     ]
+
+
+def test_fast_never_calls_historical_deep_acquisition_loader():
+    c = FakeClient(
+        [model_row([])],
+        load_outcome="legacy-id",
+        legacy=True,
+    )
+    rt = runtime_with(c)
+    assert rt._ensure_fast_loaded(FAST) == "legacy-id"
+    assert not any(kind == "deep-bounded" for kind, _ in c.load_calls)
+
+
+def test_lmstudio_fast_loader_bounds_only_ack_wait():
+    client = LmStudioClient(load_timeout=600.0)
+    calls = []
+
+    def fake_request(method, path, payload=None, *, timeout=None):
+        calls.append((method, path, payload, timeout))
+        return {
+            "status": "loaded",
+            "instance_id": "fast-prod-1",
+            "load_config": {"context_length": 8192},
+        }
+
+    client._request = fake_request
+    assert client.load_fast_for_acquisition(
+        model=FAST.model,
+        context_length=8192,
+        ack_timeout=runtime_module.FAST_LOAD_ACK_TIMEOUT_SECONDS,
+    ) == "fast-prod-1"
+    assert calls[-1][0:2] == ("POST", "/api/v1/models/load")
+    assert calls[-1][2] == {
+        "model": FAST.model,
+        "context_length": 8192,
+        "echo_load_config": True,
+    }
+    assert calls[-1][3] == runtime_module.FAST_LOAD_ACK_TIMEOUT_SECONDS
+    assert client.load_timeout == 600.0
+
+    client.load_fast_for_acquisition(
+        model=FAST.model,
+        context_length=8192,
+        ack_timeout=900.0,
+    )
+    assert calls[-1][3] == 600.0
 
 
 def test_deep_method_is_inherited_byte_behavior():

@@ -61,7 +61,37 @@ class _FastResidencyUnsafeError(LocalModelEndpointError):
 
 
 class LmStudioClient(_r21e.LmStudioClient):
-    """R21E client unchanged; R21F FAST reconciliation is runtime-owned."""
+    """R21E client plus a FAST-only bounded ACK acquisition loader."""
+
+    def load_fast_for_acquisition(
+        self,
+        *,
+        model: str,
+        context_length: int,
+        ack_timeout: float,
+    ) -> str:
+        """Issue one FAST load with bounded ACK wait; residency is proven separately."""
+        request_timeout = min(
+            self.load_timeout,
+            max(0.001, float(ack_timeout)),
+        )
+        try:
+            data = self._request(
+                "POST",
+                "/api/v1/models/load",
+                {
+                    "model": str(model),
+                    "context_length": int(context_length),
+                    "echo_load_config": True,
+                },
+                timeout=request_timeout,
+            )
+        except LocalModelEndpointError as exc:
+            raise LocalModelEndpointError(
+                "LM Studio FAST model load failed with "
+                f"load_ack_timeout={request_timeout:g}s: {exc}"
+            ) from exc
+        return self._validate_load_response(data, context_length=context_length)
 
 
 class SovereignTwinRuntime(_r21e.SovereignTwinRuntime):
@@ -175,9 +205,14 @@ class SovereignTwinRuntime(_r21e.SovereignTwinRuntime):
         if existing_id is not None:
             return existing_id
 
-        load_for_acquisition = getattr(self.client, "load_for_acquisition", None)
-        if not callable(load_for_acquisition):
-            # Preserve compatibility for custom clients that implement only legacy load().
+        load_fast_for_acquisition = getattr(
+            self.client,
+            "load_fast_for_acquisition",
+            None,
+        )
+        if not callable(load_fast_for_acquisition):
+            # Preserve compatibility for clients that implement only legacy load().
+            # Historical load_for_acquisition() remains DEEP-only and is never used here.
             return super()._ensure_fast_loaded(profile)
 
         acquisition_started = perf_counter()
@@ -189,7 +224,7 @@ class SovereignTwinRuntime(_r21e.SovereignTwinRuntime):
         load_ack_timed_out = False
         try:
             acquired_id = str(
-                load_for_acquisition(
+                load_fast_for_acquisition(
                     model=profile.model,
                     context_length=profile.context_length,
                     ack_timeout=min(FAST_LOAD_ACK_TIMEOUT_SECONDS, load_timeout),
