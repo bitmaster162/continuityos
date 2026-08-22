@@ -162,3 +162,35 @@ def test_include_conflicts_false_redacts_payload_but_preserves_conflict_decision
     assert set(out.resolution["conflict_candidate_ids"]) == {"a", "b"}
     assert out.response["results"] == []
     assert out.response["gateway_status"] == "PASS_WITH_CONDITIONS"
+
+
+def test_include_superseded_false_filters_evidence_and_discovery():
+    row = _candidate("old")
+    row["result"]["supersession_state"] = "SUPERSEDED"
+    evidence = resolve_candidates(_query(), [row])
+    assert evidence["decision"] == "ABSTAIN"
+    assert evidence["discarded"] == [{"candidate_id": "old", "reason": "SUPERSEDED_OR_HISTORICAL"}]
+
+    discovery_query = _query()
+    discovery_query["resolution_mode"] = "DISCOVERY"
+    discovery = resolve_candidates(discovery_query, [row])
+    assert discovery["decision"] == "ABSTAIN"
+
+
+def test_same_semantic_key_different_subjects_do_not_conflict():
+    a = _candidate("a", payload={"status": "READY"})
+    b = _candidate("b", payload={"status": "HOLD"})
+    a["subject_ref"] = "project:A"
+    b["subject_ref"] = "project:B"
+    out = resolve_candidates(_query(), [a, b])
+    assert out["decision"] == "HIT"
+    assert set(out["selected_candidate_ids"]) == {"a", "b"}
+    assert out["conflict_candidate_ids"] == []
+
+
+def test_duplicate_candidate_ids_are_rejected_fail_closed():
+    a = _candidate("dup", payload={"value": 1})
+    b = _candidate("dup", payload={"value": 2})
+    b["source_occurrence_id"] = "occ:dup:2"
+    with pytest.raises(FederationContractError, match="candidate_id values must be unique"):
+        resolve_candidates(_query(), [a, b])

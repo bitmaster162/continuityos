@@ -6,7 +6,7 @@ from .contracts import FederationContractError, _time, _unique, validate_candida
 from .policy import *
 
 def _sort(c):
-    r=c["result"]; return (c["semantic_key"],ADAPTER_PRIORITY[c["adapter_id"]],r.get("stable_source_ref") or "",c["candidate_id"])
+    r=c["result"]; return (c["subject_ref"],c["semantic_key"],ADAPTER_PRIORITY[c["adapter_id"]],r.get("stable_source_ref") or "",c["candidate_id"])
 
 def _eligible(q,c):
     r=c["result"]
@@ -24,7 +24,7 @@ def _eligible(q,c):
         if requested_projects.isdisjoint(actual_projects): return False,"PROJECT_SCOPE_FILTERED"
     mode=q["resolution_mode"]
     if r["authority_class"] not in MODE_AUTHORITY[mode]: return False,"AUTHORITY_INCOMPATIBLE"
-    if not q["include_superseded"] and mode not in {"HISTORICAL_AS_OF","DISCOVERY","EVIDENCE"} and r["supersession_state"] in {"SUPERSEDED","HISTORICAL"}: return False,"SUPERSEDED_OR_HISTORICAL"
+    if not q["include_superseded"] and mode!="HISTORICAL_AS_OF" and r["supersession_state"] in {"SUPERSEDED","HISTORICAL"}: return False,"SUPERSEDED_OR_HISTORICAL"
     if mode=="CURRENT_STATE":
         if r["supersession_state"]!="CURRENT": return False,"CURRENT_STATE_REQUIRES_CURRENT_SUPERSESSION"
         if r["freshness"] in {"STALE","UNPROVEN"}: return False,"CURRENT_STATE_FRESHNESS_UNPROVEN"
@@ -45,6 +45,8 @@ def resolve_candidates(query: Mapping[str,Any], candidates: Iterable[Mapping[str
     q=validate_query(query); raw=tuple(candidates)
     if len(raw)>MAX_CANDIDATES: raise FederationContractError("too many candidates")
     valid=tuple(validate_candidate(c,q["query_id"]) for c in raw)
+    candidate_ids=[c["candidate_id"] for c in valid]
+    if len(candidate_ids)!=len(set(candidate_ids)): raise FederationContractError("candidate_id values must be unique")
     unavailable=_unique(list(sources_unavailable),"sources_unavailable",MAX_COVERAGE_ROWS); limits=_unique(list(coverage_limits),"coverage_limits",MAX_COVERAGE_ROWS)
     discarded=[]; eligible=[]
     for c in valid:
@@ -53,11 +55,11 @@ def resolve_candidates(query: Mapping[str,Any], candidates: Iterable[Mapping[str
         else: discarded.append({"candidate_id":c["candidate_id"],"reason":str(reason)})
     aliases={}
     for c in sorted(eligible,key=_sort):
-        r=c["result"]; key=(c["semantic_key"],c["payload_digest"],r.get("stable_source_ref"),r["authority_class"],c["source_occurrence_id"])
+        r=c["result"]; key=(c["subject_ref"],c["semantic_key"],c["payload_digest"],r.get("stable_source_ref"),r["authority_class"],c["source_occurrence_id"])
         if key in aliases: discarded.append({"candidate_id":c["candidate_id"],"reason":"EXACT_RETRIEVAL_ALIAS"})
         else: aliases[key]=c
     eligible=list(aliases.values()); groups={}
-    for c in eligible: groups.setdefault(c["semantic_key"],[]).append(c)
+    for c in eligible: groups.setdefault((c["subject_ref"],c["semantic_key"]),[]).append(c)
     conflicts=[c["candidate_id"] for c in eligible if c["result"]["status"]=="CONFLICT"]
     for group in groups.values():
         if len({c["payload_digest"] for c in group})>1: conflicts.extend(c["candidate_id"] for c in group)
