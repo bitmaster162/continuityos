@@ -1,12 +1,17 @@
 """R21H Sovereign Twin runtime overlay: startup FAST streaming-JIT prewarm.
 
 R21G is retained byte-exact in sovereign_twin_runtime_r21g.py. R21H keeps DEEP
-behavior inherited from R21G, but hardens FAST around embedding/model residency:
-cold startup proves embedding readiness before the final FAST acquisition, and
-each FAST request retrieves evidence before its exact FAST residency decision.
-If evidence embedding evicts FAST, R21H reacquires only through the R21G
-chat-coupled streaming-JIT path; the historical explicit FAST loader is never
-used by the R21H production FAST path.
+behavior inherited from R21G, but hardens the official LM Studio FAST path around
+embedding/model residency: cold startup proves embedding readiness before the
+final FAST acquisition, and each FAST request retrieves evidence before its exact
+FAST residency decision. If evidence embedding evicts FAST, R21H reacquires only
+through the R21G chat-coupled streaming-JIT path; the historical explicit FAST
+loader is never used by the R21H official production FAST path.
+
+Custom/legacy clients that do not implement the R21G streaming transport retain
+the inherited R21G/R21F compatibility path only when they expose the historical
+``load`` contract. This compatibility escape hatch never applies to LmStudioClient
+or its subclasses.
 """
 from __future__ import annotations
 
@@ -47,6 +52,19 @@ class SovereignTwinRuntime(_r21g.SovereignTwinRuntime):
                 "explicit-load compatibility fallback is forbidden"
             )
         return stream_chat
+
+    def _uses_legacy_fast_client_compatibility(self) -> bool:
+        """Return True only for a non-production client with the old load contract."""
+        stream_chat = getattr(
+            self.client,
+            "chat_fast_streaming_jit_reconciled",
+            None,
+        )
+        if callable(stream_chat):
+            return False
+        if isinstance(self.client, LmStudioClient):
+            return False
+        return callable(getattr(self.client, "load", None))
 
     def prewarm_fast_startup(self) -> dict[str, Any]:
         """Make exact FAST chat-ready before API bind without touching memory.
@@ -150,8 +168,11 @@ class SovereignTwinRuntime(_r21g.SovereignTwinRuntime):
             }
 
     def ask(self, query: str, *, mode: str = "fast") -> TwinAnswer:
-        """Answer FAST only after evidence retrieval and a post-embedding residency proof."""
+        """Answer FAST after evidence/reprobe, preserving old custom-client fallback."""
         if mode != "fast":
+            return super().ask(query, mode=mode)
+
+        if self._uses_legacy_fast_client_compatibility():
             return super().ask(query, mode=mode)
 
         with self._model_lock:
