@@ -7,11 +7,14 @@ socket is created, so a successfully bound server is already warm for FAST.
 """
 from __future__ import annotations
 
+from threading import Lock
+
 from . import sovereign_twin_api_r21g as _r21g_api
 from .sovereign_twin_api_r21g import *  # noqa: F401,F403
 from .sovereign_twin_runtime import (
     DEFAULT_EMBEDDING_MODEL,
     LmStudioClient,
+    LocalModelEndpointError,
     SovereignTwinRuntime,
 )
 
@@ -20,6 +23,54 @@ for _legacy_name, _legacy_value in vars(_r21g_api).items():
     if not _legacy_name.startswith("__"):
         globals().setdefault(_legacy_name, _legacy_value)
 del _legacy_name, _legacy_value
+
+
+_R21H_STARTUP_PREWARM_LOCK = Lock()
+_R21H_STARTUP_PREWARM_STATE = "NOT_STARTED"
+_R21H_STARTUP_PREWARM_RESULT = None
+_R21H_STARTUP_PREWARM_ERROR = None
+
+
+def _prewarm_fast_startup_once(runtime: SovereignTwinRuntime) -> dict:
+    """Run the R21H startup prewarm at most once for this Python process.
+
+    A failed or interrupted attempt is sticky: later serve() calls fail closed
+    instead of issuing a second startup prewarm/model effect.
+    """
+    global _R21H_STARTUP_PREWARM_STATE
+    global _R21H_STARTUP_PREWARM_RESULT
+    global _R21H_STARTUP_PREWARM_ERROR
+
+    with _R21H_STARTUP_PREWARM_LOCK:
+        if _R21H_STARTUP_PREWARM_STATE == "SUCCEEDED":
+            return dict(_R21H_STARTUP_PREWARM_RESULT or {})
+        if _R21H_STARTUP_PREWARM_STATE == "FAILED":
+            detail = (
+                f": {_R21H_STARTUP_PREWARM_ERROR}"
+                if _R21H_STARTUP_PREWARM_ERROR
+                else ""
+            )
+            raise LocalModelEndpointError(
+                "R21H FAST startup prewarm already failed in this process; "
+                f"retry refused{detail}"
+            )
+        if _R21H_STARTUP_PREWARM_STATE != "NOT_STARTED":
+            raise LocalModelEndpointError(
+                "R21H FAST startup prewarm process state is invalid; retry refused"
+            )
+
+        # Consume the one process-wide startup attempt before any model effect.
+        _R21H_STARTUP_PREWARM_STATE = "RUNNING"
+        try:
+            result = dict(runtime.prewarm_fast_startup())
+        except BaseException as exc:
+            _R21H_STARTUP_PREWARM_ERROR = f"{type(exc).__name__}: {exc}"
+            _R21H_STARTUP_PREWARM_STATE = "FAILED"
+            raise
+
+        _R21H_STARTUP_PREWARM_RESULT = result
+        _R21H_STARTUP_PREWARM_STATE = "SUCCEEDED"
+        return dict(_R21H_STARTUP_PREWARM_RESULT)
 
 
 def serve(
@@ -47,7 +98,7 @@ def serve(
     server = None
     try:
         if fast_startup_prewarm:
-            startup_prewarm = runtime.prewarm_fast_startup()
+            startup_prewarm = _prewarm_fast_startup_once(runtime)
         else:
             startup_prewarm = {
                 "ok": True,

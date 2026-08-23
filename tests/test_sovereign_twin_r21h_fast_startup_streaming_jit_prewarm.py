@@ -19,6 +19,14 @@ from continuityos.sovereign_twin_runtime import (
 FAST = DEFAULT_PROFILES["fast"]
 
 
+@pytest.fixture(autouse=True)
+def reset_r21h_process_startup_prewarm_guard(monkeypatch):
+    """Keep process-once production state isolated between pytest cases."""
+    monkeypatch.setattr(api, "_R21H_STARTUP_PREWARM_STATE", "NOT_STARTED")
+    monkeypatch.setattr(api, "_R21H_STARTUP_PREWARM_RESULT", None)
+    monkeypatch.setattr(api, "_R21H_STARTUP_PREWARM_ERROR", None)
+
+
 def model_row(instances):
     return [{"key": FAST.model, "loaded_instances": instances}]
 
@@ -200,6 +208,54 @@ def test_api_prewarm_occurs_before_socket_construction(monkeypatch):
     ]
 
 
+def test_api_prewarm_runs_at_most_once_per_process(monkeypatch):
+    events = []
+    startup_results = []
+
+    class FakeRuntime:
+        def __init__(self, *args, **kwargs):
+            events.append("runtime")
+            self.memory_db = "C:/memory.db"
+
+        def prewarm_fast_startup(self):
+            events.append("prewarm")
+            return {"ok": True, "model_instance_id": "fast-1"}
+
+        def close(self):
+            events.append("runtime.close")
+
+    class FakeServer:
+        def __init__(self, address, handler):
+            events.append("server.bind")
+
+        def serve_forever(self):
+            startup_results.append(dict(self.startup_prewarm))
+            events.append("serve")
+
+        def server_close(self):
+            events.append("server.close")
+
+    monkeypatch.setattr(api, "SovereignTwinRuntime", FakeRuntime)
+    monkeypatch.setattr(api, "LmStudioClient", lambda base_url: object())
+    monkeypatch.setattr(api._r21g_api, "_TwinServer", FakeServer)
+    monkeypatch.setattr(
+        api._r21g_api,
+        "ShadowMemoryAdmissionQueue",
+        lambda path: SimpleNamespace(path=path),
+    )
+
+    api.serve(memory_db="C:/memory.db")
+    api.serve(memory_db="C:/memory.db")
+
+    assert events.count("prewarm") == 1
+    assert events.count("server.bind") == 2
+    assert events.count("serve") == 2
+    assert startup_results == [
+        {"ok": True, "model_instance_id": "fast-1"},
+        {"ok": True, "model_instance_id": "fast-1"},
+    ]
+
+
 def test_api_prewarm_failure_prevents_socket_bind_and_closes_runtime(monkeypatch):
     events = []
 
@@ -223,8 +279,16 @@ def test_api_prewarm_failure_prevents_socket_bind_and_closes_runtime(monkeypatch
 
     with pytest.raises(LocalModelEndpointError, match="prewarm failed"):
         api.serve(memory_db="C:/memory.db")
+    with pytest.raises(LocalModelEndpointError, match="retry refused"):
+        api.serve(memory_db="C:/memory.db")
 
-    assert events == ["runtime", "prewarm", "runtime.close"]
+    assert events == [
+        "runtime",
+        "prewarm",
+        "runtime.close",
+        "runtime",
+        "runtime.close",
+    ]
 
 
 def test_api_explicit_prewarm_disable_preserves_r21g_startup_shape(monkeypatch):
