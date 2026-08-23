@@ -144,12 +144,28 @@ def test_absent_admissions_are_reported_without_creating_file(tmp_path: Path):
     }
 
 
-def test_loopback_guard_rejects_remote_binds():
+def test_loopback_guard_rejects_remote_binds_and_upstreams():
     for host in ("127.0.0.1", "::1", "localhost"):
         assert cc._is_loopback_host(host) is True
     for host in ("0.0.0.0", "::", "192.168.1.2", "control.example"):
         assert cc._is_loopback_host(host) is False
+
+    assert cc._is_loopback_url("http://127.0.0.1:8765") is True
+    assert cc._is_loopback_url("http://localhost:1234") is True
+    assert cc._is_loopback_url("http://192.168.1.2:8765") is False
+    assert cc._is_loopback_url("https://example.com") is False
+
     assert cc.main(["serve", "--host", "0.0.0.0"]) == 2
+    assert (
+        cc.main(
+            [
+                "serve",
+                "--twin-url",
+                "http://192.168.1.2:8765",
+            ]
+        )
+        == 2
+    )
 
 
 def test_ui_is_observability_only_and_uses_safe_dom_text():
