@@ -35,10 +35,11 @@ _R21H_STARTUP_PREWARM_ERROR = None
 
 
 def _prewarm_fast_startup_once(runtime: SovereignTwinRuntime) -> dict:
-    """Run the R21H startup prewarm at most once for this Python process.
+    """Run R21H startup prewarm at most once and revalidate cached success.
 
-    A failed or interrupted attempt is sticky: later serve() calls fail closed
-    instead of issuing a second startup prewarm/model effect.
+    A failed or interrupted attempt is sticky. A later serve() after success
+    performs only an exact read-only FAST residency proof; it never issues a
+    second startup prewarm/model effect.
     """
     global _R21H_STARTUP_PREWARM_STATE
     global _R21H_STARTUP_PREWARM_RESULT
@@ -46,7 +47,30 @@ def _prewarm_fast_startup_once(runtime: SovereignTwinRuntime) -> dict:
 
     with _R21H_STARTUP_PREWARM_LOCK:
         if _R21H_STARTUP_PREWARM_STATE == "SUCCEEDED":
-            return dict(_R21H_STARTUP_PREWARM_RESULT or {})
+            cached = dict(_R21H_STARTUP_PREWARM_RESULT or {})
+            try:
+                expected_id = str(cached.get("model_instance_id") or "")
+                if not expected_id:
+                    raise LocalModelEndpointError(
+                        "R21H FAST startup cached success is missing model_instance_id; "
+                        "retry refused"
+                    )
+                profile = runtime.profiles["fast"]
+                resident_id = runtime._probe_exact_fast_residency(
+                    profile,
+                    expected_id=expected_id,
+                )
+                if resident_id != expected_id:
+                    raise LocalModelEndpointError(
+                        "R21H FAST startup cached success no longer proves exact resident "
+                        "FAST; retry refused"
+                    )
+            except BaseException as exc:
+                _R21H_STARTUP_PREWARM_ERROR = f"{type(exc).__name__}: {exc}"
+                _R21H_STARTUP_PREWARM_STATE = "FAILED"
+                raise
+            return cached
+
         if _R21H_STARTUP_PREWARM_STATE == "FAILED":
             detail = (
                 f": {_R21H_STARTUP_PREWARM_ERROR}"
@@ -116,7 +140,7 @@ def serve(
         admissions = _r21g_api.ShadowMemoryAdmissionQueue(queue_path)
 
         # Construction binds the socket. Keep it strictly after successful
-        # prewarm so a bound R21H server never advertises a cold FAST startup.
+        # prewarm/revalidation so a bound R21H server never advertises cold FAST.
         server = _r21g_api._TwinServer((host, int(port)), _r21g_api._Handler)
         server.runtime = runtime
         server.admissions = admissions
