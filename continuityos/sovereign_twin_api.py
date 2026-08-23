@@ -24,6 +24,9 @@ for _legacy_name, _legacy_value in vars(_r21g_api).items():
         globals().setdefault(_legacy_name, _legacy_value)
 del _legacy_name, _legacy_value
 
+# Preserve monkeypatch semantics for inherited R21G request dispatch.
+_r21g_api.run_deep_lite = lambda *args, **kwargs: run_deep_lite(*args, **kwargs)
+
 
 _R21H_STARTUP_PREWARM_LOCK = Lock()
 _R21H_STARTUP_PREWARM_STATE = "NOT_STARTED"

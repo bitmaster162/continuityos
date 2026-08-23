@@ -19,6 +19,11 @@ for _legacy_name, _legacy_value in vars(_r21g).items():
         globals().setdefault(_legacy_name, _legacy_value)
 del _legacy_name, _legacy_value
 
+# Preserve timing / transport monkeypatch semantics across the R21H facade.
+_r21g.perf_counter = lambda: perf_counter()
+_r21g.sleep = lambda seconds: sleep(seconds)
+_r21g.urlopen = lambda *args, **kwargs: urlopen(*args, **kwargs)
+
 FAST_STARTUP_PREWARM_QUERY = (
     "Sovereign Twin startup prewarm only. Reply exactly FAST_PREWARM_OK."
 )
