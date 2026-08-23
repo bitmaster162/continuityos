@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable, Mapping
 from urllib.error import URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from ._version import __version__
@@ -51,6 +52,26 @@ def _is_loopback_host(host: str) -> bool:
         return ipaddress.ip_address(value).is_loopback
     except ValueError:
         return False
+
+
+def _is_loopback_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return (
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname is not None
+        and _is_loopback_host(parsed.hostname)
+        and parsed.username is None
+        and parsed.password is None
+    )
+
+
+def _validate_local_config(host: str, config: ControlCenterConfig) -> None:
+    if not _is_loopback_host(host):
+        raise ValueError("Control Center refuses non-loopback bind")
+    if not _is_loopback_url(config.twin_url):
+        raise ValueError("Control Center refuses non-loopback Twin URL")
+    if not _is_loopback_url(config.lm_studio_url):
+        raise ValueError("Control Center refuses non-loopback LM Studio URL")
 
 
 def _json_get(url: str, *, timeout: float = 2.0) -> dict:
@@ -433,9 +454,8 @@ def serve(
     port: int = DEFAULT_PORT,
     config: ControlCenterConfig | None = None,
 ) -> None:
-    if not _is_loopback_host(host):
-        raise ValueError("Control Center refuses non-loopback bind")
     active_config = config or ControlCenterConfig(runtime_root=default_runtime_root())
+    _validate_local_config(host, active_config)
     server = ThreadingHTTPServer((host, port), _make_handler(active_config))
     try:
         server.serve_forever()
@@ -459,12 +479,19 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     if args.cmd != "serve":
         return 2
-    if not _is_loopback_host(args.host):
+    config = ControlCenterConfig(
+        runtime_root=Path(args.runtime_root).expanduser(),
+        twin_url=args.twin_url,
+        lm_studio_url=args.lm_studio_url,
+    )
+    try:
+        _validate_local_config(args.host, config)
+    except ValueError as exc:
         print(
             json.dumps(
                 {
                     "ok": False,
-                    "error": "Control Center refuses non-loopback bind",
+                    "error": str(exc),
                     "read_only": True,
                     "execution_authority": "NONE",
                     "can_execute": False,
@@ -473,11 +500,6 @@ def main(argv=None) -> int:
             )
         )
         return 2
-    config = ControlCenterConfig(
-        runtime_root=Path(args.runtime_root).expanduser(),
-        twin_url=args.twin_url,
-        lm_studio_url=args.lm_studio_url,
-    )
     serve(host=args.host, port=args.port, config=config)
     return 0
 
