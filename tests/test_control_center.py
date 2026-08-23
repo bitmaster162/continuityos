@@ -214,6 +214,18 @@ def test_http_surface_has_only_read_routes(tmp_path: Path):
         thread.join(timeout=2.0)
 
 
-def test_pyproject_exposes_control_center_console_script():
-    text = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'continuityos-control-center = "continuityos.control_center:main"' in text
+def test_control_center_console_script_is_packaged():
+    project = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    expected = 'continuityos-control-center = "continuityos.control_center:main"'
+    if project.is_file():
+        assert expected in project.read_text(encoding="utf-8")
+        return
+
+    from importlib.metadata import distribution
+
+    scripts = {
+        entry.name: entry.value
+        for entry in distribution("continuityos").entry_points
+        if entry.group == "console_scripts"
+    }
+    assert scripts.get("continuityos-control-center") == "continuityos.control_center:main"
