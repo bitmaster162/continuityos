@@ -216,10 +216,18 @@ def test_api_prewarm_runs_at_most_once_per_process(monkeypatch):
         def __init__(self, *args, **kwargs):
             events.append("runtime")
             self.memory_db = "C:/memory.db"
+            self.profiles = dict(DEFAULT_PROFILES)
 
         def prewarm_fast_startup(self):
             events.append("prewarm")
             return {"ok": True, "model_instance_id": "fast-1"}
+
+        def _probe_exact_fast_residency(self, profile, *, expected_id=None):
+            events.append("revalidate")
+            assert profile.model == DEFAULT_PROFILES["fast"].model
+            assert profile.context_length == DEFAULT_PROFILES["fast"].context_length
+            assert expected_id == "fast-1"
+            return expected_id
 
         def close(self):
             events.append("runtime.close")
