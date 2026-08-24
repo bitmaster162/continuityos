@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://continuityos.local/schemas/company_twin_policy_p2c.schema.json",
+  "title": "Company Twin P2C Policy",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "tenant_id",
+    "actors",
+    "grants",
+    "delegations",
+    "explicit_denies",
+    "revoked_delegation_ids"
+  ],
+  "properties": {
+    "schema_version": {"const": "company-twin-p2c/1"},
+    "tenant_id": {"type": "string", "minLength": 1},
+    "max_delegation_depth": {"type": "integer", "minimum": 1},
+    "actors": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "principal_id", "actor_kind", "role", "scopes"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "principal_id": {"type": "string", "minLength": 1},
+          "actor_kind": {"enum": ["HUMAN", "AGENT", "SERVICE"]},
+          "role": {"enum": ["DIRECTOR", "WORKER", "AGENT", "SERVICE"]},
+          "manager_actor_id": {"type": "string"},
+          "scopes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+        }
+      }
+    },
+    "grants": {"type": "array", "items": {"type": "object", "required": ["id", "actor_id", "actions", "scopes"]}},
+    "delegations": {"type": "array", "items": {"type": "object", "required": ["id", "grantor_actor_id", "grantee_actor_id", "actions", "scopes"]}},
+    "explicit_denies": {"type": "array", "items": {"type": "object", "required": ["id", "actor_id", "action", "scope"]}},
+    "revoked_delegation_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
+  }
+}
