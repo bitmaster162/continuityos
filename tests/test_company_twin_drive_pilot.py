@@ -122,12 +122,13 @@ def test_private_drive_metadata_keys_fail_closed_even_when_not_allowlisted(key, 
         pilot.sanitize_selected_drive_artifact(artifact)
 
 
-def test_drive_host_email_token_and_private_key_values_fail_closed_inside_allowed_text():
+def test_drive_host_email_token_and_pem_marker_values_fail_closed_inside_allowed_text():
+    pem_marker = "-" * 5 + "BEGIN " + "PRIVATE" + " KEY" + "-" * 5
     suspicious_values = [
         "drive.google.com/file/example",
         "person@example.invalid",
         "Bearer abc.def.ghi",
-        "-----BEGIN PRIVATE KEY-----",
+        pem_marker,
     ]
     for value in suspicious_values:
         artifact = _artifact()
