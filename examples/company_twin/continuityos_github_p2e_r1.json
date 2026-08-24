@@ -1,0 +1,183 @@
+{
+  "artifacts": [
+    {
+      "artifact_type": "issue",
+      "effective_at": "2026-08-23T23:50:09Z",
+      "observed_at": "2026-08-24T00:23:26Z",
+      "payload": {
+        "created_at": "2026-08-23T23:50:09Z",
+        "number": 123,
+        "state": "open",
+        "title": "P2: Company Twin / Organizational Memory Foundation",
+        "updated_at": "2026-08-24T00:23:26Z"
+      },
+      "public": true,
+      "raw_ref": "https://github.com/bitmaster162/continuityos/issues/123",
+      "repository": "bitmaster162/continuityos",
+      "revision_id": "open:2026-08-24T00:23:26Z",
+      "source_id": "issue:123"
+    },
+    {
+      "artifact_type": "pull_request",
+      "effective_at": "2026-08-24T00:22:57Z",
+      "observed_at": "2026-08-24T00:22:58Z",
+      "payload": {
+        "base_sha": "9adb8ecc82f91adeb00c4f1af2d386954f49477a",
+        "created_at": "2026-08-24T00:08:09Z",
+        "head_sha": "e9d879cff9d1caf3e667e9043221e68c5b72511d",
+        "merge_commit_sha": "72f3811c8bdd9def7b29c79dad4f2172f462af9d",
+        "merged": true,
+        "merged_at": "2026-08-24T00:22:57Z",
+        "number": 124,
+        "state": "closed",
+        "title": "P2A: synthetic 12-month Company Twin foundation"
+      },
+      "public": true,
+      "raw_ref": "https://github.com/bitmaster162/continuityos/pull/124",
+      "repository": "bitmaster162/continuityos",
+      "revision_id": "merged:72f3811c8bdd9def7b29c79dad4f2172f462af9d",
+      "source_id": "pr:124"
+    },
+    {
+      "artifact_type": "commit",
+      "effective_at": "2026-08-24T00:22:57Z",
+      "observed_at": "2026-08-24T00:22:57Z",
+      "payload": {
+        "committed_at": "2026-08-24T00:22:57Z",
+        "message": "P2A: synthetic 12-month Company Twin foundation (#124)",
+        "pull_request_number": 124,
+        "sha": "72f3811c8bdd9def7b29c79dad4f2172f462af9d"
+      },
+      "public": true,
+      "raw_ref": "https://github.com/bitmaster162/continuityos/commit/72f3811c8bdd9def7b29c79dad4f2172f462af9d",
+      "repository": "bitmaster162/continuityos",
+      "revision_id": "72f3811c8bdd9def7b29c79dad4f2172f462af9d",
+      "source_id": "commit:72f3811c8bdd9def7b29c79dad4f2172f462af9d"
+    },
+    {
+      "artifact_type": "pull_request",
+      "effective_at": "2026-08-24T01:23:50Z",
+      "observed_at": "2026-08-24T01:23:51Z",
+      "payload": {
+        "base_sha": "16531eabeddf36e45e98340d636199bf6265c58e",
+        "created_at": "2026-08-24T01:06:45Z",
+        "head_sha": "b369b58cec768b5e19d5de771d01c3fd7b530f80",
+        "merge_commit_sha": "a3bcc6088a3727d087efa50e9cc0e7e96fcd2b5a",
+        "merged": true,
+        "merged_at": "2026-08-24T01:23:50Z",
+        "number": 128,
+        "state": "closed",
+        "title": "P2C: Company Twin Director/Worker/Agent policy plane"
+      },
+      "public": true,
+      "raw_ref": "https://github.com/bitmaster162/continuityos/pull/128",
+      "repository": "bitmaster162/continuityos",
+      "revision_id": "merged:a3bcc6088a3727d087efa50e9cc0e7e96fcd2b5a",
+      "source_id": "pr:128"
+    },
+    {
+      "artifact_type": "commit",
+      "effective_at": "2026-08-24T01:23:50Z",
+      "observed_at": "2026-08-24T01:23:50Z",
+      "payload": {
+        "committed_at": "2026-08-24T01:23:50Z",
+        "message": "P2C: Company Twin Director/Worker/Agent policy plane (#128)",
+        "pull_request_number": 128,
+        "sha": "a3bcc6088a3727d087efa50e9cc0e7e96fcd2b5a"
+      },
+      "public": true,
+      "raw_ref": "https://github.com/bitmaster162/continuityos/commit/a3bcc6088a3727d087efa50e9cc0e7e96fcd2b5a",
+      "repository": "bitmaster162/continuityos",
+      "revision_id": "a3bcc6088a3727d087efa50e9cc0e7e96fcd2b5a",
+      "source_id": "commit:a3bcc6088a3727d087efa50e9cc0e7e96fcd2b5a"
+    },
+    {
+      "artifact_type": "workflow_run",
+      "effective_at": "2026-08-24T01:54:06Z",
+      "observed_at": "2026-08-24T01:54:06Z",
+      "payload": {
+        "completed_at": "2026-08-24T01:54:06Z",
+        "conclusion": "failure",
+        "created_at": "2026-08-24T01:50:11Z",
+        "display_title": "P2D: Company Twin Operating Console",
+        "failing_steps": [
+          "ubuntu / Python 3.11: Test clean source without installed package metadata",
+          "windows / Python 3.11: Test clean source without installed package metadata"
+        ],
+        "head_sha": "d85c95d6d3ad964fa66d9d768a17b3677a7b4e60",
+        "name": "review-gates",
+        "run_id": 32681056154,
+        "run_number": 895,
+        "status": "completed"
+      },
+      "public": true,
+      "raw_ref": "https://github.com/bitmaster162/continuityos/actions/runs/32681056154",
+      "repository": "bitmaster162/continuityos",
+      "revision_id": "run:32681056154:attempt:1",
+      "source_id": "workflow:32681056154"
+    },
+    {
+      "artifact_type": "workflow_run",
+      "effective_at": "2026-08-24T02:07:48Z",
+      "observed_at": "2026-08-24T02:07:48Z",
+      "payload": {
+        "completed_at": "2026-08-24T02:07:48Z",
+        "conclusion": "success",
+        "created_at": "2026-08-24T01:55:05Z",
+        "display_title": "P2D: Company Twin Operating Console",
+        "failing_steps": [],
+        "head_sha": "8df3c0d69fbea3cde1e532d0ea77a4407559cdac",
+        "name": "review-gates",
+        "run_id": 32681315315,
+        "run_number": 897,
+        "status": "completed"
+      },
+      "public": true,
+      "raw_ref": "https://github.com/bitmaster162/continuityos/actions/runs/32681315315",
+      "repository": "bitmaster162/continuityos",
+      "revision_id": "run:32681315315:attempt:1",
+      "source_id": "workflow:32681315315"
+    },
+    {
+      "artifact_type": "pull_request",
+      "effective_at": "2026-08-24T02:48:19Z",
+      "observed_at": "2026-08-24T02:48:19Z",
+      "payload": {
+        "base_sha": "a3bcc6088a3727d087efa50e9cc0e7e96fcd2b5a",
+        "created_at": "2026-08-24T01:50:08Z",
+        "head_sha": "8df3c0d69fbea3cde1e532d0ea77a4407559cdac",
+        "merge_commit_sha": "0429ea2ea836b0fcbcc390ebecb4d7e8fc02ed05",
+        "merged": true,
+        "merged_at": "2026-08-24T02:48:19Z",
+        "number": 132,
+        "state": "closed",
+        "title": "P2D: Company Twin Operating Console"
+      },
+      "public": true,
+      "raw_ref": "https://github.com/bitmaster162/continuityos/pull/132",
+      "repository": "bitmaster162/continuityos",
+      "revision_id": "merged:0429ea2ea836b0fcbcc390ebecb4d7e8fc02ed05",
+      "source_id": "pr:132"
+    },
+    {
+      "artifact_type": "commit",
+      "effective_at": "2026-08-24T02:48:19Z",
+      "observed_at": "2026-08-24T02:48:19Z",
+      "payload": {
+        "committed_at": "2026-08-24T02:48:19Z",
+        "message": "P2D: Company Twin Operating Console (#132)",
+        "pull_request_number": 132,
+        "sha": "0429ea2ea836b0fcbcc390ebecb4d7e8fc02ed05"
+      },
+      "public": true,
+      "raw_ref": "https://github.com/bitmaster162/continuityos/commit/0429ea2ea836b0fcbcc390ebecb4d7e8fc02ed05",
+      "repository": "bitmaster162/continuityos",
+      "revision_id": "0429ea2ea836b0fcbcc390ebecb4d7e8fc02ed05",
+      "source_id": "commit:0429ea2ea836b0fcbcc390ebecb4d7e8fc02ed05"
+    }
+  ],
+  "public": true,
+  "repository": "bitmaster162/continuityos",
+  "schema_version": "company-twin-p2e-r1-public-github/1",
+  "source_boundary": "PUBLIC_GITHUB_ONLY"
+}
