@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://continuityos.local/schemas/company-twin-lifecycle-p2e-r4.json",
+  "title": "Company Twin P2E-R4 Lifecycle Contracts",
+  "$defs": {
+    "lifecycleState": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "tenant_id",
+        "record_id",
+        "retention_class",
+        "assigned_at",
+        "assigned_by",
+        "retention_until",
+        "hold",
+        "state_hash"
+      ],
+      "properties": {
+        "schema_version": {"const": "company-twin-lifecycle/1"},
+        "tenant_id": {"type": "string", "minLength": 1},
+        "record_id": {"type": "string", "minLength": 1},
+        "retention_class": {"enum": ["TRANSIENT", "STANDARD", "EXTENDED", "INDEFINITE"]},
+        "assigned_at": {"type": "string", "format": "date-time"},
+        "assigned_by": {"type": "string", "minLength": 1},
+        "retention_until": {"type": ["string", "null"]},
+        "hold": {"type": "boolean"},
+        "hold_reason": {"type": ["string", "null"]},
+        "state_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": true
+    },
+    "tombstoneRequest": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "operation",
+        "tenant_id",
+        "record_id",
+        "requested_at",
+        "requested_by",
+        "reason",
+        "logical_only",
+        "physical_delete",
+        "event_id"
+      ],
+      "properties": {
+        "schema_version": {"const": "company-twin-lifecycle/1"},
+        "operation": {"const": "TOMBSTONE_REQUEST"},
+        "tenant_id": {"type": "string", "minLength": 1},
+        "record_id": {"type": "string", "minLength": 1},
+        "requested_at": {"type": "string", "format": "date-time"},
+        "requested_by": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+        "logical_only": {"const": true},
+        "physical_delete": {"const": false},
+        "event_id": {"type": "string", "pattern": "^life_[0-9a-f]{24}$"}
+      },
+      "additionalProperties": false
+    },
+    "purgeEligibility": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "tenant_id",
+        "record_id",
+        "evaluated_at",
+        "eligible",
+        "advisory_only",
+        "physical_delete",
+        "blockers",
+        "active_reference_ids",
+        "eligibility_hash"
+      ],
+      "properties": {
+        "schema_version": {"const": "company-twin-lifecycle/1"},
+        "tenant_id": {"type": "string", "minLength": 1},
+        "record_id": {"type": "string", "minLength": 1},
+        "evaluated_at": {"type": "string", "format": "date-time"},
+        "eligible": {"type": "boolean"},
+        "advisory_only": {"const": true},
+        "physical_delete": {"const": false},
+        "blockers": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "NOT_TOMBSTONED",
+              "HOLD_ACTIVE",
+              "RETENTION_INDEFINITE",
+              "RETENTION_NOT_EXPIRED",
+              "ACTIVE_REFERENCES"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "active_reference_ids": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "eligibility_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "exportBundle": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "read_only",
+        "tenant_id",
+        "authorized_scopes",
+        "requested_at",
+        "requested_by",
+        "include_tombstones",
+        "record_count",
+        "records",
+        "manifest_hash",
+        "receipt_hash"
+      ],
+      "properties": {
+        "schema_version": {"const": "company-twin-export/1"},
+        "read_only": {"const": true},
+        "tenant_id": {"type": "string", "minLength": 1},
+        "authorized_scopes": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "requested_at": {"type": "string", "format": "date-time"},
+        "requested_by": {"type": "string", "minLength": 1},
+        "include_tombstones": {"type": "boolean"},
+        "record_count": {"type": "integer", "minimum": 0},
+        "records": {"type": "array", "items": {"type": "object"}},
+        "manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "receipt_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    {"$ref": "#/$defs/lifecycleState"},
+    {"$ref": "#/$defs/tombstoneRequest"},
+    {"$ref": "#/$defs/purgeEligibility"},
+    {"$ref": "#/$defs/exportBundle"}
+  ]
+}
