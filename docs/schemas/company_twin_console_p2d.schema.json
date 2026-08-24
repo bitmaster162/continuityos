@@ -9,6 +9,7 @@
     "decision_lineages": {"type": "object"},
     "decisions": {"type": "array"},
     "delegations": {"type": "array"},
+    "entities": {"type": "array"},
     "evidence": {"type": "array"},
     "events": {"type": "array"},
     "governance": {
@@ -47,7 +48,7 @@
   },
   "required": [
     "schema_version", "read_only", "organization", "as_of", "principal_id", "actor",
-    "runtime", "governance", "capabilities", "counts", "timeline", "decisions",
+    "runtime", "governance", "capabilities", "counts", "timeline", "entities", "decisions",
     "decision_lineages", "proposals", "policy_receipts", "lifecycle_previews"
   ],
   "title": "ContinuityOS Company Twin P2D snapshot",
