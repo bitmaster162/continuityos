@@ -1,0 +1,70 @@
+{
+  "memory": {
+    "decisions": [
+      {"decided_at":"2026-01-10T10:10:00Z","evidence_ids":["ev_plan_r1"],"id":"dec_localfirst","rationale":"Preserve custody and governance.","scope":"company","supersedes":null,"title":"Keep ContinuityOS local-first","truth_class":"FACT"},
+      {"decided_at":"2026-03-15T09:20:00Z","evidence_ids":["ev_plan_r2"],"id":"dec_company_twin","rationale":"Extend continuity from person to organization.","scope":"company","supersedes":"dec_localfirst","title":"Add Company Twin product line","truth_class":"FACT"},
+      {"decided_at":"2026-05-20T16:20:00Z","evidence_ids":["ev_robot_prop"],"id":"dec_robot_research","rationale":"Prepare bounded robot workforce without execution authority.","scope":"team:engineering","supersedes":null,"title":"Allow managed research robot to read/propose","truth_class":"FACT"},
+      {"decided_at":"2026-02-01T08:10:00Z","evidence_ids":["ev_finance"],"id":"dec_finance_guard","rationale":"Finance remains restricted by source ACL.","scope":"restricted:finance","supersedes":null,"title":"Keep finance restricted","truth_class":"FACT"},
+      {"decided_at":"2026-08-24T01:23:50Z","evidence_ids":["ev_p2c"],"id":"dec_policy_plane","rationale":"Govern human and managed-agent access under one policy graph.","scope":"company","supersedes":"dec_company_twin","title":"Adopt Director/Worker/Agent policy plane","truth_class":"FACT"}
+    ],
+    "entities": [
+      {"created_at":"2026-01-01T00:00:00Z","id":"ent_company","name":"ContinuityOS Lab","scope":"company","truth_class":"FACT","type":"organization"},
+      {"created_at":"2026-01-01T00:00:00Z","id":"ent_eng","name":"Engineering","scope":"team:engineering","truth_class":"FACT","type":"team"},
+      {"created_at":"2026-01-01T00:00:00Z","id":"ent_ops","name":"Operations","scope":"team:operations","truth_class":"FACT","type":"team"},
+      {"created_at":"2026-01-01T00:00:00Z","id":"ent_fin","name":"Runway Plan","scope":"restricted:finance","truth_class":"FACT","type":"financial_plan"}
+    ],
+    "events": [
+      {"entity_ids":["ent_eng"],"evidence_ids":["ev_replay_fix"],"id":"evt_replay_fix","occurred_at":"2026-02-12T12:05:00Z","scope":"team:engineering","title":"Replay regression fixed","truth_class":"FACT"},
+      {"entity_ids":["ent_eng"],"evidence_ids":["ev_robot_prop"],"id":"evt_robot_prop","occurred_at":"2026-05-20T16:10:00Z","scope":"team:engineering","title":"Research robot submitted provenance proposal","truth_class":"FACT"},
+      {"entity_ids":["ent_company"],"evidence_ids":["ev_p2c"],"id":"evt_p2c","occurred_at":"2026-08-24T01:23:50Z","scope":"company","title":"P2C policy plane merged","truth_class":"FACT"},
+      {"entity_ids":["ent_ops"],"evidence_ids":["ev_ops"],"id":"evt_ops","occurred_at":"2026-08-24T01:30:00Z","scope":"team:operations","title":"Operations review complete","truth_class":"FACT"}
+    ],
+    "evidence": [
+      {"id":"ev_plan_r1","kind":"document","recorded_at":"2026-01-10T10:05:00Z","scope":"company","source_authority_id":"auth_drive","source_ref":"synthetic://drive/strategy?r=1","title":"2026 operating plan r1","truth_class":"EVIDENCE"},
+      {"id":"ev_finance","kind":"financial","recorded_at":"2026-02-01T08:05:00Z","scope":"restricted:finance","source_authority_id":"auth_finance","source_ref":"synthetic://drive/finance?r=1","title":"Runway 12 months","truth_class":"EVIDENCE"},
+      {"id":"ev_replay_fix","kind":"message","recorded_at":"2026-02-12T12:02:00Z","scope":"team:engineering","source_authority_id":"auth_slack","source_ref":"synthetic://slack/eng-thread-41?r=1","title":"Replay regression fixed","truth_class":"EVIDENCE"},
+      {"id":"ev_plan_r2","kind":"document","recorded_at":"2026-03-15T09:10:00Z","scope":"company","source_authority_id":"auth_drive","source_ref":"synthetic://drive/strategy?r=2","title":"2026 operating plan r2","truth_class":"EVIDENCE"},
+      {"id":"ev_robot_prop","kind":"message","recorded_at":"2026-05-20T16:05:00Z","scope":"team:engineering","source_authority_id":"auth_slack","source_ref":"synthetic://slack/agent-proposal-7?r=1","title":"Research robot provenance proposal","truth_class":"EVIDENCE"},
+      {"id":"ev_p2a","kind":"pull_request","recorded_at":"2026-08-24T00:22:57Z","scope":"company","source_authority_id":"auth_github","source_ref":"synthetic://github/pulls/124","title":"P2A merged","truth_class":"EVIDENCE"},
+      {"id":"ev_p2c","kind":"pull_request","recorded_at":"2026-08-24T01:23:50Z","scope":"company","source_authority_id":"auth_github","source_ref":"synthetic://github/pulls/128","title":"P2C policy plane merged","truth_class":"EVIDENCE"},
+      {"id":"ev_ops","kind":"message","recorded_at":"2026-08-24T01:30:00Z","scope":"team:operations","source_authority_id":"auth_slack","source_ref":"synthetic://slack/ops-review","title":"Operations review complete","truth_class":"EVIDENCE"},
+      {"classification":"CONFIDENTIAL","id":"ev_eng_secret","kind":"document","recorded_at":"2026-08-24T01:31:00Z","scope":"team:engineering","source_authority_id":"auth_drive","source_ref":"synthetic://drive/eng-secret","title":"Confidential engineering note","truth_class":"EVIDENCE"},
+      {"id":"ev_other_tenant","kind":"document","recorded_at":"2026-08-24T01:32:00Z","scope":"company","source_authority_id":"auth_drive","source_ref":"synthetic://other-tenant/secret","tenant_id":"tenant_other","title":"Other tenant secret","truth_class":"EVIDENCE"}
+    ],
+    "inferences": [
+      {"claim":"Managed robots can add research capacity without inheriting human execution authority.","confidence":0.84,"created_at":"2026-05-21T12:00:00Z","decision_ids":["dec_robot_research"],"event_ids":["evt_robot_prop"],"evidence_ids":["ev_robot_prop"],"id":"inf_robot","scope":"team:engineering","truth_class":"INFERENCE"}
+    ],
+    "organization": {"id":"org_continuityos_lab","industry":"AI infrastructure","name":"ContinuityOS Lab","synthetic":true},
+    "outcomes": [
+      {"decision_id":"dec_company_twin","evidence_ids":["ev_p2a"],"id":"out_company_twin","occurred_at":"2026-08-24T00:22:57Z","scope":"company","title":"P2A Company Twin foundation merged","truth_class":"FACT"},
+      {"decision_id":"dec_policy_plane","evidence_ids":["ev_p2c"],"id":"out_policy","occurred_at":"2026-08-24T01:23:50Z","scope":"company","title":"P2C policy qualification passed","truth_class":"FACT"}
+    ],
+    "period": {"end":"2026-12-31T23:59:59Z","start":"2026-01-01T00:00:00Z"},
+    "principals": [
+      {"id":"principal_director","name":"ContinuityOS Director","role":"DIRECTOR","scopes":["company","team:engineering","team:operations","restricted:finance"]},
+      {"id":"principal_eng_worker","name":"Engineering Worker","role":"WORKER","scopes":["company","team:engineering"]},
+      {"id":"principal_ops_worker","name":"Operations Worker","role":"WORKER","scopes":["company","team:operations"]},
+      {"id":"principal_research_robot","name":"Research Robot","role":"AGENT","scopes":["company","team:engineering"]}
+    ],
+    "process_observations": [
+      {"evidence_ids":["ev_replay_fix"],"id":"proc_replay","observed_at":"2026-02-13T12:00:00Z","scope":"team:engineering","title":"Replay regression checks precede merge","truth_class":"FACT"},
+      {"evidence_ids":["ev_ops"],"id":"proc_ops","observed_at":"2026-08-24T01:31:00Z","scope":"team:operations","title":"Operations reviews preserve read-only gates","truth_class":"FACT"}
+    ],
+    "relationships": [
+      {"effective_from":"2026-01-01T00:00:00Z","from_entity_id":"ent_eng","id":"rel_eng_company","relation":"PART_OF","scope":"team:engineering","to_entity_id":"ent_company","truth_class":"FACT"},
+      {"effective_from":"2026-01-01T00:00:00Z","from_entity_id":"ent_ops","id":"rel_ops_company","relation":"PART_OF","scope":"team:operations","to_entity_id":"ent_company","truth_class":"FACT"},
+      {"effective_from":"2026-01-01T00:00:00Z","from_entity_id":"ent_fin","id":"rel_fin_company","relation":"GOVERNS_BUDGET","scope":"restricted:finance","to_entity_id":"ent_company","truth_class":"FACT"}
+    ],
+    "schema_version":"company-twin-p2a/1",
+    "source_authorities": [
+      {"authority":"SOURCE","id":"auth_drive","name":"Synthetic Drive"},
+      {"authority":"SOURCE","id":"auth_slack","name":"Synthetic Slack"},
+      {"authority":"SOURCE","id":"auth_github","name":"Synthetic GitHub"},
+      {"authority":"RESTRICTED_SOURCE","id":"auth_finance","name":"Synthetic Finance"}
+    ]
+  },
+  "policy_ref":"../company_twin_policy/continuityos_lab_policy.json",
+  "proposals":[{"actor_principal_id":"principal_research_robot","classification":"INTERNAL","created_at":"2026-05-20T16:00:00Z","id":"proposal_provenance_receipts","scope":"team:engineering","status":"PENDING_HUMAN_REVIEW","summary":"Add provenance receipts to Company Twin evidence flow."}],
+  "runtime":{"can_execute":false,"execution_authority":"NONE","mode":"LOCAL_SHADOW","read_only":true,"twin_baseline":"R21H"},
+  "schema_version":"company-twin-console-bundle/1"
+}

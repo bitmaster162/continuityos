@@ -1,0 +1,55 @@
+{
+  "$id": "https://continuityos.local/schemas/company_twin_console_p2d.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "actor": {"required": ["id", "actor_kind", "role"], "type": "object"},
+    "as_of": {"type": "string"},
+    "capabilities": {"type": "object"},
+    "decision_lineages": {"type": "object"},
+    "decisions": {"type": "array"},
+    "delegations": {"type": "array"},
+    "evidence": {"type": "array"},
+    "events": {"type": "array"},
+    "governance": {
+      "properties": {
+        "can_execute": {"const": false},
+        "can_trade": {"const": false},
+        "capital_permission": {"const": "DENY"},
+        "execution_authority": {"const": "NONE"}
+      },
+      "required": ["execution_authority", "can_execute", "can_trade", "capital_permission"],
+      "type": "object"
+    },
+    "inferences": {"type": "array"},
+    "lifecycle_previews": {"type": "array"},
+    "organization": {"type": "object"},
+    "organization_graph": {"type": "object"},
+    "outcomes": {"type": "array"},
+    "policy_receipts": {"type": "array"},
+    "principal_id": {"minLength": 1, "type": "string"},
+    "process_observations": {"type": "array"},
+    "proposals": {"type": "array"},
+    "read_only": {"const": true},
+    "relationships": {"type": "array"},
+    "runtime": {
+      "properties": {
+        "can_execute": {"const": false},
+        "execution_authority": {"const": "NONE"},
+        "read_only": {"const": true}
+      },
+      "required": ["read_only", "execution_authority", "can_execute"],
+      "type": "object"
+    },
+    "schema_version": {"const": "company-twin-console-snapshot/1"},
+    "timeline": {"type": "array"},
+    "counts": {"type": "object"}
+  },
+  "required": [
+    "schema_version", "read_only", "organization", "as_of", "principal_id", "actor",
+    "runtime", "governance", "capabilities", "counts", "timeline", "decisions",
+    "decision_lineages", "proposals", "policy_receipts", "lifecycle_previews"
+  ],
+  "title": "ContinuityOS Company Twin P2D snapshot",
+  "type": "object"
+}
