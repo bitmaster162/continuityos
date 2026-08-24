@@ -531,6 +531,7 @@ def build_snapshot(
         "organization_graph": _organization_graph(policy, actor),
         "counts": {collection: len(filtered[collection]) for collection in RECORD_COLLECTIONS},
         "timeline": _timeline(filtered),
+        "entities": filtered["entities"],
         "decisions": filtered["decisions"],
         "decision_lineages": _decision_lineages(filtered),
         "evidence": filtered["evidence"],
