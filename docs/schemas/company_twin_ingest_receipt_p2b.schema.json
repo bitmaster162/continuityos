@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://continuityos.local/schemas/company-twin-ingest-receipt-p2b.json",
+  "title": "Company Twin P2B Deterministic Ingestion Receipt",
+  "type": "object",
+  "required": ["schema_version", "tenant_id", "connector_id", "parser_version", "cursor_before", "cursor_after", "accepted", "accepted_ids", "idempotent", "idempotent_ids", "quarantined", "quarantine_ids", "manifest_hash", "receipt_hash"],
+  "properties": {
+    "schema_version": {"const": "company-twin-ingest-receipt/1"},
+    "tenant_id": {"type": "string", "minLength": 1},
+    "connector_id": {"type": "string", "minLength": 1},
+    "parser_version": {"const": "company-twin-p2b/1"},
+    "cursor_before": {"type": ["string", "null"]},
+    "cursor_after": {"type": "string", "minLength": 1},
+    "accepted": {"type": "integer", "minimum": 0},
+    "accepted_ids": {"type": "array", "items": {"type": "string"}},
+    "idempotent": {"type": "integer", "minimum": 0},
+    "idempotent_ids": {"type": "array", "items": {"type": "string"}},
+    "quarantined": {"type": "integer", "minimum": 0},
+    "quarantine_ids": {"type": "array", "items": {"type": "string"}},
+    "manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "receipt_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

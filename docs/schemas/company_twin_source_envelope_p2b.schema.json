@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://continuityos.local/schemas/company-twin-source-envelope-p2b.json",
+  "title": "Company Twin P2B Canonical Source Envelope",
+  "type": "object",
+  "required": ["schema_version", "tenant_id", "connector_id", "source_system", "source_object_type", "source_object_id", "revision_id", "observed_at", "effective_at", "acl", "payload", "raw_ref", "cursor", "actor"],
+  "properties": {
+    "schema_version": {"const": "company-twin-source-envelope/1"},
+    "tenant_id": {"type": "string", "minLength": 1},
+    "connector_id": {"type": "string", "minLength": 1},
+    "source_system": {"type": "string", "minLength": 1},
+    "source_object_type": {"type": "string", "minLength": 1},
+    "source_object_id": {"type": "string", "minLength": 1},
+    "revision_id": {"type": "string", "minLength": 1},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "effective_at": {"type": "string", "format": "date-time"},
+    "acl": {
+      "type": "object",
+      "required": ["visibility", "scope"],
+      "properties": {
+        "visibility": {"enum": ["COMPANY", "TEAM", "PERSONAL", "RESTRICTED"]},
+        "scope": {"type": "string", "minLength": 1}
+      }
+    },
+    "payload": {},
+    "raw_ref": {"type": "string", "minLength": 1},
+    "cursor": {"type": "string", "minLength": 1},
+    "deleted": {"type": "boolean", "default": false},
+    "content_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "actor": {
+      "type": "object",
+      "required": ["actor_id", "actor_kind", "authority_class"],
+      "properties": {
+        "actor_id": {"type": "string", "minLength": 1},
+        "actor_kind": {"enum": ["HUMAN", "AGENT", "SERVICE"]},
+        "role": {"type": ["string", "null"]},
+        "manager_actor_id": {"type": ["string", "null"]},
+        "authority_class": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}
