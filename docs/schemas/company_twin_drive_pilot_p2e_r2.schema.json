@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://continuityos.local/schemas/company-twin-drive-pilot-p2e-r2.json",
+  "title": "Company Twin P2E-R2 Selected Drive Sanitized Fixture",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source_boundary", "artifact_count", "artifact"],
+  "properties": {
+    "schema_version": {"const": "company-twin-p2e-r2-selected-drive/1"},
+    "source_boundary": {"const": "SELECTED_DRIVE_ONE_FOLDER_ONE_FILE_REDACTED"},
+    "artifact_count": {"const": 1},
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_type", "source_locator_hash", "folder_title", "file_name", "mime_type",
+        "size_bytes", "source_created_at", "source_modified_at", "published_date", "title",
+        "language", "description", "claims", "content_digest"
+      ],
+      "properties": {
+        "source_type": {"const": "google_drive_selected_file"},
+        "source_locator_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "folder_title": {"const": "why-continuityos-may-fail-an-adversarial-analysis"},
+        "file_name": {"const": "index.html"},
+        "mime_type": {"const": "text/html"},
+        "size_bytes": {"type": "integer", "minimum": 1, "maximum": 1000000},
+        "source_created_at": {"type": "string", "format": "date-time"},
+        "source_modified_at": {"type": "string", "format": "date-time"},
+        "published_date": {"type": "string", "format": "date"},
+        "title": {"type": "string", "minLength": 1},
+        "language": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "minLength": 1},
+        "claims": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {"type": "string", "minLength": 1, "maxLength": 400}
+        },
+        "content_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}
