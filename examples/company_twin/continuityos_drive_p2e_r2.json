@@ -1,0 +1,25 @@
+{
+  "schema_version": "company-twin-p2e-r2-selected-drive/1",
+  "source_boundary": "SELECTED_DRIVE_ONE_FOLDER_ONE_FILE_REDACTED",
+  "artifact_count": 1,
+  "artifact": {
+    "source_type": "google_drive_selected_file",
+    "source_locator_hash": "844fac7468cebce89c71d1749bcf762676f2f14754a63acf4ae0605321825333",
+    "folder_title": "why-continuityos-may-fail-an-adversarial-analysis",
+    "file_name": "index.html",
+    "mime_type": "text/html",
+    "size_bytes": 32773,
+    "source_created_at": "2026-08-22T00:31:03.858Z",
+    "source_modified_at": "2026-07-06T17:43:50.717Z",
+    "published_date": "2026-07-04",
+    "title": "Why ContinuityOS May Fail: An Adversarial Analysis",
+    "language": "ru",
+    "description": "An adversarial strategic analysis of ContinuityOS evaluating market viability, competitive overlap, adoption friction, integration barriers, and failure modes.",
+    "claims": [
+      "An adversarial strategic analysis of ContinuityOS.",
+      "Evaluates market viability and competitive overlap with enterprise agent governance tools.",
+      "Outlines adoption friction, developer integration barriers, and failure modes."
+    ],
+    "content_digest": "9cb98731fbea01f5b275c61c50825d9118c063fa4db6f4d0ad3a96c0b58925c2"
+  }
+}
