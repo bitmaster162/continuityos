@@ -1,0 +1,20 @@
+{
+  "schema_version": "company-twin-p2e-r3-internal-core/1",
+  "source_boundary": "SELECTED_INTERNAL_CORE_ONE_FILE_REDACTED_CHUNKED",
+  "artifact_count": 1,
+  "artifact": {
+    "source_type": "google_drive_selected_internal_file",
+    "source_locator_hash": "cdb473d8a8fa4da16126493bd5e87c387b70ed21bc75eaa9d0a5493f47f2b8a5",
+    "file_name": "ContinuityOS_Core.md",
+    "mime_type": "text/markdown",
+    "size_bytes": 111562,
+    "source_observed_at": "2026-08-21T18:53:13.329Z",
+    "source_modified_at": "2026-07-06T21:27:17.308Z",
+    "document_title": "ContinuityOS Core & Ecosystem",
+    "language": "mixed",
+    "excerpt_kind": "sanitized_bounded_internal_excerpt",
+    "redaction_profile": "P2E_R3_STRICT_NO_PROVIDER_IDS_NO_PII_NO_CREDENTIALS",
+    "sanitized_markdown": "# ContinuityOS Core & Ecosystem\n\n## Source section: AUDIT_DEVIL_2026-06-17\n\nThe internal audit describes ContinuityOS as a local-first system spanning memory, continuity, twin, governance and control layers. It records that the early implementation was still an MVP and that several product claims required stronger technical proof.\n\nThe audit identifies concrete weaknesses: the default hashing embedder is not true semantic retrieval; brute-force vector search will not scale indefinitely; twin prediction and alignment were heuristic; council identities were not persistent; SQLite remained a single-writer constraint; and the product had not yet proved distribution or user demand.\n\nThe same section recommends a small set of corrective moves: add a real optional local embedder and ANN index, benchmark recall quality, strengthen persistent actor identity and auditability, and ship public proof rather than adding architecture indefinitely.\n\n## Source section: AUDIT_GATEWAY_DEVIL_2026-06-17\n\nThe gateway audit records adversarial failures in command classification and warns that a benchmark built from the same rules as the classifier can overstate safety. It also states that continuity context had not yet been wired into the preflight path, that rollback inventory was not equivalent to a recoverable snapshot, and that cooperative hooks are weaker than enforced isolation.\n\nThe audit treats those findings as evidence for stricter fail-closed governance, stronger policy enforcement and test sets that include adversarial bypass attempts instead of only expected happy paths.\n\n## Source section: product direction\n\nAcross the compiled guide, the recurring product direction is to distinguish ContinuityOS from generic agent memory by combining durable state, continuity, evidence-grounded twin behavior and auditable governance. The document repeatedly emphasizes proof, provenance and bounded authority rather than autonomous execution.\n\nThe selected P2E-R3 fixture intentionally preserves only these bounded, source-attributable statements. It does not preserve the full internal document, personal metadata, provider identifiers, credentials, private links, customer data or operational secrets.\n",
+    "sanitized_document_digest": "0d896a244af1f307e20817b9cd7a0c1b515ee099d78434bb7688dbfeabf20489"
+  }
+}
