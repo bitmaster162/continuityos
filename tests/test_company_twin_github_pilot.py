@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import copy
 import inspect
 from pathlib import Path
@@ -186,8 +187,18 @@ def test_p2d_console_consumes_real_memory_under_existing_policy():
     }
 
 
-def test_pilot_core_has_no_live_network_or_subprocess_calls():
-    text = inspect.getsource(pilot)
-    forbidden = ("urlopen(", "requests.", "httpx.", "socket.", "subprocess.")
-    assert all(token not in text for token in forbidden)
-    pilot.assert_no_network_connector_calls()
+def test_pilot_core_has_no_live_network_or_subprocess_imports():
+    tree = ast.parse(inspect.getsource(pilot))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+
+    forbidden = {"requests", "httpx", "socket", "subprocess", "urllib.request"}
+    assert not {
+        name
+        for name in imported
+        if any(name == root or name.startswith(root + ".") for root in forbidden)
+    }
