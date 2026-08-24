@@ -212,19 +212,23 @@ def test_projection_is_valid_real_p2a_memory_with_only_evidence_and_explicit_fac
     assert authority["parent_document_digest"] == _artifact()["sanitized_document_digest"]
 
 
-def test_historical_replay_hides_internal_core_before_source_effective_time():
+def test_historical_replay_is_fail_closed_before_period_and_starts_at_source_effective_time():
     store, _ = _ingested()
     dataset = pilot.project_internal_core_to_company_twin(store.records)
-    before = replay(dataset, principal_id="principal_director", as_of="2026-07-06T20:00:00Z")
-    after = replay(dataset, principal_id="principal_director", as_of="2026-07-07T00:00:00Z")
-    assert before["evidence"] == [] and before["events"] == []
-    assert len(after["evidence"]) == len(pilot.chunk_sanitized_markdown(_artifact()))
-    assert {item["id"] for item in after["events"]} == {"evt_internal_core_selected_snapshot"}
+    with pytest.raises(ValueError, match="as_of must fall inside dataset period"):
+        replay(dataset, principal_id="principal_director", as_of="2026-07-06T20:00:00Z")
+    at_start = replay(
+        dataset,
+        principal_id="principal_director",
+        as_of="2026-07-06T21:27:17.308Z",
+    )
+    assert len(at_start["evidence"]) == len(pilot.chunk_sanitized_markdown(_artifact()))
+    assert {item["id"] for item in at_start["events"]} == {"evt_internal_core_selected_snapshot"}
 
 
 def test_existing_p2c_policy_and_p2d_console_apply_to_internal_core_chunks():
     store, _ = _ingested()
-    as_of = "2026-08-22T00:00:00Z"
+    as_of = "2026-08-21T18:53:13.329Z"
     director = pilot.build_pilot_console_snapshot(store.records, principal_id="principal_director", as_of=as_of)
     engineer = pilot.build_pilot_console_snapshot(store.records, principal_id="principal_eng_worker", as_of=as_of)
     robot = pilot.build_pilot_console_snapshot(store.records, principal_id="principal_research_robot", as_of=as_of)
