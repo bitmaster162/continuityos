@@ -1,0 +1,123 @@
+{
+  "actors": [
+    {
+      "actor_kind": "HUMAN",
+      "id": "actor_director",
+      "name": "ContinuityOS Director",
+      "principal_id": "principal_director",
+      "role": "DIRECTOR",
+      "scopes": ["company", "team:engineering", "team:operations", "restricted:finance"]
+    },
+    {
+      "actor_kind": "HUMAN",
+      "id": "actor_eng",
+      "name": "Engineering Worker",
+      "principal_id": "principal_eng_worker",
+      "role": "WORKER",
+      "scopes": ["company", "team:engineering"]
+    },
+    {
+      "actor_kind": "HUMAN",
+      "id": "actor_ops",
+      "name": "Operations Worker",
+      "principal_id": "principal_ops_worker",
+      "role": "WORKER",
+      "scopes": ["company", "team:operations"]
+    },
+    {
+      "actor_kind": "AGENT",
+      "id": "actor_robot",
+      "manager_actor_id": "actor_eng",
+      "name": "Research Robot",
+      "principal_id": "principal_research_robot",
+      "role": "AGENT",
+      "scopes": ["team:engineering"]
+    }
+  ],
+  "delegations": [
+    {
+      "actions": ["READ", "PROPOSE"],
+      "classifications": ["PUBLIC", "INTERNAL"],
+      "expires_at": "2026-12-31T23:59:59Z",
+      "grantee_actor_id": "actor_robot",
+      "grantor_actor_id": "actor_director",
+      "id": "deleg_director_robot_eng",
+      "purposes": ["research"],
+      "scopes": ["team:engineering"]
+    }
+  ],
+  "explicit_denies": [
+    {"action": "READ", "actor_id": "actor_eng", "id": "deny_eng_fin", "scope": "restricted:finance"},
+    {"action": "READ", "actor_id": "actor_ops", "id": "deny_ops_eng", "scope": "team:engineering"}
+  ],
+  "grants": [
+    {
+      "actions": ["READ", "PROPOSE", "APPROVE", "DELEGATE", "REVOKE", "EXPORT", "DELETE", "LEGAL_HOLD"],
+      "actor_id": "actor_director",
+      "classifications": ["PUBLIC", "INTERNAL", "CONFIDENTIAL"],
+      "id": "grant_director_company",
+      "purposes": ["governance", "operations", "engineering", "research", "audit"],
+      "scopes": ["company"]
+    },
+    {
+      "actions": ["READ", "PROPOSE", "APPROVE", "DELEGATE", "REVOKE", "EXPORT", "DELETE", "LEGAL_HOLD"],
+      "actor_id": "actor_director",
+      "classifications": ["PUBLIC", "INTERNAL", "CONFIDENTIAL"],
+      "id": "grant_director_eng",
+      "purposes": ["governance", "engineering", "research", "audit"],
+      "scopes": ["team:engineering"]
+    },
+    {
+      "actions": ["READ", "PROPOSE", "APPROVE", "DELEGATE", "REVOKE", "EXPORT", "DELETE", "LEGAL_HOLD"],
+      "actor_id": "actor_director",
+      "classifications": ["PUBLIC", "INTERNAL", "CONFIDENTIAL"],
+      "id": "grant_director_ops",
+      "purposes": ["governance", "operations", "audit"],
+      "scopes": ["team:operations"]
+    },
+    {
+      "actions": ["READ", "EXPORT", "DELETE", "LEGAL_HOLD"],
+      "actor_id": "actor_director",
+      "classifications": ["CONFIDENTIAL", "RESTRICTED"],
+      "id": "grant_director_fin",
+      "purposes": ["governance", "finance", "audit"],
+      "scopes": ["restricted:finance"]
+    },
+    {
+      "actions": ["READ", "PROPOSE"],
+      "actor_id": "actor_eng",
+      "classifications": ["PUBLIC", "INTERNAL"],
+      "id": "grant_eng_company",
+      "purposes": ["engineering", "research"],
+      "scopes": ["company"]
+    },
+    {
+      "actions": ["READ", "PROPOSE"],
+      "actor_id": "actor_eng",
+      "classifications": ["PUBLIC", "INTERNAL", "CONFIDENTIAL"],
+      "id": "grant_eng_team",
+      "purposes": ["engineering", "research"],
+      "scopes": ["team:engineering"]
+    },
+    {
+      "actions": ["READ", "PROPOSE"],
+      "actor_id": "actor_ops",
+      "classifications": ["PUBLIC", "INTERNAL"],
+      "id": "grant_ops_company",
+      "purposes": ["operations"],
+      "scopes": ["company"]
+    },
+    {
+      "actions": ["READ", "PROPOSE"],
+      "actor_id": "actor_ops",
+      "classifications": ["PUBLIC", "INTERNAL", "CONFIDENTIAL"],
+      "id": "grant_ops_team",
+      "purposes": ["operations"],
+      "scopes": ["team:operations"]
+    }
+  ],
+  "max_delegation_depth": 3,
+  "revoked_delegation_ids": [],
+  "schema_version": "company-twin-p2c/1",
+  "tenant_id": "tenant_continuityos_lab"
+}
