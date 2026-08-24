@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://continuityos.local/schemas/company-twin-internal-core-p2e-r3.json",
+  "title": "Company Twin P2E-R3 Selected Internal Core Fixture",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source_boundary", "artifact_count", "artifact"],
+  "properties": {
+    "schema_version": {"const": "company-twin-p2e-r3-internal-core/1"},
+    "source_boundary": {"const": "SELECTED_INTERNAL_CORE_ONE_FILE_REDACTED_CHUNKED"},
+    "artifact_count": {"const": 1},
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_type", "source_locator_hash", "file_name", "mime_type", "size_bytes",
+        "source_observed_at", "source_modified_at", "document_title", "language",
+        "excerpt_kind", "redaction_profile", "sanitized_markdown", "sanitized_document_digest"
+      ],
+      "properties": {
+        "source_type": {"const": "google_drive_selected_internal_file"},
+        "source_locator_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "file_name": {"const": "ContinuityOS_Core.md"},
+        "mime_type": {"const": "text/markdown"},
+        "size_bytes": {"type": "integer", "minimum": 1, "maximum": 1000000},
+        "source_observed_at": {"type": "string", "format": "date-time"},
+        "source_modified_at": {"type": "string", "format": "date-time"},
+        "document_title": {"type": "string", "minLength": 1, "maxLength": 200},
+        "language": {"type": "string", "minLength": 1, "maxLength": 32},
+        "excerpt_kind": {"const": "sanitized_bounded_internal_excerpt"},
+        "redaction_profile": {"const": "P2E_R3_STRICT_NO_PROVIDER_IDS_NO_PII_NO_CREDENTIALS"},
+        "sanitized_markdown": {"type": "string", "minLength": 800, "maxLength": 20000},
+        "sanitized_document_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}
