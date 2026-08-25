@@ -23,7 +23,9 @@ def identity(**overrides):
         "ownership_epoch": 1,
         "created_at": CREATED,
         "recovery_authorities": ["principal_recovery"],
-        "delegated_admins": ["principal_admin"],
+        "delegated_admins": [
+            {"principal_id": "principal_admin", "principal_kind": "HUMAN"},
+        ],
     }
     kwargs.update(overrides)
     return c.build_person_twin_identity(**kwargs)
@@ -48,6 +50,22 @@ def consent(ident=None, **overrides):
     }
     kwargs.update(overrides)
     return c.build_source_consent_receipt(ident, **kwargs)
+
+
+def empty_ledger():
+    return c.build_consent_revocation_ledger()
+
+
+def evaluate(ident, receipt, **overrides):
+    kwargs = {
+        "revocation_ledger": empty_ledger(),
+        "at": AT,
+        "requested_object_type": "note",
+        "requested_scope": "PERSON_PRIVATE",
+        "purpose": "self_memory_import",
+    }
+    kwargs.update(overrides)
+    return c.evaluate_consent(ident, receipt, **kwargs)
 
 
 def test_identity_is_deterministic_and_not_production_admitted():
@@ -95,6 +113,22 @@ def test_identity_requires_supported_controller_kind():
         identity(controller_kind="AGENT")
 
 
+def test_delegated_admin_kind_is_bound_in_identity():
+    ident = identity()
+    assert ident["delegated_admins"] == [
+        {"principal_id": "principal_admin", "principal_kind": "HUMAN"}
+    ]
+
+
+def test_agent_cannot_be_delegated_consent_admin():
+    with pytest.raises(c.PersonTwinContractError, match="HUMAN or ORGANIZATION"):
+        identity(
+            delegated_admins=[
+                {"principal_id": "principal_agent", "principal_kind": "AGENT"},
+            ]
+        )
+
+
 def test_consent_receipt_is_deterministic_and_identity_bound():
     ident = identity()
     first = consent(ident)
@@ -104,6 +138,7 @@ def test_consent_receipt_is_deterministic_and_identity_bound():
     assert first["tenant_id"] == ident["tenant_id"]
     assert first["identity_fingerprint"] == ident["identity_fingerprint"]
     assert first["consent_receipt_id"].startswith("consent_")
+    assert first["revoked_at"] is None
     c.validate_source_consent_receipt(ident, first)
 
 
@@ -116,10 +151,16 @@ def test_consent_canonicalizes_object_types_and_scopes():
     assert receipt["allowed_scopes"] == ["PERSON_PRIVATE"]
 
 
+def test_receipt_cannot_embed_revocation_state():
+    with pytest.raises(c.PersonTwinContractError, match="revocation ledger"):
+        consent(revoked_at="2026-08-25T00:30:00Z")
+
+
 def test_missing_identity_fails_closed():
     decision = c.evaluate_consent(
         None,
         None,
+        revocation_ledger=empty_ledger(),
         at=AT,
         requested_object_type="note",
         requested_scope="PERSON_PRIVATE",
@@ -132,6 +173,7 @@ def test_oauth_exists_without_consent_does_not_authorize():
     decision = c.evaluate_consent(
         identity(),
         None,
+        revocation_ledger=empty_ledger(),
         at=AT,
         requested_object_type="note",
         requested_scope="PERSON_PRIVATE",
@@ -141,34 +183,33 @@ def test_oauth_exists_without_consent_does_not_authorize():
     assert decision == {"decision": "DENY", "reason": "MISSING_CONSENT"}
 
 
-def test_consent_for_different_twin_fails_closed():
-    first = identity()
-    receipt = consent(first)
-    other = identity(tenant_id="tenant_self", subject_id="other_subject")
+def test_missing_revocation_ledger_fails_closed():
+    ident = identity()
+    receipt = consent(ident)
     decision = c.evaluate_consent(
-        other,
+        ident,
         receipt,
+        revocation_ledger=None,
         at=AT,
         requested_object_type="note",
         requested_scope="PERSON_PRIVATE",
         purpose="self_memory_import",
     )
-    assert decision == {"decision": "DENY", "reason": "INVALID_CONSENT"}
+    assert decision == {"decision": "DENY", "reason": "MISSING_REVOCATION_LEDGER"}
+
+
+def test_consent_for_different_twin_fails_closed():
+    first = identity()
+    receipt = consent(first)
+    other = identity(subject_id="other_subject")
+    assert evaluate(other, receipt) == {"decision": "DENY", "reason": "INVALID_CONSENT"}
 
 
 def test_tenant_mismatch_fails_closed():
     ident = identity()
     receipt = consent(ident)
     receipt["tenant_id"] = "tenant_other"
-    decision = c.evaluate_consent(
-        ident,
-        receipt,
-        at=AT,
-        requested_object_type="note",
-        requested_scope="PERSON_PRIVATE",
-        purpose="self_memory_import",
-    )
-    assert decision == {"decision": "DENY", "reason": "INVALID_CONSENT"}
+    assert evaluate(ident, receipt) == {"decision": "DENY", "reason": "INVALID_CONSENT"}
 
 
 def test_controller_mismatch_cannot_issue_consent():
@@ -177,10 +218,38 @@ def test_controller_mismatch_cannot_issue_consent():
         consent(ident, authorizing_principal="principal_stranger")
 
 
-def test_delegated_admin_can_issue_consent_but_recovery_authority_cannot():
+def test_controller_kind_must_match_identity_binding():
     ident = identity()
-    admin_receipt = consent(ident, authorizing_principal="principal_admin")
+    with pytest.raises(c.PersonTwinContractError, match="kind does not match"):
+        consent(ident, authorizing_principal_kind="ORGANIZATION")
+
+
+def test_delegated_admin_can_issue_consent_with_exact_bound_kind():
+    ident = identity()
+    admin_receipt = consent(
+        ident,
+        authorizing_principal="principal_admin",
+        authorizing_principal_kind="HUMAN",
+    )
     c.validate_source_consent_receipt(ident, admin_receipt)
+
+
+def test_delegated_admin_kind_spoof_fails_closed():
+    ident = identity(
+        delegated_admins=[
+            {"principal_id": "principal_admin", "principal_kind": "ORGANIZATION"},
+        ]
+    )
+    with pytest.raises(c.PersonTwinContractError, match="kind does not match"):
+        consent(
+            ident,
+            authorizing_principal="principal_admin",
+            authorizing_principal_kind="HUMAN",
+        )
+
+
+def test_recovery_authority_cannot_issue_consent():
+    ident = identity()
     with pytest.raises(c.PersonTwinContractError, match="controller or delegated admin"):
         consent(ident, authorizing_principal="principal_recovery")
 
@@ -194,89 +263,127 @@ def test_altered_receipt_hash_fails_closed():
     ident = identity()
     receipt = consent(ident)
     receipt["purpose"] = "different-purpose"
-    decision = c.evaluate_consent(
-        ident,
-        receipt,
-        at=AT,
-        requested_object_type="note",
-        requested_scope="PERSON_PRIVATE",
-        purpose="different-purpose",
-    )
-    assert decision == {"decision": "DENY", "reason": "INVALID_CONSENT"}
+    assert evaluate(ident, receipt, purpose="different-purpose") == {
+        "decision": "DENY",
+        "reason": "INVALID_CONSENT",
+    }
 
 
-def test_altered_receipt_id_fails_closed_even_with_rehashed_receipt():
+def test_consent_is_not_valid_before_issued_at():
     ident = identity()
-    receipt = consent(ident)
-    receipt["consent_receipt_id"] = "consent_" + ("0" * 32)
-    body = dict(receipt)
-    body.pop("receipt_hash")
-    receipt["receipt_hash"] = c._canonical_hash(body)
-    decision = c.evaluate_consent(
-        ident,
-        receipt,
-        at=AT,
-        requested_object_type="note",
-        requested_scope="PERSON_PRIVATE",
-        purpose="self_memory_import",
-    )
-    assert decision == {"decision": "DENY", "reason": "INVALID_CONSENT"}
+    receipt = consent(ident, issued_at="2026-08-25T02:00:00Z", expires_at="2026-08-26T00:00:00Z")
+    assert evaluate(ident, receipt, at=AT) == {
+        "decision": "DENY",
+        "reason": "CONSENT_NOT_YET_VALID",
+    }
 
 
 def test_expired_consent_fails_closed():
     ident = identity()
     receipt = consent(ident, expires_at="2026-08-25T00:30:00Z")
-    decision = c.evaluate_consent(
-        ident,
-        receipt,
-        at=AT,
-        requested_object_type="note",
-        requested_scope="PERSON_PRIVATE",
-        purpose="self_memory_import",
-    )
-    assert decision == {"decision": "DENY", "reason": "CONSENT_EXPIRED"}
+    assert evaluate(ident, receipt) == {"decision": "DENY", "reason": "CONSENT_EXPIRED"}
 
 
-def test_revoked_consent_fails_closed():
+def test_revocation_entry_invalidates_original_receipt_without_mutating_it():
     ident = identity()
-    receipt = consent(ident, revoked_at="2026-08-25T00:30:00Z")
-    decision = c.evaluate_consent(
+    receipt = consent(ident)
+    original = dict(receipt)
+    entry = c.build_consent_revocation_entry(
         ident,
         receipt,
-        at=AT,
-        requested_object_type="note",
-        requested_scope="PERSON_PRIVATE",
-        purpose="self_memory_import",
+        revoking_principal="principal_owner",
+        revoking_principal_kind="HUMAN",
+        revoked_at="2026-08-25T00:30:00Z",
+        reason="owner_revoked",
     )
-    assert decision == {"decision": "DENY", "reason": "CONSENT_REVOKED"}
+    ledger = c.build_consent_revocation_ledger([entry])
+    assert receipt == original
+    assert evaluate(ident, receipt, revocation_ledger=ledger) == {
+        "decision": "DENY",
+        "reason": "CONSENT_REVOKED",
+    }
 
 
 def test_future_revocation_does_not_revoke_early():
     ident = identity()
-    receipt = consent(ident, revoked_at="2026-08-25T02:00:00Z")
-    decision = c.evaluate_consent(
+    receipt = consent(ident)
+    entry = c.build_consent_revocation_entry(
         ident,
         receipt,
-        at=AT,
-        requested_object_type="note",
-        requested_scope="PERSON_PRIVATE",
-        purpose="self_memory_import",
+        revoking_principal="principal_owner",
+        revoking_principal_kind="HUMAN",
+        revoked_at="2026-08-25T02:00:00Z",
+        reason="scheduled_owner_revocation",
     )
-    assert decision["decision"] == "ALLOW"
+    ledger = c.build_consent_revocation_ledger([entry])
+    assert evaluate(ident, receipt, revocation_ledger=ledger)["decision"] == "ALLOW"
+
+
+def test_revocation_before_issue_is_rejected():
+    ident = identity()
+    receipt = consent(ident, issued_at="2026-08-25T01:00:00Z")
+    with pytest.raises(c.PersonTwinContractError, match="before issued_at"):
+        c.build_consent_revocation_entry(
+            ident,
+            receipt,
+            revoking_principal="principal_owner",
+            revoking_principal_kind="HUMAN",
+            revoked_at="2026-08-25T00:30:00Z",
+            reason="invalid",
+        )
+
+
+def test_revocation_principal_kind_must_match_identity_binding():
+    ident = identity()
+    receipt = consent(ident)
+    with pytest.raises(c.PersonTwinContractError, match="kind does not match"):
+        c.build_consent_revocation_entry(
+            ident,
+            receipt,
+            revoking_principal="principal_owner",
+            revoking_principal_kind="ORGANIZATION",
+            revoked_at="2026-08-25T00:30:00Z",
+            reason="spoofed_kind",
+        )
+
+
+def test_revocation_ledger_hash_tampering_fails_closed():
+    ident = identity()
+    receipt = consent(ident)
+    ledger = empty_ledger()
+    ledger["ledger_hash"] = "0" * 64
+    assert evaluate(ident, receipt, revocation_ledger=ledger) == {
+        "decision": "DENY",
+        "reason": "INVALID_REVOCATION_LEDGER",
+    }
+
+
+def test_revocation_entry_tampering_fails_closed_even_if_ledger_rehashed():
+    ident = identity()
+    receipt = consent(ident)
+    entry = c.build_consent_revocation_entry(
+        ident,
+        receipt,
+        revoking_principal="principal_owner",
+        revoking_principal_kind="HUMAN",
+        revoked_at="2026-08-25T00:30:00Z",
+        reason="owner_revoked",
+    )
+    entry["receipt_hash"] = "0" * 64
+    ledger = c.build_consent_revocation_ledger([entry])
+    assert evaluate(ident, receipt, revocation_ledger=ledger) == {
+        "decision": "DENY",
+        "reason": "INVALID_REVOCATION_LEDGER",
+    }
 
 
 def test_scope_widening_is_not_implicit():
     ident = identity()
     receipt = consent(ident, allowed_scopes=["PERSON_PRIVATE"])
-    decision = c.evaluate_consent(
-        ident,
-        receipt,
-        at=AT,
-        requested_object_type="note",
-        requested_scope="PERSON_SHARED",
-        purpose="self_memory_import",
-    )
-    assert decision == {"decision": "DENY", "reason": "SCOPE_NOT_CONSENTED"}
+    assert evaluate(ident, receipt, requested_scope="PERSON_SHARED") == {
+        "decision": "DENY",
+        "reason": "SCOPE_NOT_CONSENTED",
+    }
 
 
 def test_wildcard_scopes_are_rejected():
@@ -287,29 +394,19 @@ def test_wildcard_scopes_are_rejected():
 def test_object_type_must_be_explicitly_consented():
     ident = identity()
     receipt = consent(ident)
-    decision = c.evaluate_consent(
-        ident,
-        receipt,
-        at=AT,
-        requested_object_type="credential",
-        requested_scope="PERSON_PRIVATE",
-        purpose="self_memory_import",
-    )
-    assert decision == {"decision": "DENY", "reason": "OBJECT_TYPE_NOT_CONSENTED"}
+    assert evaluate(ident, receipt, requested_object_type="credential") == {
+        "decision": "DENY",
+        "reason": "OBJECT_TYPE_NOT_CONSENTED",
+    }
 
 
 def test_purpose_mismatch_fails_closed():
     ident = identity()
     receipt = consent(ident)
-    decision = c.evaluate_consent(
-        ident,
-        receipt,
-        at=AT,
-        requested_object_type="note",
-        requested_scope="PERSON_PRIVATE",
-        purpose="analytics",
-    )
-    assert decision == {"decision": "DENY", "reason": "PURPOSE_MISMATCH"}
+    assert evaluate(ident, receipt, purpose="analytics") == {
+        "decision": "DENY",
+        "reason": "PURPOSE_MISMATCH",
+    }
 
 
 def test_source_read_and_memory_admission_authorities_are_separate():
@@ -319,23 +416,15 @@ def test_source_read_and_memory_admission_authorities_are_separate():
         source_read_authority=True,
         memory_admission_authority=False,
     )
-    read = c.evaluate_consent(
+    read = evaluate(
         ident,
         read_only,
-        at=AT,
-        requested_object_type="note",
-        requested_scope="PERSON_PRIVATE",
-        purpose="self_memory_import",
         require_source_read=True,
         require_memory_admission=False,
     )
-    admit = c.evaluate_consent(
+    admit = evaluate(
         ident,
         read_only,
-        at=AT,
-        requested_object_type="note",
-        requested_scope="PERSON_PRIVATE",
-        purpose="self_memory_import",
         require_source_read=True,
         require_memory_admission=True,
     )
@@ -350,29 +439,20 @@ def test_memory_admission_does_not_imply_source_read():
         source_read_authority=False,
         memory_admission_authority=True,
     )
-    decision = c.evaluate_consent(
+    assert evaluate(
         ident,
         admission_only,
-        at=AT,
-        requested_object_type="note",
-        requested_scope="PERSON_PRIVATE",
-        purpose="self_memory_import",
         require_source_read=True,
         require_memory_admission=True,
-    )
-    assert decision == {"decision": "DENY", "reason": "SOURCE_READ_NOT_AUTHORIZED"}
+    ) == {"decision": "DENY", "reason": "SOURCE_READ_NOT_AUTHORIZED"}
 
 
 def test_valid_consent_returns_only_non_effectful_evidence():
     ident = identity()
     receipt = consent(ident)
-    decision = c.evaluate_consent(
+    decision = evaluate(
         ident,
         receipt,
-        at=AT,
-        requested_object_type="note",
-        requested_scope="PERSON_PRIVATE",
-        purpose="self_memory_import",
         require_source_read=True,
         require_memory_admission=True,
         oauth_present=True,
@@ -381,6 +461,7 @@ def test_valid_consent_returns_only_non_effectful_evidence():
     assert decision["reason"] == "CONSENT_VALID"
     assert decision["twin_id"] == ident["twin_id"]
     assert decision["consent_receipt_id"] == receipt["consent_receipt_id"]
+    assert decision["revocation_ledger_hash"] == empty_ledger()["ledger_hash"]
     assert decision["production_admission_status"] == "NOT_PRODUCTION_ADMITTED"
     assert "can_execute" not in decision
     assert "current" not in decision
