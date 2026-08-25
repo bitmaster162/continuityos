@@ -284,6 +284,17 @@ def _authorization(
         "expected_base": base,
         "operation_count": 1,
     }
+    auth_ref = "synthetic://approval/r4r1"
+    packet_core = {
+        "request_id": request["request_id"],
+        "project_id": core["project_id"],
+        "proposal_id": core["proposal_id"],
+        "proposal_file_sha256": core["proposal_file_sha256"],
+        "expected_base": base,
+        "operation_count": 1,
+        "authorization_file_sha256": auth_sha,
+        "authorization": {"class": auth_class, "id": auth_id, "ref": auth_ref},
+    }
     preflight = {
         "schema": "continuityos.operational_memory.project_update_packet_preflight/v1",
         "terminal": "CURRENT_PROJECT_UPDATE_PREFLIGHT_READY",
@@ -291,15 +302,17 @@ def _authorization(
         "authorization_record_valid": True,
         "apply_ready": True,
         "execution_authorized": False,
-        "packet_id": "packet:r4r1:1",
+        "packet_id": "r4p-" + _hash(packet_core)[:40],
+        "project_id": core["project_id"],
         "proposal_id": core["proposal_id"],
         "proposal_file_sha256": core["proposal_file_sha256"],
         "expected_base": base,
+        "operation_count": 1,
         "authorization_file_sha256": auth_sha,
         "authorization": {
             "class": auth_class,
             "id": auth_id,
-            "ref": "synthetic://approval/r4r1",
+            "ref": auth_ref,
         },
     }
     return request, preflight
@@ -383,7 +396,7 @@ def test_caller_current_pointer_must_equal_independent_store_readback():
     x["current_pointer"] = {**x["current_pointer"], "challenge": "forged"}
     result = evaluate_person_twin_authority_replay(**x)
     assert result["decision"] == "DENY"
-    assert "caller current pointer differs from admission readback" in result["reason"]
+    assert "current pointer keys mismatch" in result["reason"]
 
 
 def test_candidate_byte_drift_in_admission_store_is_denied():
@@ -566,3 +579,105 @@ def test_deterministic_new_receipt_for_identical_inputs():
     first = evaluate_person_twin_authority_replay(**x)
     second = evaluate_person_twin_authority_replay(**copy.deepcopy(x))
     assert first == second
+
+
+def test_public_call_boundary_missing_and_unexpected_keys_fail_closed_without_typeerror():
+    missing = _inputs()
+    missing.pop("policy")
+    result = evaluate_person_twin_authority_replay(**missing)
+    assert result["decision"] == "DENY"
+    assert "public input keys mismatch" in result["reason"]
+    assert "TypeError" not in result["reason"]
+
+    unexpected = _inputs()
+    unexpected["unexpected"] = "x"
+    result = evaluate_person_twin_authority_replay(**unexpected)
+    assert result["decision"] == "DENY"
+    assert "public input keys mismatch" in result["reason"]
+    assert "TypeError" not in result["reason"]
+
+
+def test_public_call_boundary_rejects_positional_and_non_string_scalars_without_raw_exception():
+    result = evaluate_person_twin_authority_replay({})
+    assert result["decision"] == "DENY"
+    assert "positional arguments are unsupported" in result["reason"]
+    x = _inputs()
+    x["action"] = {"READ": True}
+    result = evaluate_person_twin_authority_replay(**x)
+    assert result["decision"] == "DENY"
+    assert "action must be non-empty" in result["reason"]
+
+
+@pytest.mark.parametrize("target", ["admission_receipt", "current_pointer"])
+@pytest.mark.parametrize("field,value", [("can_trade", None), ("capital_permission", None)])
+def test_admission_and_pointer_safety_fields_must_be_explicit(target, field, value):
+    x = _inputs()
+    x[target] = copy.deepcopy(x[target])
+    x[target][field] = value
+    if target == "current_pointer":
+        x["admission_store"].pointer = _canonical_bytes(x[target])
+    result = evaluate_person_twin_authority_replay(**x)
+    assert result["decision"] == "DENY"
+    assert "authority escalation" in result["reason"]
+
+
+@pytest.mark.parametrize("mutation", ["declared", "reason", "legacy_fallback"])
+def test_current_session_exact_contour_rejects_forged_declaration_reason_and_legacy(mutation):
+    x = _inputs()
+    x["current_session"] = copy.deepcopy(x["current_session"])
+    if mutation == "declared":
+        x["current_session"]["declared"] = False
+    elif mutation == "reason":
+        x["current_session"]["reason"] = "forged"
+    else:
+        x["current_session"]["effects"]["legacy_fallback"] = True
+    result = evaluate_person_twin_authority_replay(**x)
+    assert result["decision"] == "DENY"
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["source_record", "admission_receipt", "current_pointer", "policy", "current_session", "authorization_request", "authorization_preflight"],
+)
+def test_closed_trust_anchors_reject_unexpected_top_level_keys(target):
+    x = _inputs()
+    x[target] = copy.deepcopy(x[target])
+    x[target]["unexpected"] = True
+    if target == "current_pointer":
+        x["admission_store"].pointer = _canonical_bytes(x[target])
+    result = evaluate_person_twin_authority_replay(**x)
+    assert result["decision"] == "DENY"
+    assert "keys mismatch" in result["reason"]
+
+
+@pytest.mark.parametrize("field", ["project_id", "packet_id", "operation_count"])
+def test_preflight_request_cross_binding_rejects_divergence(field):
+    x = _inputs()
+    x["authorization_preflight"] = copy.deepcopy(x["authorization_preflight"])
+    if field == "project_id":
+        x["authorization_preflight"][field] = "project:other"
+    elif field == "packet_id":
+        x["authorization_preflight"][field] = "r4p-" + "0" * 40
+    else:
+        x["authorization_preflight"][field] = 2
+    result = evaluate_person_twin_authority_replay(**x)
+    assert result["decision"] == "DENY"
+
+
+@pytest.mark.parametrize("field,value", [("id", "human:other"), ("ref", "synthetic://other"), ("class", "DETERMINISTIC_CONTROLLER")])
+def test_preflight_authorization_identity_is_packet_integrity_bound(field, value):
+    x = _inputs()
+    x["authorization_preflight"] = copy.deepcopy(x["authorization_preflight"])
+    x["authorization_preflight"]["authorization"][field] = value
+    result = evaluate_person_twin_authority_replay(**x)
+    assert result["decision"] == "DENY"
+    assert "authorization packet identity mismatch" in result["reason"] or "APPROVE" in result["reason"]
+
+
+@pytest.mark.parametrize("value", [True, 1.5])
+def test_policy_max_delegation_depth_rejects_boolean_and_fractional(value):
+    x = _inputs()
+    x["policy"] = {**x["policy"], "max_delegation_depth": value}
+    result = evaluate_person_twin_authority_replay(**x)
+    assert result["decision"] == "DENY"
+    assert "max_delegation_depth must be positive integer" in result["reason"]

@@ -25,10 +25,103 @@ AUTH_REQUEST_SCHEMA = "continuityos.operational_memory.apply_authorization_reque
 PREFLIGHT_SCHEMA = "continuityos.operational_memory.project_update_packet_preflight/v1"
 SUPPORTED_ACTIONS = {"READ", "PROPOSE", "APPROVE"}
 EXACT_CURRENT_AUTHORITY_CEILING = "NO_FURTHER_AGENT_WORK"
+EXACT_CURRENT_REASON = "EXACT_CURRENT_SESSION_VERIFIED"
+
+PUBLIC_INPUT_KEYS = frozenset({
+    "identity", "consent_receipt", "current_revocation_ledger", "source_record",
+    "person_record", "admission_receipt", "current_pointer", "admission_store",
+    "policy", "principal_id", "action", "requested_scope",
+    "requested_privacy_class", "purpose", "at", "current_session",
+    "authorization_request", "authorization_preflight", "replay_store",
+})
+ADMISSION_KEYS = frozenset({
+    "schema_version", "state", "reason", "session_id", "candidate_id",
+    "candidate_sha256", "identity_fingerprint", "expected_pointer_sha256",
+    "history", "production_admission_status", "execution_authority",
+    "can_execute", "can_trade", "capital_permission",
+})
+CURRENT_POINTER_KEYS = frozenset({
+    "schema_version", "state", "twin_id", "candidate_id", "candidate_sha256",
+    "identity_fingerprint", "production_admission_status", "execution_authority",
+    "can_execute", "can_trade", "capital_permission",
+})
+CURRENT_SESSION_KEYS = frozenset({
+    "schema", "mode", "declared", "binding_verified", "reason",
+    "authority_generation", "challenge_id", "challenge_sha256", "ack_sha256",
+    "session_effect_ceiling", "authority_ceiling", "effects",
+})
+CURRENT_SESSION_EFFECT_KEYS = frozenset({
+    "legacy_fallback", "memory_write", "ledger_write", "filesystem_write",
+    "network_effect", "server_started", "subprocess_execution", "deployment",
+    "current_state_apply", "canonical_mutation", "external_message",
+    "auto_dispatch", "trading", "wallet_access", "order_execution",
+    "can_trade", "capital_permission", "deploy_permission",
+})
+AUTH_REQUEST_KEYS = frozenset({
+    "schema", "terminal", "authorization_granted", "execution_authorized",
+    "apply_status", "request_id", "proposal_id", "proposal_file_sha256",
+    "project_id", "expected_base", "operation_count",
+})
+EXPECTED_BASE_KEYS = frozenset({
+    "projection_sha256", "event_cursor", "event_chain_head",
+})
+PREFLIGHT_KEYS = frozenset({
+    "schema", "terminal", "packet_valid", "authorization_record_valid",
+    "apply_ready", "execution_authorized", "packet_id", "project_id",
+    "proposal_id", "proposal_file_sha256", "expected_base", "operation_count",
+    "authorization_file_sha256", "authorization",
+})
+AUTHORIZATION_KEYS = frozenset({"class", "id", "ref"})
+POLICY_REQUIRED_KEYS = frozenset({
+    "schema_version", "tenant_id", "actors", "grants", "delegations",
+    "explicit_denies", "revoked_delegation_ids",
+})
+POLICY_OPTIONAL_KEYS = frozenset({"max_delegation_depth"})
+SOURCE_RECORD_KEYS = frozenset({
+    "actor_id", "actor_kind", "actor_role", "authority_class", "connector_id",
+    "content_hash", "cursor", "deleted", "duplicate_of", "effective_at", "id",
+    "manager_actor_id", "observed_at", "parser_version", "payload", "raw_ref",
+    "revision_id", "schema_version", "scope", "source_acl",
+    "source_envelope_id", "source_object_id", "source_object_type",
+    "source_system", "supersedes", "tenant_id", "truth_class", "visibility",
+})
 
 
 class PersonTwinAuthorityReplayError(ValueError):
     pass
+
+
+def _require_exact_keys(value: Mapping[str, Any], expected: frozenset[str], label: str) -> None:
+    if not isinstance(value, Mapping):
+        raise PersonTwinAuthorityReplayError(f"{label} must be object")
+    actual = set(value)
+    if actual != set(expected):
+        missing = sorted(set(expected) - actual)
+        unexpected = sorted(actual - set(expected))
+        raise PersonTwinAuthorityReplayError(
+            f"{label} keys mismatch: missing={missing}, unexpected={unexpected}"
+        )
+
+
+def _require_closed_keys(
+    value: Mapping[str, Any],
+    required: frozenset[str],
+    optional: frozenset[str],
+    label: str,
+) -> None:
+    if not isinstance(value, Mapping):
+        raise PersonTwinAuthorityReplayError(f"{label} must be object")
+    actual = set(value)
+    missing = sorted(set(required) - actual)
+    unexpected = sorted(actual - set(required) - set(optional))
+    if missing or unexpected:
+        raise PersonTwinAuthorityReplayError(
+            f"{label} keys mismatch: missing={missing}, unexpected={unexpected}"
+        )
+
+
+def _safe_receipt_scalar(value: Any) -> str:
+    return value if isinstance(value, str) else ""
 
 
 class AdmissionReadStore(Protocol):
@@ -99,9 +192,9 @@ def _ceiling(value: Mapping[str, Any], label: str) -> None:
         raise PersonTwinAuthorityReplayError(f"{label} production admission escalation")
     if value.get("execution_authority") != "NONE" or value.get("can_execute") is not False:
         raise PersonTwinAuthorityReplayError(f"{label} execution authority escalation")
-    if value.get("can_trade") not in (False, None):
+    if value.get("can_trade") is not False:
         raise PersonTwinAuthorityReplayError(f"{label} trading authority escalation")
-    if value.get("capital_permission") not in ("DENY", None):
+    if value.get("capital_permission") != "DENY":
         raise PersonTwinAuthorityReplayError(f"{label} capital authority escalation")
 
 
@@ -112,6 +205,8 @@ def _current_admission(
     pointer: Mapping[str, Any],
     admission_store: AdmissionReadStore,
 ) -> dict[str, str]:
+    _require_exact_keys(admission, ADMISSION_KEYS, "admission")
+    _require_exact_keys(pointer, CURRENT_POINTER_KEYS, "current pointer")
     if admission.get("schema_version") != ADMISSION_SCHEMA or admission.get("state") != "CURRENT":
         raise PersonTwinAuthorityReplayError("admission receipt is not exact CURRENT")
     _ceiling(admission, "admission")
@@ -165,8 +260,11 @@ def _current_admission(
 
 
 def _current_session(value: Mapping[str, Any]) -> str:
+    _require_exact_keys(value, CURRENT_SESSION_KEYS, "current session")
     if value.get("schema") != CURRENT_EFFECT_SCHEMA or value.get("mode") != MODE_CURRENT:
         raise PersonTwinAuthorityReplayError("current session is not CURRENT")
+    if value.get("declared") is not True or value.get("reason") != EXACT_CURRENT_REASON:
+        raise PersonTwinAuthorityReplayError("current session declaration/reason invalid")
     if value.get("binding_verified") is not True or value.get("session_effect_ceiling") != "READ_ONLY":
         raise PersonTwinAuthorityReplayError("current session binding/ceiling invalid")
     if value.get("authority_ceiling") != EXACT_CURRENT_AUTHORITY_CEILING:
@@ -174,12 +272,10 @@ def _current_session(value: Mapping[str, Any]) -> str:
     effects = value.get("effects")
     if not isinstance(effects, Mapping):
         raise PersonTwinAuthorityReplayError("current session effects missing")
-    denied = {
-        "memory_write", "ledger_write", "filesystem_write", "network_effect",
-        "server_started", "subprocess_execution", "deployment", "current_state_apply",
-        "canonical_mutation", "external_message", "auto_dispatch", "trading",
-        "wallet_access", "order_execution", "can_trade",
-    }
+    _require_exact_keys(effects, CURRENT_SESSION_EFFECT_KEYS, "current session effects")
+    if effects.get("legacy_fallback") is not False:
+        raise PersonTwinAuthorityReplayError("current session legacy fallback enabled")
+    denied = CURRENT_SESSION_EFFECT_KEYS - {"legacy_fallback", "capital_permission", "deploy_permission"}
     if any(effects.get(key) is not False for key in denied):
         raise PersonTwinAuthorityReplayError("current session effect ceiling widened")
     if effects.get("capital_permission") != "DENY" or effects.get("deploy_permission") != "DENY":
@@ -192,6 +288,8 @@ def _current_session(value: Mapping[str, Any]) -> str:
 
 
 def _authorization_chain(request: Mapping[str, Any], preflight: Mapping[str, Any]) -> dict[str, str]:
+    _require_exact_keys(request, AUTH_REQUEST_KEYS, "authorization request")
+    _require_exact_keys(preflight, PREFLIGHT_KEYS, "authorization preflight")
     if request.get("schema") != AUTH_REQUEST_SCHEMA or request.get("terminal") != "CURRENT_MEMORY_APPLY_AUTH_REQUEST_PASS":
         raise PersonTwinAuthorityReplayError("authorization request is not PASS")
     if request.get("authorization_granted") is not False or request.get("execution_authorized") is not False:
@@ -206,6 +304,7 @@ def _authorization_chain(request: Mapping[str, Any], preflight: Mapping[str, Any
     base = request.get("expected_base")
     if not isinstance(base, Mapping) or not isinstance(count, int) or isinstance(count, bool) or count < 1:
         raise PersonTwinAuthorityReplayError("authorization request base/count invalid")
+    _require_exact_keys(base, EXPECTED_BASE_KEYS, "authorization request expected_base")
     snapshot_sha = _sha(base.get("projection_sha256"), "request.base.projection_sha256")
     _sha(base.get("event_chain_head"), "request.base.event_chain_head")
     cursor = base.get("event_cursor")
@@ -227,27 +326,53 @@ def _authorization_chain(request: Mapping[str, Any], preflight: Mapping[str, Any
     required_true = ("packet_valid", "authorization_record_valid", "apply_ready")
     if any(preflight.get(key) is not True for key in required_true) or preflight.get("execution_authorized") is not False:
         raise PersonTwinAuthorityReplayError("authorization preflight failed closed")
+    if preflight.get("project_id") != project_id:
+        raise PersonTwinAuthorityReplayError("authorization project identity mismatch")
+    if preflight.get("operation_count") != count:
+        raise PersonTwinAuthorityReplayError("authorization operation-count mismatch")
     if preflight.get("proposal_id") != proposal_id or preflight.get("proposal_file_sha256") != proposal_sha:
         raise PersonTwinAuthorityReplayError("authorization proposal identity mismatch")
-    if preflight.get("expected_base") != dict(base):
+    preflight_base = preflight.get("expected_base")
+    if not isinstance(preflight_base, Mapping):
+        raise PersonTwinAuthorityReplayError("authorization preflight base missing")
+    _require_exact_keys(preflight_base, EXPECTED_BASE_KEYS, "authorization preflight expected_base")
+    if dict(preflight_base) != dict(base):
         raise PersonTwinAuthorityReplayError("authorization snapshot identity mismatch")
 
     auth = preflight.get("authorization")
     if not isinstance(auth, Mapping):
         raise PersonTwinAuthorityReplayError("authorization identity missing")
+    _require_exact_keys(auth, AUTHORIZATION_KEYS, "authorization identity")
     auth_class = _text(auth.get("class"), "authorization.class").upper()
     if auth_class not in {"HUMAN", "DETERMINISTIC_CONTROLLER"}:
         raise PersonTwinAuthorityReplayError("authorization class invalid")
+    auth_id = _text(auth.get("id"), "authorization.id")
+    auth_ref = _text(auth.get("ref"), "authorization.ref")
+    auth_file_sha = _sha(preflight.get("authorization_file_sha256"), "preflight.authorization_file_sha256")
+    packet_id = _text(preflight.get("packet_id"), "preflight.packet_id")
+    expected_packet_id = "r4p-" + _hash({
+        "request_id": request_id,
+        "project_id": project_id,
+        "proposal_id": proposal_id,
+        "proposal_file_sha256": proposal_sha,
+        "expected_base": dict(base),
+        "operation_count": count,
+        "authorization_file_sha256": auth_file_sha,
+        "authorization": {"class": auth_class, "id": auth_id, "ref": auth_ref},
+    })[:40]
+    if packet_id != expected_packet_id:
+        raise PersonTwinAuthorityReplayError("authorization packet identity mismatch")
     return {
         "request_id": request_id,
         "proposal_id": proposal_id,
         "proposal_file_sha256": proposal_sha,
         "project_id": project_id,
-        "packet_id": _text(preflight.get("packet_id"), "preflight.packet_id"),
-        "authorization_file_sha256": _sha(preflight.get("authorization_file_sha256"), "preflight.authorization_file_sha256"),
+        "operation_count": count,
+        "packet_id": packet_id,
+        "authorization_file_sha256": auth_file_sha,
         "authorization_class": auth_class,
-        "authorization_id": _text(auth.get("id"), "authorization.id"),
-        "authorization_ref": _text(auth.get("ref"), "authorization.ref"),
+        "authorization_id": auth_id,
+        "authorization_ref": auth_ref,
         "snapshot_sha256": snapshot_sha,
         "request_hash": _hash(dict(request)),
         "preflight_hash": _hash(dict(preflight)),
@@ -264,7 +389,7 @@ def _actor(policy: Mapping[str, Any], actor_id: str) -> dict[str, Any]:
         "actor_kind": _text(row.get("actor_kind"), "actor.actor_kind"),
         "role": _text(row.get("role"), "actor.role"),
         "delegation_ids": sorted(
-            str(d["id"])
+            _text(d.get("id"), "delegation.id")
             for d in policy.get("delegations", [])
             if isinstance(d, Mapping) and d.get("grantee_actor_id") == actor_id and d.get("id")
         ),
@@ -378,7 +503,31 @@ def _read_durable_replay(replay_store: DurableReplayReadStore, *, replay_key: st
     return value
 
 
-def evaluate_person_twin_authority_replay(
+def evaluate_person_twin_authority_replay(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Public fail-closed R4 boundary. Argument-shape errors never escape as TypeError."""
+    action = _safe_receipt_scalar(kwargs.get("action"))
+    at = _safe_receipt_scalar(kwargs.get("at"))
+    try:
+        if args:
+            raise PersonTwinAuthorityReplayError("positional arguments are unsupported")
+        actual = set(kwargs)
+        missing = sorted(set(PUBLIC_INPUT_KEYS) - actual)
+        unexpected = sorted(actual - set(PUBLIC_INPUT_KEYS))
+        if missing or unexpected:
+            raise PersonTwinAuthorityReplayError(
+                f"public input keys mismatch: missing={missing}, unexpected={unexpected}"
+            )
+        return _evaluate_person_twin_authority_replay_impl(**kwargs)
+    except Exception as exc:
+        return _receipt(
+            "DENY",
+            f"FAIL_CLOSED:{type(exc).__name__}:{exc}",
+            action,
+            at,
+        )
+
+
+def _evaluate_person_twin_authority_replay_impl(
     *,
     identity: Mapping[str, Any],
     consent_receipt: Mapping[str, Any],
@@ -401,9 +550,19 @@ def evaluate_person_twin_authority_replay(
     replay_store: DurableReplayReadStore,
 ) -> dict[str, Any]:
     """Pure R4 Person Twin authority/replay decision. Never executes or mutates."""
-    action = str(action or "").upper()
-    at = str(at or "")
     try:
+        action = _text(action, "action").upper()
+        at = _text(at, "at")
+        purpose = _text(purpose, "purpose")
+        principal_id = _text(principal_id, "principal_id")
+        requested_scope = requested_scope
+        requested_privacy_class = _text(requested_privacy_class, "requested_privacy_class")
+        _require_exact_keys(source_record, SOURCE_RECORD_KEYS, "source record")
+        _require_closed_keys(policy, POLICY_REQUIRED_KEYS, POLICY_OPTIONAL_KEYS, "policy")
+        if "max_delegation_depth" in policy:
+            depth = policy.get("max_delegation_depth")
+            if not isinstance(depth, int) or isinstance(depth, bool) or depth < 1:
+                raise PersonTwinAuthorityReplayError("policy max_delegation_depth must be positive integer")
         validate_person_twin_identity(identity)
         validate_source_consent_receipt(identity, consent_receipt)
         validate_consent_revocation_ledger(current_revocation_ledger)
@@ -413,11 +572,11 @@ def evaluate_person_twin_authority_replay(
             consent_receipt=consent_receipt,
             source_record=source_record,
         )
-        scope = _text(requested_scope, "requested_scope")
-        privacy = _text(requested_privacy_class, "requested_privacy_class")
+        scope = requested_scope
+        privacy = requested_privacy_class
         if scope != person_record.get("scope") or privacy != person_record.get("privacy_class"):
             raise PersonTwinAuthorityReplayError("requested privacy/scope identity drift")
-        validate_privacy_scope(twin_id=str(identity["twin_id"]), privacy_class=privacy, scope=scope)
+        validate_privacy_scope(twin_id=_text(identity.get("twin_id"), "identity.twin_id"), privacy_class=privacy, scope=scope)
 
         ledger_hash = _sha(current_revocation_ledger.get("ledger_hash"), "revocation_ledger.ledger_hash")
         if person_record.get("revocation_ledger_hash") != ledger_hash:
@@ -427,9 +586,9 @@ def evaluate_person_twin_authority_replay(
             consent_receipt,
             revocation_ledger=current_revocation_ledger,
             at=at,
-            requested_object_type=str(source_record["source_object_type"]),
+            requested_object_type=_text(source_record.get("source_object_type"), "source_record.source_object_type"),
             requested_scope=scope,
-            purpose=_text(purpose, "purpose"),
+            purpose=purpose,
             require_source_read=False,
             require_memory_admission=True,
         )
@@ -447,12 +606,15 @@ def evaluate_person_twin_authority_replay(
         if action not in SUPPORTED_ACTIONS:
             raise PersonTwinAuthorityReplayError("action outside R4 scope")
 
-        principal = _text(principal_id, "principal_id")
+        principal = principal_id
+        source_acl = source_record.get("source_acl")
+        if not isinstance(source_acl, Mapping):
+            raise PersonTwinAuthorityReplayError("source_record.source_acl must be object")
         resource = {
-            "id": person_record["id"],
-            "tenant_id": identity["tenant_id"],
+            "id": _text(person_record.get("id"), "person_record.id"),
+            "tenant_id": _text(identity.get("tenant_id"), "identity.tenant_id"),
             "scope": scope,
-            "source_acl_scopes": [str(source_record["source_acl"]["scope"])],
+            "source_acl_scopes": [_text(source_acl.get("scope"), "source_record.source_acl.scope")],
             "classification": privacy,
         }
         policy_decision = evaluate_policy(
