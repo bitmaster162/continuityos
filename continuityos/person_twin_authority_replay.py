@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol
 
 from .company_twin_policy import evaluate as evaluate_policy, validate_policy
 from .current_effect_boundary import MODE_CURRENT, SCHEMA as CURRENT_EFFECT_SCHEMA
@@ -18,21 +18,50 @@ from .person_twin_privacy_provenance import (
     validate_privacy_scope,
 )
 
-SCHEMA_VERSION = "continuityos.person-twin.authority-replay/v1"
+SCHEMA_VERSION = "continuityos.person-twin.authority-replay/v2"
 ADMISSION_SCHEMA = "continuityos.person-twin.admission-coordinator/v2"
 CURRENT_POINTER_SCHEMA = "continuityos.person-twin.current-pointer/v1"
 AUTH_REQUEST_SCHEMA = "continuityos.operational_memory.apply_authorization_request/v1"
 PREFLIGHT_SCHEMA = "continuityos.operational_memory.project_update_packet_preflight/v1"
 SUPPORTED_ACTIONS = {"READ", "PROPOSE", "APPROVE"}
+EXACT_CURRENT_AUTHORITY_CEILING = "NO_FURTHER_AGENT_WORK"
 
 
 class PersonTwinAuthorityReplayError(ValueError):
     pass
 
 
+class AdmissionReadStore(Protocol):
+    """Read-only subset of the R3 admission store used to prove CURRENT."""
+
+    def read_current_pointer_bytes(self) -> bytes | None: ...
+
+    def read_candidate_bytes(self, candidate_id: str) -> bytes | None: ...
+
+
+class DurableReplayReadStore(Protocol):
+    """Read-only durable replay lookup. R4 never writes this store."""
+
+    def read_replay_receipt_bytes(self, replay_key: str) -> bytes | None: ...
+
+
+def _canonical_bytes(value: Mapping[str, Any]) -> bytes:
+    return json.dumps(
+        dict(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+
 def _hash(value: Any) -> str:
     raw = json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
 
@@ -50,6 +79,21 @@ def _sha(value: Any, field: str) -> str:
     return value
 
 
+def _mapping_from_canonical_bytes(payload: bytes, label: str) -> dict[str, Any]:
+    if not isinstance(payload, bytes) or not payload:
+        raise PersonTwinAuthorityReplayError(f"{label} bytes missing")
+    try:
+        decoded = json.loads(payload.decode("utf-8"))
+    except Exception as exc:
+        raise PersonTwinAuthorityReplayError(f"{label} bytes invalid JSON") from exc
+    if not isinstance(decoded, Mapping):
+        raise PersonTwinAuthorityReplayError(f"{label} root must be object")
+    result = dict(decoded)
+    if _canonical_bytes(result) != payload:
+        raise PersonTwinAuthorityReplayError(f"{label} bytes are not canonical")
+    return result
+
+
 def _ceiling(value: Mapping[str, Any], label: str) -> None:
     if value.get("production_admission_status") != NOT_PRODUCTION_ADMITTED:
         raise PersonTwinAuthorityReplayError(f"{label} production admission escalation")
@@ -61,7 +105,13 @@ def _ceiling(value: Mapping[str, Any], label: str) -> None:
         raise PersonTwinAuthorityReplayError(f"{label} capital authority escalation")
 
 
-def _current_admission(identity, record, admission, pointer) -> dict[str, str]:
+def _current_admission(
+    identity: Mapping[str, Any],
+    record: Mapping[str, Any],
+    admission: Mapping[str, Any],
+    pointer: Mapping[str, Any],
+    admission_store: AdmissionReadStore,
+) -> dict[str, str]:
     if admission.get("schema_version") != ADMISSION_SCHEMA or admission.get("state") != "CURRENT":
         raise PersonTwinAuthorityReplayError("admission receipt is not exact CURRENT")
     _ceiling(admission, "admission")
@@ -70,23 +120,48 @@ def _current_admission(identity, record, admission, pointer) -> dict[str, str]:
     candidate_sha = _sha(admission.get("candidate_sha256"), "admission.candidate_sha256")
     if session_id != record.get("admission_session_id"):
         raise PersonTwinAuthorityReplayError("admission session identity mismatch")
-    if candidate_id != record.get("id") or candidate_sha != _hash(dict(record)):
+    expected_candidate_bytes = _canonical_bytes(record)
+    if candidate_id != record.get("id") or candidate_sha != hashlib.sha256(expected_candidate_bytes).hexdigest():
         raise PersonTwinAuthorityReplayError("admission candidate identity mismatch")
     if admission.get("identity_fingerprint") != identity.get("identity_fingerprint"):
         raise PersonTwinAuthorityReplayError("admission identity fingerprint mismatch")
 
-    if pointer.get("schema_version") != CURRENT_POINTER_SCHEMA or pointer.get("state") != "CURRENT":
+    try:
+        stored_candidate = admission_store.read_candidate_bytes(candidate_id)
+        stored_pointer = admission_store.read_current_pointer_bytes()
+    except Exception as exc:
+        raise PersonTwinAuthorityReplayError("admission readback failed") from exc
+    if stored_candidate is None:
+        raise PersonTwinAuthorityReplayError("current candidate missing from admission store")
+    if stored_candidate != expected_candidate_bytes:
+        raise PersonTwinAuthorityReplayError("candidate byte readback mismatch")
+    if hashlib.sha256(stored_candidate).hexdigest() != candidate_sha:
+        raise PersonTwinAuthorityReplayError("candidate hash readback mismatch")
+    if stored_pointer is None:
+        raise PersonTwinAuthorityReplayError("current pointer missing from admission store")
+
+    stored_pointer_value = _mapping_from_canonical_bytes(stored_pointer, "current pointer")
+    if _canonical_bytes(pointer) != stored_pointer:
+        raise PersonTwinAuthorityReplayError("caller current pointer differs from admission readback")
+    if stored_pointer_value != dict(pointer):
+        raise PersonTwinAuthorityReplayError("current pointer readback mismatch")
+    if stored_pointer_value.get("schema_version") != CURRENT_POINTER_SCHEMA or stored_pointer_value.get("state") != "CURRENT":
         raise PersonTwinAuthorityReplayError("current pointer is not exact CURRENT")
-    _ceiling(pointer, "current pointer")
+    _ceiling(stored_pointer_value, "current pointer")
     expected = {
         "twin_id": identity.get("twin_id"),
         "candidate_id": candidate_id,
         "candidate_sha256": candidate_sha,
         "identity_fingerprint": identity.get("identity_fingerprint"),
     }
-    if any(pointer.get(key) != val for key, val in expected.items()):
+    if any(stored_pointer_value.get(key) != val for key, val in expected.items()):
         raise PersonTwinAuthorityReplayError("current pointer identity mismatch")
-    return {"session_id": session_id, "candidate_id": candidate_id, "candidate_sha256": candidate_sha}
+    return {
+        "session_id": session_id,
+        "candidate_id": candidate_id,
+        "candidate_sha256": candidate_sha,
+        "current_pointer_hash": hashlib.sha256(stored_pointer).hexdigest(),
+    }
 
 
 def _current_session(value: Mapping[str, Any]) -> str:
@@ -94,6 +169,8 @@ def _current_session(value: Mapping[str, Any]) -> str:
         raise PersonTwinAuthorityReplayError("current session is not CURRENT")
     if value.get("binding_verified") is not True or value.get("session_effect_ceiling") != "READ_ONLY":
         raise PersonTwinAuthorityReplayError("current session binding/ceiling invalid")
+    if value.get("authority_ceiling") != EXACT_CURRENT_AUTHORITY_CEILING:
+        raise PersonTwinAuthorityReplayError("current session authority ceiling mismatch")
     effects = value.get("effects")
     if not isinstance(effects, Mapping):
         raise PersonTwinAuthorityReplayError("current session effects missing")
@@ -107,7 +184,7 @@ def _current_session(value: Mapping[str, Any]) -> str:
         raise PersonTwinAuthorityReplayError("current session effect ceiling widened")
     if effects.get("capital_permission") != "DENY" or effects.get("deploy_permission") != "DENY":
         raise PersonTwinAuthorityReplayError("current session deny ceiling widened")
-    for field in ("authority_generation", "challenge_id", "authority_ceiling"):
+    for field in ("authority_generation", "challenge_id"):
         _text(value.get(field), f"current_session.{field}")
     _sha(value.get("challenge_sha256"), "current_session.challenge_sha256")
     _sha(value.get("ack_sha256"), "current_session.ack_sha256")
@@ -165,6 +242,7 @@ def _authorization_chain(request: Mapping[str, Any], preflight: Mapping[str, Any
         "request_id": request_id,
         "proposal_id": proposal_id,
         "proposal_file_sha256": proposal_sha,
+        "project_id": project_id,
         "packet_id": _text(preflight.get("packet_id"), "preflight.packet_id"),
         "authorization_file_sha256": _sha(preflight.get("authorization_file_sha256"), "preflight.authorization_file_sha256"),
         "authorization_class": auth_class,
@@ -186,13 +264,35 @@ def _actor(policy: Mapping[str, Any], actor_id: str) -> dict[str, Any]:
         "actor_kind": _text(row.get("actor_kind"), "actor.actor_kind"),
         "role": _text(row.get("role"), "actor.role"),
         "delegation_ids": sorted(
-            str(d["id"]) for d in policy.get("delegations", [])
+            str(d["id"])
+            for d in policy.get("delegations", [])
             if isinstance(d, Mapping) and d.get("grantee_actor_id") == actor_id and d.get("id")
         ),
     }
 
 
-def _receipt(decision: str, reason: str, action: str, at: str, *, binding=None, replay_status="DENIED", policy_sha=None):
+def _stable_replay_key(binding: Mapping[str, Any]) -> str:
+    return _hash({
+        "tenant_id": binding["tenant_id"],
+        "twin_id": binding["twin_id"],
+        "person_record_id": binding["person_record_id"],
+        "candidate_id": binding["candidate_id"],
+        "proposal_id": binding["proposal_id"],
+        "action": binding["action"],
+    })
+
+
+def _receipt(
+    decision: str,
+    reason: str,
+    action: str,
+    at: str,
+    *,
+    binding: Mapping[str, Any] | None = None,
+    replay_status: str = "DENIED",
+    policy_sha: str | None = None,
+) -> dict[str, Any]:
+    bound = dict(binding or {})
     body = {
         "schema_version": SCHEMA_VERSION,
         "decision": decision,
@@ -211,33 +311,94 @@ def _receipt(decision: str, reason: str, action: str, at: str, *, binding=None, 
         "can_trade": False,
         "capital_permission": "DENY",
         "deploy_permission": "DENY",
-        "binding": dict(binding or {}),
+        "binding": bound,
+        "replay_key": bound.get("replay_key"),
+        "replay_identity_hash": bound.get("replay_identity_hash"),
         "policy_receipt_sha256": policy_sha,
     }
-    body["replay_identity_hash"] = body["binding"].get("replay_identity_hash")
     body["receipt_hash"] = _hash(body)
     return body
 
 
-def _validate_durable(receipt: Mapping[str, Any]) -> None:
+def _validate_durable(receipt: Mapping[str, Any]) -> dict[str, Any]:
     if receipt.get("schema_version") != SCHEMA_VERSION:
         raise PersonTwinAuthorityReplayError("durable replay schema mismatch")
-    claimed = _sha(receipt.get("receipt_hash"), "durable.receipt_hash")
+    if receipt.get("decision") != "ALLOW":
+        raise PersonTwinAuthorityReplayError("durable replay receipt is not ALLOW")
+    if receipt.get("effect") != "READ_ONLY_DECISION":
+        raise PersonTwinAuthorityReplayError("durable replay effect mismatch")
+    if any((
+        receipt.get("mutated") is not False,
+        receipt.get("current_state_apply") is not False,
+        receipt.get("canonical_mutation") is not False,
+        receipt.get("execution_authorized") is not False,
+        receipt.get("production_admission_status") != NOT_PRODUCTION_ADMITTED,
+        receipt.get("execution_authority") != "NONE",
+        receipt.get("can_execute") is not False,
+        receipt.get("can_trade") is not False,
+        receipt.get("capital_permission") != "DENY",
+        receipt.get("deploy_permission") != "DENY",
+    )):
+        raise PersonTwinAuthorityReplayError("durable replay authority ceiling mismatch")
+
+    claimed_receipt_hash = _sha(receipt.get("receipt_hash"), "durable.receipt_hash")
     body = dict(receipt)
     body.pop("receipt_hash", None)
-    if claimed != _hash(body):
+    if claimed_receipt_hash != _hash(body):
         raise PersonTwinAuthorityReplayError("durable replay receipt hash mismatch")
-    _sha(receipt.get("replay_identity_hash"), "durable.replay_identity_hash")
+
+    binding = receipt.get("binding")
+    if not isinstance(binding, Mapping):
+        raise PersonTwinAuthorityReplayError("durable replay binding missing")
+    binding_value = dict(binding)
+    claimed_replay_hash = _sha(binding_value.get("replay_identity_hash"), "durable.binding.replay_identity_hash")
+    if receipt.get("replay_identity_hash") != claimed_replay_hash:
+        raise PersonTwinAuthorityReplayError("durable replay top-level identity mismatch")
+    claimed_replay_key = _sha(binding_value.get("replay_key"), "durable.binding.replay_key")
+    if receipt.get("replay_key") != claimed_replay_key:
+        raise PersonTwinAuthorityReplayError("durable replay top-level key mismatch")
+    replay_body = dict(binding_value)
+    replay_body.pop("replay_identity_hash", None)
+    if _hash(replay_body) != claimed_replay_hash:
+        raise PersonTwinAuthorityReplayError("durable replay identity binding mismatch")
+    if _stable_replay_key(binding_value) != claimed_replay_key:
+        raise PersonTwinAuthorityReplayError("durable replay stable key mismatch")
+    return binding_value
+
+
+def _read_durable_replay(replay_store: DurableReplayReadStore, *, replay_key: str) -> dict[str, Any] | None:
+    try:
+        payload = replay_store.read_replay_receipt_bytes(replay_key)
+    except Exception as exc:
+        raise PersonTwinAuthorityReplayError("durable replay readback failed") from exc
+    if payload is None:
+        return None
+    value = _mapping_from_canonical_bytes(payload, "durable replay receipt")
+    _validate_durable(value)
+    return value
 
 
 def evaluate_person_twin_authority_replay(
-    *, identity: Mapping[str, Any], consent_receipt: Mapping[str, Any],
-    current_revocation_ledger: Mapping[str, Any], source_record: Mapping[str, Any],
-    person_record: Mapping[str, Any], admission_receipt: Mapping[str, Any],
-    current_pointer: Mapping[str, Any], policy: Mapping[str, Any], principal_id: str,
-    action: str, requested_scope: str, requested_privacy_class: str, purpose: str,
-    at: str, current_session: Mapping[str, Any], authorization_request: Mapping[str, Any],
-    authorization_preflight: Mapping[str, Any], durable_replay_receipt: Mapping[str, Any] | None = None,
+    *,
+    identity: Mapping[str, Any],
+    consent_receipt: Mapping[str, Any],
+    current_revocation_ledger: Mapping[str, Any],
+    source_record: Mapping[str, Any],
+    person_record: Mapping[str, Any],
+    admission_receipt: Mapping[str, Any],
+    current_pointer: Mapping[str, Any],
+    admission_store: AdmissionReadStore,
+    policy: Mapping[str, Any],
+    principal_id: str,
+    action: str,
+    requested_scope: str,
+    requested_privacy_class: str,
+    purpose: str,
+    at: str,
+    current_session: Mapping[str, Any],
+    authorization_request: Mapping[str, Any],
+    authorization_preflight: Mapping[str, Any],
+    replay_store: DurableReplayReadStore,
 ) -> dict[str, Any]:
     """Pure R4 Person Twin authority/replay decision. Never executes or mutates."""
     action = str(action or "").upper()
@@ -246,8 +407,12 @@ def evaluate_person_twin_authority_replay(
         validate_person_twin_identity(identity)
         validate_source_consent_receipt(identity, consent_receipt)
         validate_consent_revocation_ledger(current_revocation_ledger)
-        validate_person_twin_record(person_record, identity=identity, consent_receipt=consent_receipt, source_record=source_record)
-
+        validate_person_twin_record(
+            person_record,
+            identity=identity,
+            consent_receipt=consent_receipt,
+            source_record=source_record,
+        )
         scope = _text(requested_scope, "requested_scope")
         privacy = _text(requested_privacy_class, "requested_privacy_class")
         if scope != person_record.get("scope") or privacy != person_record.get("privacy_class"):
@@ -258,63 +423,125 @@ def evaluate_person_twin_authority_replay(
         if person_record.get("revocation_ledger_hash") != ledger_hash:
             raise PersonTwinAuthorityReplayError("current revocation ledger identity drift")
         consent = evaluate_consent(
-            identity, consent_receipt, revocation_ledger=current_revocation_ledger, at=at,
-            requested_object_type=str(source_record["source_object_type"]), requested_scope=scope,
-            purpose=_text(purpose, "purpose"), require_source_read=False, require_memory_admission=True,
+            identity,
+            consent_receipt,
+            revocation_ledger=current_revocation_ledger,
+            at=at,
+            requested_object_type=str(source_record["source_object_type"]),
+            requested_scope=scope,
+            purpose=_text(purpose, "purpose"),
+            require_source_read=False,
+            require_memory_admission=True,
         )
         if consent.get("decision") != "ALLOW" or consent.get("revocation_ledger_hash") != ledger_hash:
             raise PersonTwinAuthorityReplayError(f"current consent denied:{consent.get('reason')}")
 
-        admission = _current_admission(identity, person_record, admission_receipt, current_pointer)
+        admission = _current_admission(identity, person_record, admission_receipt, current_pointer, admission_store)
         session_hash = _current_session(current_session)
         auth = _authorization_chain(authorization_request, authorization_preflight)
         validate_policy(policy)
         if policy.get("tenant_id") != identity.get("tenant_id"):
             raise PersonTwinAuthorityReplayError("policy tenant identity mismatch")
-
         if action == "EXECUTE":
             raise PersonTwinAuthorityReplayError("EXECUTE unsupported in R4")
         if action not in SUPPORTED_ACTIONS:
             raise PersonTwinAuthorityReplayError("action outside R4 scope")
+
+        principal = _text(principal_id, "principal_id")
         resource = {
-            "id": person_record["id"], "tenant_id": identity["tenant_id"], "scope": scope,
-            "source_acl_scopes": [str(source_record["source_acl"]["scope"])], "classification": privacy,
+            "id": person_record["id"],
+            "tenant_id": identity["tenant_id"],
+            "scope": scope,
+            "source_acl_scopes": [str(source_record["source_acl"]["scope"])],
+            "classification": privacy,
         }
         policy_decision = evaluate_policy(
-            policy, principal_id=_text(principal_id, "principal_id"), resource=resource,
-            action=action, context={"purpose": purpose}, at=at,
+            policy,
+            principal_id=principal,
+            resource=resource,
+            action=action,
+            context={"purpose": purpose},
+            at=at,
         )
         if policy_decision.get("decision") != "ALLOW":
             raise PersonTwinAuthorityReplayError(f"policy denied:{policy_decision.get('reason')}")
         actor = _actor(policy, _text(policy_decision.get("actor_id"), "policy.actor_id"))
-        if action == "APPROVE" and actor["actor_kind"] != "HUMAN":
-            raise PersonTwinAuthorityReplayError("APPROVE requires HUMAN actor")
-        policy_receipt_sha = _sha(policy_decision.get("receipt_sha256"), "policy.receipt_sha256")
+        if action == "APPROVE":
+            if actor["actor_kind"] != "HUMAN":
+                raise PersonTwinAuthorityReplayError("APPROVE requires HUMAN actor")
+            if auth["authorization_class"] != "HUMAN":
+                raise PersonTwinAuthorityReplayError("APPROVE requires HUMAN authorization identity")
+            if auth["authorization_id"] != principal:
+                raise PersonTwinAuthorityReplayError("APPROVE principal does not match authorization identity")
 
-        replay_identity = {
-            "tenant_id": identity["tenant_id"], "twin_id": identity["twin_id"],
-            "identity_fingerprint": identity["identity_fingerprint"], "person_record_id": person_record["id"],
+        policy_receipt_sha = _sha(policy_decision.get("receipt_sha256"), "policy.receipt_sha256")
+        replay_identity: dict[str, Any] = {
+            "tenant_id": identity["tenant_id"],
+            "twin_id": identity["twin_id"],
+            "identity_fingerprint": identity["identity_fingerprint"],
+            "person_record_id": person_record["id"],
             "provenance_hash": _sha(person_record.get("provenance_hash"), "record.provenance_hash"),
-            "source_record_id": person_record["source_record_id"], "source_content_hash": _sha(person_record.get("content_hash"), "record.content_hash"),
-            "privacy_class": privacy, "scope": scope, "consent_receipt_id": consent_receipt["consent_receipt_id"],
-            "consent_receipt_hash": consent_receipt["receipt_hash"], "current_revocation_ledger_hash": ledger_hash,
-            "admission_session_id": admission["session_id"], "candidate_id": admission["candidate_id"],
-            "candidate_sha256": admission["candidate_sha256"], "current_pointer_hash": _hash(dict(current_pointer)),
-            "policy_hash": _hash(dict(policy)), "policy_receipt_sha256": policy_receipt_sha,
-            "principal_id": principal_id, **actor, "current_session_hash": session_hash,
-            "authority_generation": current_session["authority_generation"], "challenge_id": current_session["challenge_id"],
-            "challenge_sha256": current_session["challenge_sha256"], "ack_sha256": current_session["ack_sha256"],
-            **auth, "action": action, "purpose": purpose,
+            "source_record_id": person_record["source_record_id"],
+            "source_content_hash": _sha(person_record.get("content_hash"), "record.content_hash"),
+            "privacy_class": privacy,
+            "scope": scope,
+            "consent_receipt_id": consent_receipt["consent_receipt_id"],
+            "consent_receipt_hash": consent_receipt["receipt_hash"],
+            "current_revocation_ledger_hash": ledger_hash,
+            "admission_session_id": admission["session_id"],
+            "candidate_id": admission["candidate_id"],
+            "candidate_sha256": admission["candidate_sha256"],
+            "current_pointer_hash": admission["current_pointer_hash"],
+            "policy_hash": _hash(dict(policy)),
+            "policy_receipt_sha256": policy_receipt_sha,
+            "principal_id": principal,
+            **actor,
+            "current_session_hash": session_hash,
+            "authority_generation": current_session["authority_generation"],
+            "challenge_id": current_session["challenge_id"],
+            "challenge_sha256": current_session["challenge_sha256"],
+            "ack_sha256": current_session["ack_sha256"],
+            **auth,
+            "action": action,
+            "purpose": purpose,
         }
+        replay_key = _stable_replay_key(replay_identity)
+        replay_identity["replay_key"] = replay_key
         replay_hash = _hash(replay_identity)
         binding = dict(replay_identity)
         binding["replay_identity_hash"] = replay_hash
 
-        if durable_replay_receipt is not None:
-            _validate_durable(durable_replay_receipt)
-            if durable_replay_receipt.get("replay_identity_hash") != replay_hash:
-                return _receipt("DENY", "REPLAY_IDENTITY_MISMATCH", action, at, binding=binding, replay_status="DIVERGENT_DENIED", policy_sha=policy_receipt_sha)
-            return _receipt("ALLOW", "EXACT_REPLAY_IDEMPOTENT", action, at, binding=binding, replay_status="EXACT_IDEMPOTENT", policy_sha=policy_receipt_sha)
-        return _receipt("ALLOW", "PERSON_TWIN_AUTHORITY_ALLOW", action, at, binding=binding, replay_status="NEW", policy_sha=policy_receipt_sha)
+        durable = _read_durable_replay(replay_store, replay_key=replay_key)
+        if durable is not None:
+            if durable.get("replay_key") != replay_key:
+                raise PersonTwinAuthorityReplayError("durable replay key lookup mismatch")
+            if durable.get("replay_identity_hash") != replay_hash:
+                return _receipt(
+                    "DENY",
+                    "REPLAY_IDENTITY_MISMATCH",
+                    action,
+                    at,
+                    binding=binding,
+                    replay_status="DIVERGENT_DENIED",
+                    policy_sha=policy_receipt_sha,
+                )
+            return _receipt(
+                "ALLOW",
+                "EXACT_REPLAY_IDEMPOTENT",
+                action,
+                at,
+                binding=binding,
+                replay_status="EXACT_IDEMPOTENT",
+                policy_sha=policy_receipt_sha,
+            )
+        return _receipt(
+            "ALLOW",
+            "PERSON_TWIN_AUTHORITY_ALLOW",
+            action,
+            at,
+            binding=binding,
+            replay_status="NEW",
+            policy_sha=policy_receipt_sha,
+        )
     except Exception as exc:
         return _receipt("DENY", f"FAIL_CLOSED:{type(exc).__name__}:{exc}", action, at)
