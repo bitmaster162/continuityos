@@ -7,6 +7,8 @@ from typing import Any, Iterable, Mapping
 
 IDENTITY_SCHEMA_VERSION = "continuityos.person-twin.identity/v1"
 CONSENT_SCHEMA_VERSION = "continuityos.person-twin.source-consent-receipt/v1"
+REVOCATION_ENTRY_SCHEMA_VERSION = "continuityos.person-twin.consent-revocation-entry/v1"
+REVOCATION_LEDGER_SCHEMA_VERSION = "continuityos.person-twin.consent-revocation-ledger/v1"
 TWIN_CLASS = "PERSON"
 CONTROLLER_KINDS = {"HUMAN", "ORGANIZATION"}
 AUTHORIZING_PRINCIPAL_KINDS = {"HUMAN", "ORGANIZATION"}
@@ -58,6 +60,29 @@ def _normalized_strings(values: Iterable[str], field: str, *, allow_empty: bool 
     return result
 
 
+def _normalized_delegated_admins(values: Iterable[Mapping[str, Any]]) -> list[dict[str, str]]:
+    if isinstance(values, (str, bytes, Mapping)):
+        raise PersonTwinContractError("delegated_admins must be a collection of principal bindings")
+    normalized: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, Mapping) or set(value) != {"principal_id", "principal_kind"}:
+            raise PersonTwinContractError(
+                "delegated_admins entries must contain principal_id and principal_kind"
+            )
+        principal_id = _non_empty_string(value["principal_id"], "delegated_admins.principal_id")
+        principal_kind = _non_empty_string(value["principal_kind"], "delegated_admins.principal_kind")
+        if principal_kind not in AUTHORIZING_PRINCIPAL_KINDS:
+            raise PersonTwinContractError(
+                "delegated admin principal_kind must be HUMAN or ORGANIZATION"
+            )
+        if principal_id in seen:
+            raise PersonTwinContractError("delegated_admin principal_id values must be unique")
+        seen.add(principal_id)
+        normalized.append({"principal_id": principal_id, "principal_kind": principal_kind})
+    return sorted(normalized, key=lambda item: (item["principal_id"], item["principal_kind"]))
+
+
 def _validate_sha256(value: Any, field: str) -> str:
     text = _non_empty_string(value, field)
     if len(text) != 64:
@@ -85,7 +110,7 @@ def build_person_twin_identity(
     created_at: str,
     twin_id: str | None = None,
     recovery_authorities: Iterable[str] = (),
-    delegated_admins: Iterable[str] = (),
+    delegated_admins: Iterable[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     tenant = _non_empty_string(tenant_id, "tenant_id")
     subject = _non_empty_string(subject_id, "subject_id")
@@ -117,9 +142,7 @@ def build_person_twin_identity(
         "recovery_authorities": _normalized_strings(
             recovery_authorities, "recovery_authorities", allow_empty=True
         ),
-        "delegated_admins": _normalized_strings(
-            delegated_admins, "delegated_admins", allow_empty=True
-        ),
+        "delegated_admins": _normalized_delegated_admins(delegated_admins),
         "production_admission_status": NOT_PRODUCTION_ADMITTED,
     }
     body["identity_fingerprint"] = _canonical_hash(body)
@@ -171,17 +194,45 @@ def validate_person_twin_identity(identity: Mapping[str, Any]) -> None:
         raise PersonTwinContractError("R1 identity cannot claim production admission")
 
     recovery = _normalized_strings(identity["recovery_authorities"], "recovery_authorities", allow_empty=True)
-    admins = _normalized_strings(identity["delegated_admins"], "delegated_admins", allow_empty=True)
+    admins = _normalized_delegated_admins(identity["delegated_admins"])
     if recovery != list(identity["recovery_authorities"]):
         raise PersonTwinContractError("recovery_authorities must be canonical sorted unique strings")
     if admins != list(identity["delegated_admins"]):
-        raise PersonTwinContractError("delegated_admins must be canonical sorted unique strings")
+        raise PersonTwinContractError("delegated_admins must be canonical sorted unique principal bindings")
 
     fingerprint = _validate_sha256(identity["identity_fingerprint"], "identity_fingerprint")
     body = dict(identity)
     body.pop("identity_fingerprint")
     if fingerprint != _canonical_hash(body):
         raise PersonTwinContractError("identity_fingerprint mismatch")
+
+
+def _bound_principal_kind(identity: Mapping[str, Any], principal_id: str) -> str | None:
+    if principal_id == identity["controller_id"]:
+        return str(identity["controller_kind"])
+    for admin in identity["delegated_admins"]:
+        if admin["principal_id"] == principal_id:
+            return str(admin["principal_kind"])
+    return None
+
+
+def _validate_authorizing_principal(
+    identity: Mapping[str, Any],
+    *,
+    principal_id: Any,
+    principal_kind: Any,
+    field_prefix: str,
+) -> tuple[str, str]:
+    principal = _non_empty_string(principal_id, f"{field_prefix}_principal")
+    kind = _non_empty_string(principal_kind, f"{field_prefix}_principal_kind")
+    if kind not in AUTHORIZING_PRINCIPAL_KINDS:
+        raise PersonTwinContractError("only HUMAN or ORGANIZATION principals may authorize consent state")
+    bound_kind = _bound_principal_kind(identity, principal)
+    if bound_kind is None:
+        raise PersonTwinContractError("authorizing principal is not the controller or delegated admin")
+    if kind != bound_kind:
+        raise PersonTwinContractError("authorizing principal kind does not match identity binding")
+    return principal, kind
 
 
 def _consent_id_body(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -207,13 +258,6 @@ def _consent_id_body(payload: Mapping[str, Any]) -> dict[str, Any]:
     return {key: payload[key] for key in keys}
 
 
-def _authorized_consent_principals(identity: Mapping[str, Any]) -> set[str]:
-    return {
-        str(identity["controller_id"]),
-        *[str(value) for value in identity["delegated_admins"]],
-    }
-
-
 def build_source_consent_receipt(
     identity: Mapping[str, Any],
     *,
@@ -232,12 +276,12 @@ def build_source_consent_receipt(
     policy_version: str,
 ) -> dict[str, Any]:
     validate_person_twin_identity(identity)
-    principal = _non_empty_string(authorizing_principal, "authorizing_principal")
-    principal_kind = _non_empty_string(authorizing_principal_kind, "authorizing_principal_kind")
-    if principal_kind not in AUTHORIZING_PRINCIPAL_KINDS:
-        raise PersonTwinContractError("only HUMAN or ORGANIZATION principals may issue consent")
-    if principal not in _authorized_consent_principals(identity):
-        raise PersonTwinContractError("authorizing principal is not the controller or delegated admin")
+    principal, principal_kind = _validate_authorizing_principal(
+        identity,
+        principal_id=authorizing_principal,
+        principal_kind=authorizing_principal_kind,
+        field_prefix="authorizing",
+    )
 
     _non_empty_string(source_system, "source_system")
     _validate_sha256(source_identity_hash, "source_identity_hash")
@@ -254,9 +298,9 @@ def build_source_consent_receipt(
         if expires <= issued:
             raise PersonTwinContractError("expires_at must be after issued_at")
     if revoked_at is not None:
-        revoked = _parse_time(revoked_at)
-        if revoked < issued:
-            raise PersonTwinContractError("revoked_at cannot be before issued_at")
+        raise PersonTwinContractError(
+            "revoked_at must be null in an immutable consent receipt; use the revocation ledger"
+        )
     if not isinstance(source_read_authority, bool):
         raise PersonTwinContractError("source_read_authority must be boolean")
     if not isinstance(memory_admission_authority, bool):
@@ -276,7 +320,7 @@ def build_source_consent_receipt(
         "purpose": purpose,
         "issued_at": issued_at,
         "expires_at": expires_at,
-        "revoked_at": revoked_at,
+        "revoked_at": None,
         "source_read_authority": source_read_authority,
         "memory_admission_authority": memory_admission_authority,
         "policy_version": policy_version,
@@ -321,11 +365,12 @@ def validate_source_consent_receipt(identity: Mapping[str, Any], receipt: Mappin
     if receipt["identity_fingerprint"] != identity["identity_fingerprint"]:
         raise PersonTwinContractError("consent identity_fingerprint mismatch")
 
-    principal = _non_empty_string(receipt["authorizing_principal"], "authorizing_principal")
-    if receipt["authorizing_principal_kind"] not in AUTHORIZING_PRINCIPAL_KINDS:
-        raise PersonTwinContractError("only HUMAN or ORGANIZATION principals may issue consent")
-    if principal not in _authorized_consent_principals(identity):
-        raise PersonTwinContractError("authorizing principal is not the controller or delegated admin")
+    _validate_authorizing_principal(
+        identity,
+        principal_id=receipt["authorizing_principal"],
+        principal_kind=receipt["authorizing_principal_kind"],
+        field_prefix="authorizing",
+    )
 
     _non_empty_string(receipt["source_system"], "source_system")
     _validate_sha256(receipt["source_identity_hash"], "source_identity_hash")
@@ -347,9 +392,9 @@ def validate_source_consent_receipt(identity: Mapping[str, Any], receipt: Mappin
         if expires <= issued:
             raise PersonTwinContractError("expires_at must be after issued_at")
     if receipt["revoked_at"] is not None:
-        revoked = _parse_time(receipt["revoked_at"])
-        if revoked < issued:
-            raise PersonTwinContractError("revoked_at cannot be before issued_at")
+        raise PersonTwinContractError(
+            "revoked_at must be null in an immutable consent receipt; use the revocation ledger"
+        )
 
     if not isinstance(receipt["source_read_authority"], bool):
         raise PersonTwinContractError("source_read_authority must be boolean")
@@ -367,10 +412,152 @@ def validate_source_consent_receipt(identity: Mapping[str, Any], receipt: Mappin
         raise PersonTwinContractError("receipt_hash mismatch")
 
 
+def build_consent_revocation_entry(
+    identity: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+    *,
+    revoking_principal: str,
+    revoking_principal_kind: str,
+    revoked_at: str,
+    reason: str,
+) -> dict[str, Any]:
+    validate_person_twin_identity(identity)
+    validate_source_consent_receipt(identity, receipt)
+    principal, kind = _validate_authorizing_principal(
+        identity,
+        principal_id=revoking_principal,
+        principal_kind=revoking_principal_kind,
+        field_prefix="revoking",
+    )
+    revoked = _parse_time(revoked_at)
+    if revoked < _parse_time(receipt["issued_at"]):
+        raise PersonTwinContractError("revoked_at cannot be before issued_at")
+    revocation_reason = _non_empty_string(reason, "reason")
+
+    entry: dict[str, Any] = {
+        "schema_version": REVOCATION_ENTRY_SCHEMA_VERSION,
+        "consent_receipt_id": receipt["consent_receipt_id"],
+        "receipt_hash": receipt["receipt_hash"],
+        "twin_id": identity["twin_id"],
+        "tenant_id": identity["tenant_id"],
+        "identity_fingerprint": identity["identity_fingerprint"],
+        "revoking_principal": principal,
+        "revoking_principal_kind": kind,
+        "revoked_at": revoked_at,
+        "reason": revocation_reason,
+    }
+    entry["entry_hash"] = _canonical_hash(entry)
+    validate_consent_revocation_entry(identity, receipt, entry)
+    return entry
+
+
+def validate_consent_revocation_entry(
+    identity: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+    entry: Mapping[str, Any],
+) -> None:
+    validate_person_twin_identity(identity)
+    validate_source_consent_receipt(identity, receipt)
+    required = {
+        "schema_version",
+        "consent_receipt_id",
+        "receipt_hash",
+        "twin_id",
+        "tenant_id",
+        "identity_fingerprint",
+        "revoking_principal",
+        "revoking_principal_kind",
+        "revoked_at",
+        "reason",
+        "entry_hash",
+    }
+    if set(entry) != required:
+        raise PersonTwinContractError("revocation entry fields do not match the v1 contract")
+    if entry["schema_version"] != REVOCATION_ENTRY_SCHEMA_VERSION:
+        raise PersonTwinContractError("unsupported revocation entry schema_version")
+    if entry["consent_receipt_id"] != receipt["consent_receipt_id"]:
+        raise PersonTwinContractError("revocation consent_receipt_id mismatch")
+    if entry["receipt_hash"] != receipt["receipt_hash"]:
+        raise PersonTwinContractError("revocation receipt_hash mismatch")
+    if entry["twin_id"] != identity["twin_id"]:
+        raise PersonTwinContractError("revocation twin_id mismatch")
+    if entry["tenant_id"] != identity["tenant_id"]:
+        raise PersonTwinContractError("revocation tenant_id mismatch")
+    if entry["identity_fingerprint"] != identity["identity_fingerprint"]:
+        raise PersonTwinContractError("revocation identity_fingerprint mismatch")
+    _validate_authorizing_principal(
+        identity,
+        principal_id=entry["revoking_principal"],
+        principal_kind=entry["revoking_principal_kind"],
+        field_prefix="revoking",
+    )
+    if _parse_time(entry["revoked_at"]) < _parse_time(receipt["issued_at"]):
+        raise PersonTwinContractError("revoked_at cannot be before issued_at")
+    _non_empty_string(entry["reason"], "reason")
+    entry_hash = _validate_sha256(entry["entry_hash"], "entry_hash")
+    body = dict(entry)
+    body.pop("entry_hash")
+    if entry_hash != _canonical_hash(body):
+        raise PersonTwinContractError("revocation entry_hash mismatch")
+
+
+def build_consent_revocation_ledger(
+    entries: Iterable[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    if isinstance(entries, (str, bytes, Mapping)):
+        raise PersonTwinContractError("revocation ledger entries must be a collection")
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            raise PersonTwinContractError("revocation ledger entries must be mappings")
+        copied = dict(entry)
+        receipt_id = _non_empty_string(copied.get("consent_receipt_id"), "consent_receipt_id")
+        if receipt_id in seen:
+            raise PersonTwinContractError("revocation ledger may contain only one entry per consent receipt")
+        seen.add(receipt_id)
+        normalized.append(copied)
+    normalized.sort(key=lambda item: item["consent_receipt_id"])
+    ledger: dict[str, Any] = {
+        "schema_version": REVOCATION_LEDGER_SCHEMA_VERSION,
+        "entries": normalized,
+    }
+    ledger["ledger_hash"] = _canonical_hash(ledger)
+    validate_consent_revocation_ledger(ledger)
+    return ledger
+
+
+def validate_consent_revocation_ledger(ledger: Mapping[str, Any]) -> None:
+    required = {"schema_version", "entries", "ledger_hash"}
+    if set(ledger) != required:
+        raise PersonTwinContractError("revocation ledger fields do not match the v1 contract")
+    if ledger["schema_version"] != REVOCATION_LEDGER_SCHEMA_VERSION:
+        raise PersonTwinContractError("unsupported revocation ledger schema_version")
+    entries = ledger["entries"]
+    if not isinstance(entries, list):
+        raise PersonTwinContractError("revocation ledger entries must be a list")
+    ids: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            raise PersonTwinContractError("revocation ledger entries must be mappings")
+        ids.append(_non_empty_string(entry.get("consent_receipt_id"), "consent_receipt_id"))
+        _validate_sha256(entry.get("entry_hash"), "entry_hash")
+    if ids != sorted(ids) or len(ids) != len(set(ids)):
+        raise PersonTwinContractError(
+            "revocation ledger entries must be sorted and unique by consent_receipt_id"
+        )
+    ledger_hash = _validate_sha256(ledger["ledger_hash"], "ledger_hash")
+    body = dict(ledger)
+    body.pop("ledger_hash")
+    if ledger_hash != _canonical_hash(body):
+        raise PersonTwinContractError("revocation ledger_hash mismatch")
+
+
 def evaluate_consent(
     identity: Mapping[str, Any] | None,
     receipt: Mapping[str, Any] | None,
     *,
+    revocation_ledger: Mapping[str, Any] | None,
     at: str,
     requested_object_type: str,
     requested_scope: str,
@@ -396,9 +583,35 @@ def evaluate_consent(
     except PersonTwinContractError:
         return {"decision": "DENY", "reason": "INVALID_CONSENT"}
 
-    when = _parse_time(at)
-    if receipt["revoked_at"] is not None and _parse_time(receipt["revoked_at"]) <= when:
-        return {"decision": "DENY", "reason": "CONSENT_REVOKED"}
+    if revocation_ledger is None:
+        return {"decision": "DENY", "reason": "MISSING_REVOCATION_LEDGER"}
+    try:
+        validate_consent_revocation_ledger(revocation_ledger)
+    except PersonTwinContractError:
+        return {"decision": "DENY", "reason": "INVALID_REVOCATION_LEDGER"}
+
+    try:
+        when = _parse_time(at)
+    except PersonTwinContractError:
+        return {"decision": "DENY", "reason": "INVALID_EVALUATION_TIME"}
+    issued = _parse_time(receipt["issued_at"])
+    if when < issued:
+        return {"decision": "DENY", "reason": "CONSENT_NOT_YET_VALID"}
+
+    relevant = [
+        entry
+        for entry in revocation_ledger["entries"]
+        if entry["consent_receipt_id"] == receipt["consent_receipt_id"]
+    ]
+    if relevant:
+        entry = relevant[0]
+        try:
+            validate_consent_revocation_entry(identity, receipt, entry)
+        except PersonTwinContractError:
+            return {"decision": "DENY", "reason": "INVALID_REVOCATION_LEDGER"}
+        if _parse_time(entry["revoked_at"]) <= when:
+            return {"decision": "DENY", "reason": "CONSENT_REVOKED"}
+
     if receipt["expires_at"] is not None and _parse_time(receipt["expires_at"]) <= when:
         return {"decision": "DENY", "reason": "CONSENT_EXPIRED"}
 
@@ -421,5 +634,6 @@ def evaluate_consent(
         "consent_receipt_id": receipt["consent_receipt_id"],
         "identity_fingerprint": identity["identity_fingerprint"],
         "receipt_hash": receipt["receipt_hash"],
+        "revocation_ledger_hash": revocation_ledger["ledger_hash"],
         "production_admission_status": NOT_PRODUCTION_ADMITTED,
     }
