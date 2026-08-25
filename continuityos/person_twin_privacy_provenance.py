@@ -10,6 +10,7 @@ from .person_twin_admission_contracts import (
     NOT_PRODUCTION_ADMITTED,
     PersonTwinContractError,
     evaluate_consent,
+    validate_consent_revocation_ledger,
     validate_person_twin_identity,
     validate_source_consent_receipt,
 )
@@ -25,25 +26,31 @@ COMPANY = "COMPANY"
 RESTRICTED = "RESTRICTED"
 PRIVACY_CLASSES = {PERSON_PRIVATE, PERSON_SHARED, TEAM, COMPANY, RESTRICTED}
 
+
 class PersonTwinPrivacyProvenanceError(ValueError):
     pass
+
 
 def _canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
+
 def _canonical_hash(value: Any) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
 
 def _non_empty(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise PersonTwinPrivacyProvenanceError(f"{field} must be a non-empty string")
     return value
 
+
 def _sha256(value: Any, field: str) -> str:
     text = _non_empty(value, field)
     if len(text) != 64 or any(ch not in "0123456789abcdef" for ch in text):
         raise PersonTwinPrivacyProvenanceError(f"{field} must be a lowercase sha256 hex digest")
     return text
+
 
 def _canonical_scopes(scopes: Iterable[str]) -> list[str]:
     if isinstance(scopes, (str, bytes)):
@@ -55,14 +62,17 @@ def _canonical_scopes(scopes: Iterable[str]) -> list[str]:
         raise PersonTwinPrivacyProvenanceError("wildcard scopes are not allowed")
     return result
 
+
 def canonical_person_private_scope(twin_id: str) -> str:
     return f"person:{_non_empty(twin_id, 'twin_id')}:private"
+
 
 def canonical_person_shared_scope(twin_id: str, share_id: str) -> str:
     share = _non_empty(share_id, "share_id")
     if "*" in share or ":" in share:
         raise PersonTwinPrivacyProvenanceError("share_id must not contain wildcard or colon")
     return f"person:{_non_empty(twin_id, 'twin_id')}:shared:{share}"
+
 
 def validate_privacy_scope(*, twin_id: str, privacy_class: str, scope: str) -> None:
     twin = _non_empty(twin_id, "twin_id")
@@ -92,6 +102,7 @@ def validate_privacy_scope(*, twin_id: str, privacy_class: str, scope: str) -> N
         if not value.startswith("restricted:") or value == "restricted:":
             raise PersonTwinPrivacyProvenanceError("RESTRICTED scope must use restricted:<id>")
 
+
 def infer_privacy_class(source_record: Mapping[str, Any], *, twin_id: str) -> str:
     visibility = _non_empty(source_record.get("visibility"), "visibility").upper()
     scope = _non_empty(source_record.get("scope"), "scope")
@@ -100,7 +111,11 @@ def infer_privacy_class(source_record: Mapping[str, Any], *, twin_id: str) -> st
         shared_prefix = f"person:{twin_id}:shared:"
         if scope == private_scope:
             privacy_class = PERSON_PRIVATE
-        elif scope.startswith(shared_prefix) and scope[len(shared_prefix):] and ":" not in scope[len(shared_prefix):]:
+        elif (
+            scope.startswith(shared_prefix)
+            and scope[len(shared_prefix):]
+            and ":" not in scope[len(shared_prefix):]
+        ):
             privacy_class = PERSON_SHARED
         else:
             raise PersonTwinPrivacyProvenanceError(
@@ -117,6 +132,7 @@ def infer_privacy_class(source_record: Mapping[str, Any], *, twin_id: str) -> st
     validate_privacy_scope(twin_id=twin_id, privacy_class=privacy_class, scope=scope)
     return privacy_class
 
+
 def validate_no_implicit_scope_promotion(
     source_record: Mapping[str, Any],
     *,
@@ -125,11 +141,16 @@ def validate_no_implicit_scope_promotion(
     target_scope: str,
 ) -> None:
     source_class = infer_privacy_class(source_record, twin_id=twin_id)
-    validate_privacy_scope(twin_id=twin_id, privacy_class=target_privacy_class, scope=target_scope)
+    validate_privacy_scope(
+        twin_id=twin_id,
+        privacy_class=target_privacy_class,
+        scope=target_scope,
+    )
     if target_privacy_class != source_class or target_scope != source_record.get("scope"):
         raise PersonTwinPrivacyProvenanceError(
             "implicit privacy/scope promotion is forbidden in P3-P1 R2"
         )
+
 
 def deterministic_source_identity_hash(source_record: Mapping[str, Any]) -> str:
     identity = {
@@ -138,6 +159,50 @@ def deterministic_source_identity_hash(source_record: Mapping[str, Any]) -> str:
         "source_system": _non_empty(source_record.get("source_system"), "source_system"),
     }
     return _canonical_hash(identity)
+
+
+def _deterministic_source_record_id(source_record: Mapping[str, Any]) -> str:
+    identity = {
+        key: _non_empty(source_record.get(key), key)
+        for key in (
+            "tenant_id",
+            "source_system",
+            "source_object_type",
+            "source_object_id",
+            "revision_id",
+        )
+    }
+    return f"cti_{_canonical_hash(identity)[:32]}"
+
+
+def _deterministic_source_envelope_id(source_record: Mapping[str, Any]) -> str:
+    identity = {
+        key: _non_empty(source_record.get(key), key)
+        for key in (
+            "tenant_id",
+            "connector_id",
+            "source_system",
+            "source_object_type",
+            "source_object_id",
+            "revision_id",
+        )
+    }
+    return f"src_{_canonical_hash(identity)[:32]}"
+
+
+def _deterministic_person_record_id(
+    *,
+    twin_id: Any,
+    source_record_id: Any,
+    admission_session_id: Any,
+) -> str:
+    identity = {
+        "twin_id": _non_empty(twin_id, "twin_id"),
+        "source_record_id": _non_empty(source_record_id, "source_record_id"),
+        "admission_session_id": _non_empty(admission_session_id, "admission_session_id"),
+    }
+    return f"ptp_{_canonical_hash(identity)[:32]}"
+
 
 def _validate_source_record(source_record: Mapping[str, Any]) -> None:
     required = (
@@ -154,8 +219,24 @@ def _validate_source_record(source_record: Mapping[str, Any]) -> None:
         )
     if source_record["schema_version"] != "company-twin-ingested-record/1":
         raise PersonTwinPrivacyProvenanceError("unsupported P2 source record schema_version")
+    for field in (
+        "id", "tenant_id", "connector_id", "source_system", "source_object_type",
+        "source_object_id", "revision_id", "source_envelope_id", "observed_at",
+        "effective_at", "scope", "visibility", "actor_id", "actor_kind", "authority_class",
+    ):
+        _non_empty(source_record[field], field)
+    if source_record["id"] != _deterministic_source_record_id(source_record):
+        raise PersonTwinPrivacyProvenanceError("source record id is not deterministic")
+    if source_record["source_envelope_id"] != _deterministic_source_envelope_id(source_record):
+        raise PersonTwinPrivacyProvenanceError("source envelope id is not deterministic")
     if source_record["truth_class"] != "EVIDENCE":
         raise PersonTwinPrivacyProvenanceError("Person Twin provenance source must be EVIDENCE")
+    if not isinstance(source_record["deleted"], bool):
+        raise PersonTwinPrivacyProvenanceError("source deleted must be boolean")
+    for field in ("supersedes", "duplicate_of"):
+        value = source_record[field]
+        if value is not None:
+            _non_empty(value, field)
     _sha256(source_record["content_hash"], "content_hash")
     expected_content_hash = _canonical_hash(source_record["payload"])
     if source_record["content_hash"] != expected_content_hash:
@@ -167,6 +248,7 @@ def _validate_source_record(source_record: Mapping[str, Any]) -> None:
         raise PersonTwinPrivacyProvenanceError("source ACL scope mismatch")
     if str(acl.get("visibility", "")).upper() != str(source_record["visibility"]).upper():
         raise PersonTwinPrivacyProvenanceError("source ACL visibility mismatch")
+
 
 def _binding_body(source_record: Mapping[str, Any]) -> dict[str, Any]:
     return {
@@ -191,6 +273,7 @@ def _binding_body(source_record: Mapping[str, Any]) -> dict[str, Any]:
         "deleted": bool(source_record.get("deleted", False)),
     }
 
+
 def build_person_twin_provenance(
     identity: Mapping[str, Any],
     consent_receipt: Mapping[str, Any],
@@ -208,15 +291,24 @@ def build_person_twin_provenance(
         raise PersonTwinPrivacyProvenanceError(str(exc)) from exc
     _validate_source_record(source_record)
     if source_record["tenant_id"] != identity["tenant_id"]:
-        raise PersonTwinPrivacyProvenanceError("source tenant_id does not match Person Twin identity")
+        raise PersonTwinPrivacyProvenanceError(
+            "source tenant_id does not match Person Twin identity"
+        )
 
-    privacy_class = infer_privacy_class(source_record, twin_id=str(identity["twin_id"]))
+    privacy_class = infer_privacy_class(
+        source_record,
+        twin_id=str(identity["twin_id"]),
+    )
     scope = str(source_record["scope"])
     source_identity_hash = deterministic_source_identity_hash(source_record)
     if consent_receipt["source_system"] != source_record["source_system"]:
-        raise PersonTwinPrivacyProvenanceError("consent source_system does not match source record")
+        raise PersonTwinPrivacyProvenanceError(
+            "consent source_system does not match source record"
+        )
     if consent_receipt["source_identity_hash"] != source_identity_hash:
-        raise PersonTwinPrivacyProvenanceError("consent source_identity_hash does not match source record")
+        raise PersonTwinPrivacyProvenanceError(
+            "consent source_identity_hash does not match source record"
+        )
 
     decision = evaluate_consent(
         identity,
@@ -231,13 +323,18 @@ def build_person_twin_provenance(
     )
     if decision.get("decision") != "ALLOW":
         raise PersonTwinPrivacyProvenanceError(
-            f"consent denied at Person Twin provenance boundary: {decision.get('reason', 'UNKNOWN')}"
+            "consent denied at Person Twin provenance boundary: "
+            f"{decision.get('reason', 'UNKNOWN')}"
         )
 
     admission = _non_empty(admission_session_id, "admission_session_id")
     body: dict[str, Any] = {
         "schema_version": PRIVACY_PROVENANCE_SCHEMA_VERSION,
-        "id": f"ptp_{_canonical_hash({'twin_id': identity['twin_id'], 'source_record_id': source_record['id'], 'admission_session_id': admission})[:32]}",
+        "id": _deterministic_person_record_id(
+            twin_id=identity["twin_id"],
+            source_record_id=source_record["id"],
+            admission_session_id=admission,
+        ),
         "tenant_id": identity["tenant_id"],
         "twin_id": identity["twin_id"],
         "identity_fingerprint": identity["identity_fingerprint"],
@@ -256,11 +353,16 @@ def build_person_twin_provenance(
         "can_execute": False,
     }
     body["provenance_hash"] = _canonical_hash(body)
-    validate_person_twin_record(body)
-    validate_person_twin_provenance_binding(identity, consent_receipt, source_record, body)
+    validate_person_twin_record(
+        body,
+        identity=identity,
+        consent_receipt=consent_receipt,
+        source_record=source_record,
+    )
     return body
 
-def validate_person_twin_record(record: Mapping[str, Any]) -> None:
+
+def _validate_person_twin_record_shape(record: Mapping[str, Any]) -> None:
     required = {
         "schema_version", "id", "tenant_id", "twin_id", "identity_fingerprint",
         "privacy_class", "scope", "source_identity_hash", "source_record_id", "connector_id",
@@ -272,31 +374,81 @@ def validate_person_twin_record(record: Mapping[str, Any]) -> None:
         "execution_authority", "can_execute", "provenance_hash",
     }
     if set(record) != required:
-        raise PersonTwinPrivacyProvenanceError("Person Twin provenance fields do not match R2 contract")
+        raise PersonTwinPrivacyProvenanceError(
+            "Person Twin provenance fields do not match R2 contract"
+        )
     if record["schema_version"] != PRIVACY_PROVENANCE_SCHEMA_VERSION:
-        raise PersonTwinPrivacyProvenanceError("unsupported Person Twin provenance schema_version")
-    _non_empty(record["id"], "id")
-    _non_empty(record["tenant_id"], "tenant_id")
-    _non_empty(record["twin_id"], "twin_id")
+        raise PersonTwinPrivacyProvenanceError(
+            "unsupported Person Twin provenance schema_version"
+        )
+    for field in (
+        "id", "tenant_id", "twin_id", "source_record_id", "connector_id",
+        "source_system", "source_object_type", "source_object_id", "revision_id",
+        "source_envelope_id", "observed_at", "effective_at", "visibility",
+        "actor_id", "actor_kind", "authority_class", "consent_receipt_id",
+        "admission_session_id",
+    ):
+        _non_empty(record[field], field)
+    expected_id = _deterministic_person_record_id(
+        twin_id=record["twin_id"],
+        source_record_id=record["source_record_id"],
+        admission_session_id=record["admission_session_id"],
+    )
+    if record["id"] != expected_id:
+        raise PersonTwinPrivacyProvenanceError(
+            "Person Twin record id is not deterministic"
+        )
     _sha256(record["identity_fingerprint"], "identity_fingerprint")
-    validate_privacy_scope(twin_id=str(record["twin_id"]), privacy_class=str(record["privacy_class"]), scope=str(record["scope"]))
+    validate_privacy_scope(
+        twin_id=str(record["twin_id"]),
+        privacy_class=str(record["privacy_class"]),
+        scope=str(record["scope"]),
+    )
     _sha256(record["source_identity_hash"], "source_identity_hash")
     _sha256(record["content_hash"], "content_hash")
     _sha256(record["consent_receipt_hash"], "consent_receipt_hash")
     _sha256(record["revocation_ledger_hash"], "revocation_ledger_hash")
+    for field in ("supersedes", "duplicate_of"):
+        value = record[field]
+        if value is not None:
+            _non_empty(value, field)
+    if not isinstance(record["deleted"], bool):
+        raise PersonTwinPrivacyProvenanceError("deleted must be boolean")
     if record["truth_class"] != "EVIDENCE":
         raise PersonTwinPrivacyProvenanceError("truth_class must remain EVIDENCE")
     if record["production_admission_status"] != NOT_PRODUCTION_ADMITTED:
         raise PersonTwinPrivacyProvenanceError("R2 cannot claim production admission")
     if record["execution_authority"] != "NONE" or record["can_execute"] is not False:
-        raise PersonTwinPrivacyProvenanceError("R2 record cannot carry execution authority")
+        raise PersonTwinPrivacyProvenanceError(
+            "R2 record cannot carry execution authority"
+        )
     if record["content_hash"] != _canonical_hash(record["payload"]):
-        raise PersonTwinPrivacyProvenanceError("content_hash does not match payload")
+        raise PersonTwinPrivacyProvenanceError(
+            "content_hash does not match payload"
+        )
     provenance_hash = _sha256(record["provenance_hash"], "provenance_hash")
     body = dict(record)
     body.pop("provenance_hash")
     if provenance_hash != _canonical_hash(body):
         raise PersonTwinPrivacyProvenanceError("provenance_hash mismatch")
+
+
+def validate_person_twin_record(
+    record: Mapping[str, Any],
+    *,
+    identity: Mapping[str, Any],
+    consent_receipt: Mapping[str, Any],
+    source_record: Mapping[str, Any],
+) -> None:
+    """Validate one record against immutable external identity/source/consent anchors."""
+    _validate_person_twin_record_shape(record)
+    validate_person_twin_provenance_binding(
+        identity,
+        consent_receipt,
+        source_record,
+        record,
+    )
+
 
 def validate_person_twin_provenance_binding(
     identity: Mapping[str, Any],
@@ -310,70 +462,194 @@ def validate_person_twin_provenance_binding(
     except PersonTwinContractError as exc:
         raise PersonTwinPrivacyProvenanceError(str(exc)) from exc
     _validate_source_record(source_record)
-    validate_person_twin_record(person_record)
+    _validate_person_twin_record_shape(person_record)
+
     expected = _binding_body(source_record)
     for field, value in expected.items():
         if person_record[field] != value:
-            raise PersonTwinPrivacyProvenanceError(f"source provenance binding mismatch: {field}")
+            raise PersonTwinPrivacyProvenanceError(
+                f"source provenance binding mismatch: {field}"
+            )
     if person_record["tenant_id"] != identity["tenant_id"]:
         raise PersonTwinPrivacyProvenanceError("Person Twin tenant binding mismatch")
     if person_record["twin_id"] != identity["twin_id"]:
         raise PersonTwinPrivacyProvenanceError("Person Twin twin_id binding mismatch")
     if person_record["identity_fingerprint"] != identity["identity_fingerprint"]:
-        raise PersonTwinPrivacyProvenanceError("Person Twin identity fingerprint mismatch")
+        raise PersonTwinPrivacyProvenanceError(
+            "Person Twin identity fingerprint mismatch"
+        )
     if person_record["consent_receipt_id"] != consent_receipt["consent_receipt_id"]:
-        raise PersonTwinPrivacyProvenanceError("Person Twin consent receipt identity mismatch")
+        raise PersonTwinPrivacyProvenanceError(
+            "Person Twin consent receipt identity mismatch"
+        )
     if person_record["consent_receipt_hash"] != consent_receipt["receipt_hash"]:
-        raise PersonTwinPrivacyProvenanceError("Person Twin consent receipt hash mismatch")
-    if person_record["source_identity_hash"] != deterministic_source_identity_hash(source_record):
-        raise PersonTwinPrivacyProvenanceError("Person Twin source identity mismatch")
-    expected_privacy = infer_privacy_class(source_record, twin_id=str(identity["twin_id"]))
+        raise PersonTwinPrivacyProvenanceError(
+            "Person Twin consent receipt hash mismatch"
+        )
+    expected_source_identity = deterministic_source_identity_hash(source_record)
+    if person_record["source_identity_hash"] != expected_source_identity:
+        raise PersonTwinPrivacyProvenanceError(
+            "Person Twin source identity mismatch"
+        )
+    if consent_receipt["source_system"] != source_record["source_system"]:
+        raise PersonTwinPrivacyProvenanceError(
+            "consent source_system does not match source evidence"
+        )
+    if consent_receipt["source_identity_hash"] != expected_source_identity:
+        raise PersonTwinPrivacyProvenanceError(
+            "consent source_identity_hash does not match source evidence"
+        )
+    expected_privacy = infer_privacy_class(
+        source_record,
+        twin_id=str(identity["twin_id"]),
+    )
     if person_record["privacy_class"] != expected_privacy:
         raise PersonTwinPrivacyProvenanceError("Person Twin privacy class mismatch")
+
+
+def _anchored_current_consent(
+    record: Mapping[str, Any],
+    identity: Mapping[str, Any],
+    *,
+    source_records: Mapping[str, Mapping[str, Any]],
+    consent_receipts: Mapping[str, Mapping[str, Any]],
+    current_revocation_ledger: Mapping[str, Any] | None,
+    purpose: str,
+    at: str,
+) -> dict[str, Any]:
+    source_record = source_records.get(str(record["source_record_id"]))
+    if not isinstance(source_record, Mapping):
+        raise PersonTwinPrivacyProvenanceError(
+            "current source provenance evidence is missing"
+        )
+    receipt = consent_receipts.get(str(record["consent_receipt_id"]))
+    if not isinstance(receipt, Mapping):
+        raise PersonTwinPrivacyProvenanceError(
+            "current consent receipt evidence is missing"
+        )
+    validate_person_twin_record(
+        record,
+        identity=identity,
+        consent_receipt=receipt,
+        source_record=source_record,
+    )
+    decision = evaluate_consent(
+        identity,
+        receipt,
+        revocation_ledger=current_revocation_ledger,
+        at=at,
+        requested_object_type=str(record["source_object_type"]),
+        requested_scope=str(record["scope"]),
+        purpose=_non_empty(purpose, "purpose"),
+        require_source_read=False,
+        require_memory_admission=True,
+    )
+    if decision.get("decision") != "ALLOW":
+        raise PersonTwinPrivacyProvenanceError(
+            "current consent denied at Person Twin read boundary: "
+            f"{decision.get('reason', 'UNKNOWN')}"
+        )
+    return decision
+
 
 def filter_person_twin_records(
     records: Sequence[Mapping[str, Any]],
     identity: Mapping[str, Any],
     *,
     authorized_scopes: Iterable[str],
+    source_records: Mapping[str, Mapping[str, Any]],
+    consent_receipts: Mapping[str, Mapping[str, Any]],
+    current_revocation_ledger: Mapping[str, Any] | None,
+    purpose: str,
+    at: str,
 ) -> list[dict[str, Any]]:
     try:
         validate_person_twin_identity(identity)
     except PersonTwinContractError as exc:
         raise PersonTwinPrivacyProvenanceError(str(exc)) from exc
+    if not isinstance(source_records, Mapping):
+        raise PersonTwinPrivacyProvenanceError("source_records must be a mapping")
+    if not isinstance(consent_receipts, Mapping):
+        raise PersonTwinPrivacyProvenanceError("consent_receipts must be a mapping")
+    if current_revocation_ledger is None:
+        raise PersonTwinPrivacyProvenanceError(
+            "current revocation ledger is required at Person Twin read boundary"
+        )
+    try:
+        validate_consent_revocation_ledger(current_revocation_ledger)
+    except PersonTwinContractError as exc:
+        raise PersonTwinPrivacyProvenanceError(
+            f"invalid current revocation ledger: {exc}"
+        ) from exc
     scopes = set(_canonical_scopes(authorized_scopes))
-    validated: list[Mapping[str, Any]] = []
+
+    candidates: list[Mapping[str, Any]] = []
     for record in records:
-        validate_person_twin_record(record)
-        validated.append(record)
-    candidates = [
-        record for record in validated
-        if record["tenant_id"] == identity["tenant_id"]
-        and record["twin_id"] == identity["twin_id"]
-        and record["identity_fingerprint"] == identity["identity_fingerprint"]
-        and record["scope"] in scopes
-    ]
+        _validate_person_twin_record_shape(record)
+        if (
+            record["tenant_id"] == identity["tenant_id"]
+            and record["twin_id"] == identity["twin_id"]
+            and record["identity_fingerprint"] == identity["identity_fingerprint"]
+            and record["scope"] in scopes
+        ):
+            _anchored_current_consent(
+                record,
+                identity,
+                source_records=source_records,
+                consent_receipts=consent_receipts,
+                current_revocation_ledger=current_revocation_ledger,
+                purpose=purpose,
+                at=at,
+            )
+            candidates.append(record)
+
     visible_source_ids = {str(record["source_record_id"]) for record in candidates}
     result: list[dict[str, Any]] = []
     for record in candidates:
-        lineage = [str(record[field]) for field in ("supersedes", "duplicate_of") if record.get(field) is not None]
+        lineage = [
+            str(record[field])
+            for field in ("supersedes", "duplicate_of")
+            if record.get(field) is not None
+        ]
         if any(ref not in visible_source_ids for ref in lineage):
             continue
         result.append(copy.deepcopy(dict(record)))
     result.sort(key=lambda item: str(item["id"]))
     return result
 
+
 def build_person_twin_export_bundle(
     records: Sequence[Mapping[str, Any]],
     identity: Mapping[str, Any],
     *,
     authorized_scopes: Iterable[str],
+    source_records: Mapping[str, Mapping[str, Any]],
+    consent_receipts: Mapping[str, Mapping[str, Any]],
+    current_revocation_ledger: Mapping[str, Any] | None,
+    purpose: str,
     requested_at: str,
     requested_by: Mapping[str, Any],
     include_tombstones: bool = True,
 ) -> dict[str, Any]:
     scopes = _canonical_scopes(authorized_scopes)
-    visible = filter_person_twin_records(records, identity, authorized_scopes=scopes)
+    visible = filter_person_twin_records(
+        records,
+        identity,
+        authorized_scopes=scopes,
+        source_records=source_records,
+        consent_receipts=consent_receipts,
+        current_revocation_ledger=current_revocation_ledger,
+        purpose=purpose,
+        at=requested_at,
+    )
+    if current_revocation_ledger is None:
+        raise PersonTwinPrivacyProvenanceError(
+            "current revocation ledger is required for export"
+        )
+    current_ledger_hash = _sha256(
+        current_revocation_ledger.get("ledger_hash"),
+        "current_revocation_ledger.ledger_hash",
+    )
     p2_bundle = build_export_bundle(
         visible,
         tenant_id=str(identity["tenant_id"]),
@@ -404,6 +680,9 @@ def build_person_twin_export_bundle(
         "twin_id": identity["twin_id"],
         "identity_fingerprint": identity["identity_fingerprint"],
         "authorized_scopes": scopes,
+        "consent_purpose": _non_empty(purpose, "purpose"),
+        "consent_evaluated_at": _non_empty(requested_at, "requested_at"),
+        "current_revocation_ledger_hash": current_ledger_hash,
         "p2_export": p2_bundle,
         "person_provenance": person_manifest,
         "production_admission_status": NOT_PRODUCTION_ADMITTED,
@@ -413,21 +692,44 @@ def build_person_twin_export_bundle(
     body["bundle_hash"] = _canonical_hash(body)
     return body
 
+
 def bind_person_twin_lifecycle_target(
     records: Sequence[Mapping[str, Any]],
     identity: Mapping[str, Any],
     *,
     record_id: str,
     scope: str,
+    source_records: Mapping[str, Mapping[str, Any]],
+    consent_receipts: Mapping[str, Mapping[str, Any]],
+    current_revocation_ledger: Mapping[str, Any] | None,
+    purpose: str,
+    evaluated_at: str,
 ) -> dict[str, Any]:
     rid = _non_empty(record_id, "record_id")
     requested_scope = _non_empty(scope, "scope")
-    visible = filter_person_twin_records(records, identity, authorized_scopes=[requested_scope])
+    visible = filter_person_twin_records(
+        records,
+        identity,
+        authorized_scopes=[requested_scope],
+        source_records=source_records,
+        consent_receipts=consent_receipts,
+        current_revocation_ledger=current_revocation_ledger,
+        purpose=purpose,
+        at=evaluated_at,
+    )
     matches = [record for record in visible if record["id"] == rid]
     if len(matches) != 1:
         raise PersonTwinPrivacyProvenanceError(
             "lifecycle target requires one exact twin-bound record_id and scope"
         )
+    if current_revocation_ledger is None:
+        raise PersonTwinPrivacyProvenanceError(
+            "current revocation ledger is required for lifecycle binding"
+        )
+    current_ledger_hash = _sha256(
+        current_revocation_ledger.get("ledger_hash"),
+        "current_revocation_ledger.ledger_hash",
+    )
     record = matches[0]
     body: dict[str, Any] = {
         "schema_version": LIFECYCLE_TARGET_SCHEMA_VERSION,
@@ -440,6 +742,9 @@ def bind_person_twin_lifecycle_target(
         "privacy_class": record["privacy_class"],
         "provenance_hash": record["provenance_hash"],
         "consent_receipt_id": record["consent_receipt_id"],
+        "consent_purpose": _non_empty(purpose, "purpose"),
+        "consent_evaluated_at": _non_empty(evaluated_at, "evaluated_at"),
+        "current_revocation_ledger_hash": current_ledger_hash,
         "physical_delete": False,
         "production_admission_status": NOT_PRODUCTION_ADMITTED,
         "execution_authority": "NONE",
