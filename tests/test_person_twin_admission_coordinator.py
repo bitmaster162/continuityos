@@ -29,7 +29,9 @@ from continuityos.person_twin_admission_coordinator import (
 )
 
 VALIDATE_AT = "2026-08-25T12:00:00Z"
+COMMIT_AT = "2026-08-25T12:10:00Z"
 POSTVERIFY_AT = "2026-08-25T12:30:00Z"
+PROMOTE_AT = "2026-08-25T12:40:00Z"
 
 
 def _sha(payload: bytes | None) -> str | None:
@@ -108,7 +110,7 @@ def _source(identity, *, revision_id="r1", payload=None):
     return normalize_envelope(envelope)
 
 
-def _receipt(identity, source, *, policy_version="p3-p1-r3-test/1"):
+def _receipt(identity, source, *, policy_version="p3-p1-r3r1-test/1"):
     return build_source_consent_receipt(
         identity,
         authorizing_principal="human:owner",
@@ -127,7 +129,11 @@ def _receipt(identity, source, *, policy_version="p3-p1-r3-test/1"):
     )
 
 
-def _fixture(*, admission_session_id="admission:synthetic:r3:1", policy_version="p3-p1-r3-test/1"):
+def _fixture(
+    *,
+    admission_session_id="admission:synthetic:r3r1:1",
+    policy_version="p3-p1-r3r1-test/1",
+):
     identity = _identity()
     source = _source(identity)
     receipt = _receipt(identity, source, policy_version=policy_version)
@@ -144,7 +150,7 @@ def _fixture(*, admission_session_id="admission:synthetic:r3:1", policy_version=
     return identity, source, receipt, ledger, record
 
 
-def _coordinator(store=None, *, fixture=None, session_id="r3-session-1"):
+def _coordinator(store=None, *, fixture=None, session_id="r3r1-session-1"):
     identity, source, receipt, ledger, record = fixture or _fixture()
     store = store or MemoryAdmissionStore()
     coordinator = PersonTwinAdmissionCoordinator(
@@ -159,42 +165,81 @@ def _coordinator(store=None, *, fixture=None, session_id="r3-session-1"):
     return store, coordinator, identity, source, receipt, ledger, record
 
 
-def _through_commit(store=None, *, fixture=None):
-    store, c, identity, source, receipt, ledger, record = _coordinator(
-        store, fixture=fixture
-    )
+def _through_validate(store=None, *, fixture=None):
+    values = _coordinator(store, fixture=fixture)
+    store, c, identity, source, receipt, ledger, record = values
     assert c.staged()["state"] == STAGED
     assert c.validate(revocation_ledger=ledger, at=VALIDATE_AT)["state"] == VALIDATED
-    assert c.commit_not_current()["state"] == COMMITTED_NOT_CURRENT
     return store, c, identity, source, receipt, ledger, record
 
 
-def test_happy_path_staged_validated_committed_postverified_current():
+def _through_commit(store=None, *, fixture=None):
+    store, c, identity, source, receipt, ledger, record = _through_validate(
+        store,
+        fixture=fixture,
+    )
+    assert c.commit_not_current(
+        current_revocation_ledger=ledger,
+        at=COMMIT_AT,
+    )["state"] == COMMITTED_NOT_CURRENT
+    return store, c, identity, source, receipt, ledger, record
+
+
+def _through_postverify(store=None, *, fixture=None):
+    store, c, identity, source, receipt, ledger, record = _through_commit(
+        store,
+        fixture=fixture,
+    )
+    assert c.postverify(
+        current_revocation_ledger=ledger,
+        at=POSTVERIFY_AT,
+    )["state"] == POSTVERIFY_PASS
+    return store, c, identity, source, receipt, ledger, record
+
+
+def _revoked_ledger(identity, receipt, *, revoked_at, reason="synthetic revoke"):
+    entry = build_consent_revocation_entry(
+        identity,
+        receipt,
+        revoking_principal="human:owner",
+        revoking_principal_kind="HUMAN",
+        revoked_at=revoked_at,
+        reason=reason,
+    )
+    return build_consent_revocation_ledger([entry])
+
+
+def test_happy_path_rechecks_all_boundaries_and_promotes_only_after_postverify():
     store, c, _, _, _, ledger, _ = _coordinator()
     prior = store.pointer
 
-    assert c.staged()["history"] == [STAGED]
+    assert c.staged()["history"] == (STAGED,)
     assert c.validate(revocation_ledger=ledger, at=VALIDATE_AT)["state"] == VALIDATED
-    assert c.commit_not_current()["state"] == COMMITTED_NOT_CURRENT
+    assert c.commit_not_current(
+        current_revocation_ledger=ledger,
+        at=COMMIT_AT,
+    )["state"] == COMMITTED_NOT_CURRENT
     assert store.pointer == prior
 
-    verified = c.postverify(
+    assert c.postverify(
         current_revocation_ledger=ledger,
         at=POSTVERIFY_AT,
-    )
-    assert verified["state"] == POSTVERIFY_PASS
+    )["state"] == POSTVERIFY_PASS
     assert store.pointer == prior
 
-    promoted = c.promote_current()
+    promoted = c.promote_current(
+        current_revocation_ledger=ledger,
+        at=PROMOTE_AT,
+    )
     assert promoted["state"] == CURRENT
-    assert store.pointer != prior
-    assert promoted["history"] == [
+    assert promoted["history"] == (
         STAGED,
         VALIDATED,
         COMMITTED_NOT_CURRENT,
         POSTVERIFY_PASS,
         CURRENT,
-    ]
+    )
+    assert store.pointer != prior
 
 
 def test_validation_failure_commits_nothing_and_preserves_pointer():
@@ -211,27 +256,66 @@ def test_validation_failure_commits_nothing_and_preserves_pointer():
     assert store.candidates == {}
 
 
+def test_revocation_after_validate_before_commit_holds_and_writes_no_candidate():
+    store, c, identity, _, receipt, _, _ = _through_validate()
+    prior = store.pointer
+    revoked = _revoked_ledger(
+        identity,
+        receipt,
+        revoked_at="2026-08-25T12:05:00Z",
+        reason="revoke before commit",
+    )
+
+    result = c.commit_not_current(
+        current_revocation_ledger=revoked,
+        at=COMMIT_AT,
+    )
+
+    assert result["state"] == HOLD
+    assert "CONSENT_REVOKED" in result["reason"]
+    assert store.candidates == {}
+    assert store.pointer == prior
+
+
+def test_current_ledger_hash_drift_before_commit_holds_even_if_revocation_is_future():
+    store, c, identity, _, receipt, _, _ = _through_validate()
+    prior = store.pointer
+    future_changed = _revoked_ledger(
+        identity,
+        receipt,
+        revoked_at="2026-08-25T23:00:00Z",
+        reason="future revocation changes exact ledger evidence",
+    )
+
+    result = c.commit_not_current(
+        current_revocation_ledger=future_changed,
+        at=COMMIT_AT,
+    )
+
+    assert result["state"] == HOLD
+    assert "REVOCATION_LEDGER_HASH_DRIFT" in result["reason"]
+    assert store.candidates == {}
+    assert store.pointer == prior
+
+
 def test_committed_not_current_is_observable_and_prior_remains_current():
     store, c, *_ = _through_commit()
-    prior_sha = c.session.expected_pointer_sha256
+    prior_sha = c.session["expected_pointer_sha256"]
 
-    assert c.session.state == COMMITTED_NOT_CURRENT
+    assert c.session["state"] == COMMITTED_NOT_CURRENT
     assert _sha(store.pointer) == prior_sha
-    assert store.read_candidate_bytes(c.session.candidate_id) is not None
+    assert store.read_candidate_bytes(c.session["candidate_id"]) is not None
 
 
 def test_postverify_revocation_failure_holds_and_preserves_exact_prior_pointer():
     store, c, identity, _, receipt, _, _ = _through_commit()
     prior = store.pointer
-    entry = build_consent_revocation_entry(
+    revoked = _revoked_ledger(
         identity,
         receipt,
-        revoking_principal="human:owner",
-        revoking_principal_kind="HUMAN",
         revoked_at="2026-08-25T12:15:00Z",
-        reason="synthetic revoke before postverify",
+        reason="revoke before postverify",
     )
-    revoked = build_consent_revocation_ledger([entry])
 
     result = c.postverify(
         current_revocation_ledger=revoked,
@@ -243,13 +327,53 @@ def test_postverify_revocation_failure_holds_and_preserves_exact_prior_pointer()
     assert store.pointer == prior
 
 
+def test_postverify_pass_then_revoke_before_promotion_holds_lkg():
+    store, c, identity, _, receipt, _, _ = _through_postverify()
+    prior = store.pointer
+    revoked = _revoked_ledger(
+        identity,
+        receipt,
+        revoked_at="2026-08-25T12:35:00Z",
+        reason="revoke in postverify-promotion window",
+    )
+
+    result = c.promote_current(
+        current_revocation_ledger=revoked,
+        at=PROMOTE_AT,
+    )
+
+    assert result["state"] == HOLD
+    assert "CONSENT_REVOKED" in result["reason"]
+    assert store.pointer == prior
+
+
+def test_promotion_current_ledger_hash_drift_holds_even_before_effective_revocation():
+    store, c, identity, _, receipt, _, _ = _through_postverify()
+    prior = store.pointer
+    future_changed = _revoked_ledger(
+        identity,
+        receipt,
+        revoked_at="2026-08-25T23:00:00Z",
+        reason="future revocation changes exact ledger evidence",
+    )
+
+    result = c.promote_current(
+        current_revocation_ledger=future_changed,
+        at=PROMOTE_AT,
+    )
+
+    assert result["state"] == HOLD
+    assert "REVOCATION_LEDGER_HASH_DRIFT" in result["reason"]
+    assert store.pointer == prior
+
+
 def test_stale_pointer_before_postverify_holds_without_overwrite():
-    store, c, *rest = _through_commit()
+    store, c, _, _, _, ledger, _ = _through_commit()
     externally_advanced = b'{"candidate":"external-new-current"}'
     store.pointer = externally_advanced
 
     result = c.postverify(
-        current_revocation_ledger=rest[3],
+        current_revocation_ledger=ledger,
         at=POSTVERIFY_AT,
     )
 
@@ -258,25 +382,24 @@ def test_stale_pointer_before_postverify_holds_without_overwrite():
 
 
 def test_stale_pointer_at_atomic_promotion_holds_and_preserves_external_current():
-    store, c, _, _, _, ledger, _ = _through_commit()
-    assert c.postverify(
-        current_revocation_ledger=ledger,
-        at=POSTVERIFY_AT,
-    )["state"] == POSTVERIFY_PASS
-
+    store, c, _, _, _, ledger, _ = _through_postverify()
     externally_advanced = b'{"candidate":"external-new-current"}'
     store.pointer = externally_advanced
-    result = c.promote_current()
+
+    result = c.promote_current(
+        current_revocation_ledger=ledger,
+        at=PROMOTE_AT,
+    )
 
     assert result["state"] == HOLD
     assert "stale current pointer" in result["reason"]
     assert store.pointer == externally_advanced
 
 
-def test_candidate_hash_drift_after_commit_holds_before_promotion():
+def test_candidate_hash_drift_after_commit_holds_before_postverify():
     store, c, _, _, _, ledger, _ = _through_commit()
     prior = store.pointer
-    store.candidates[c.session.candidate_id] += b"\n"
+    store.candidates[c.session["candidate_id"]] += b"\n"
 
     result = c.postverify(
         current_revocation_ledger=ledger,
@@ -288,34 +411,69 @@ def test_candidate_hash_drift_after_commit_holds_before_promotion():
     assert store.pointer == prior
 
 
+def test_candidate_hash_drift_after_postverify_holds_before_promotion():
+    store, c, _, _, _, ledger, _ = _through_postverify()
+    prior = store.pointer
+    store.candidates[c.session["candidate_id"]] += b"\n"
+
+    result = c.promote_current(
+        current_revocation_ledger=ledger,
+        at=PROMOTE_AT,
+    )
+
+    assert result["state"] == HOLD
+    assert "candidate drift before promotion" in result["reason"]
+    assert store.pointer == prior
+
+
 def test_replay_same_candidate_identity_with_different_valid_bytes_holds():
     store = MemoryAdmissionStore()
 
     fixture1 = _fixture(
-        admission_session_id="admission:synthetic:r3:replay",
+        admission_session_id="admission:synthetic:r3r1:replay",
         policy_version="policy/a",
     )
     store, c1, *_ = _through_commit(store, fixture=fixture1)
-    first_bytes = store.read_candidate_bytes(c1.session.candidate_id)
+    first_bytes = store.read_candidate_bytes(c1.session["candidate_id"])
 
     fixture2 = _fixture(
-        admission_session_id="admission:synthetic:r3:replay",
+        admission_session_id="admission:synthetic:r3r1:replay",
         policy_version="policy/b",
     )
     _, c2, _, _, _, ledger2, record2 = _coordinator(
         store,
         fixture=fixture2,
-        session_id="r3-session-2",
+        session_id="r3r1-session-2",
     )
-    assert record2["id"] == c1.session.candidate_id
-    assert c2.session.candidate_sha256 != c1.session.candidate_sha256
+    assert record2["id"] == c1.session["candidate_id"]
+    assert c2.session["candidate_sha256"] != c1.session["candidate_sha256"]
     assert c2.validate(revocation_ledger=ledger2, at=VALIDATE_AT)["state"] == VALIDATED
 
-    result = c2.commit_not_current()
+    result = c2.commit_not_current(
+        current_revocation_ledger=ledger2,
+        at=COMMIT_AT,
+    )
 
     assert result["state"] == HOLD
     assert "different bytes" in result["reason"]
-    assert store.read_candidate_bytes(c1.session.candidate_id) == first_bytes
+    assert store.read_candidate_bytes(c1.session["candidate_id"]) == first_bytes
+
+
+def test_public_session_state_and_history_are_immutable():
+    _, c, *_ = _coordinator()
+    session = c.session
+
+    with pytest.raises(TypeError):
+        session["state"] = POSTVERIFY_PASS
+
+    with pytest.raises(TypeError):
+        session["history"][0] = CURRENT
+
+    with pytest.raises(AttributeError):
+        c.session = {"state": CURRENT}
+
+    assert c.staged()["state"] == STAGED
+    assert c.staged()["history"] == (STAGED,)
 
 
 def test_direct_self_promotion_request_is_fail_closed():
@@ -333,7 +491,7 @@ def test_direct_self_promotion_request_is_fail_closed():
 def test_postverify_does_not_accept_candidate_removed_after_commit():
     store, c, _, _, _, ledger, _ = _through_commit()
     prior = store.pointer
-    del store.candidates[c.session.candidate_id]
+    del store.candidates[c.session["candidate_id"]]
 
     result = c.postverify(
         current_revocation_ledger=ledger,
@@ -345,7 +503,7 @@ def test_postverify_does_not_accept_candidate_removed_after_commit():
     assert store.pointer == prior
 
 
-@pytest.mark.parametrize("failure_point", ["validation", "postverify", "promotion"])
+@pytest.mark.parametrize("failure_point", ["validation", "commit", "postverify", "promotion"])
 def test_every_failure_path_preserves_or_respects_last_known_good(failure_point):
     if failure_point == "validation":
         fixture = list(_fixture())
@@ -358,10 +516,27 @@ def test_every_failure_path_preserves_or_respects_last_known_good(failure_point)
         assert store.pointer == prior
         return
 
+    if failure_point == "commit":
+        store, c, identity, _, receipt, _, _ = _through_validate()
+        prior = store.pointer
+        revoked = _revoked_ledger(
+            identity,
+            receipt,
+            revoked_at="2026-08-25T12:05:00Z",
+        )
+        result = c.commit_not_current(
+            current_revocation_ledger=revoked,
+            at=COMMIT_AT,
+        )
+        assert result["state"] == HOLD
+        assert store.pointer == prior
+        assert store.candidates == {}
+        return
+
     store, c, _, _, _, ledger, _ = _through_commit()
     if failure_point == "postverify":
         prior = store.pointer
-        store.candidates[c.session.candidate_id] = b"{}"
+        store.candidates[c.session["candidate_id"]] = b"{}"
         result = c.postverify(
             current_revocation_ledger=ledger,
             at=POSTVERIFY_AT,
@@ -376,19 +551,31 @@ def test_every_failure_path_preserves_or_respects_last_known_good(failure_point)
     )["state"] == POSTVERIFY_PASS
     external = b'{"candidate":"new-lkg"}'
     store.pointer = external
-    result = c.promote_current()
+    result = c.promote_current(
+        current_revocation_ledger=ledger,
+        at=PROMOTE_AT,
+    )
     assert result["state"] == HOLD
     assert store.pointer == external
 
 
-def test_receipts_never_escalate_p3_p1_authority():
+def test_receipts_and_pointer_never_escalate_p3_p1_authority():
     store, c, _, _, _, ledger, _ = _coordinator()
     receipts = [
         c.staged(),
         c.validate(revocation_ledger=ledger, at=VALIDATE_AT),
-        c.commit_not_current(),
-        c.postverify(current_revocation_ledger=ledger, at=POSTVERIFY_AT),
-        c.promote_current(),
+        c.commit_not_current(
+            current_revocation_ledger=ledger,
+            at=COMMIT_AT,
+        ),
+        c.postverify(
+            current_revocation_ledger=ledger,
+            at=POSTVERIFY_AT,
+        ),
+        c.promote_current(
+            current_revocation_ledger=ledger,
+            at=PROMOTE_AT,
+        ),
     ]
 
     for receipt in receipts:
@@ -397,3 +584,9 @@ def test_receipts_never_escalate_p3_p1_authority():
         assert receipt["can_execute"] is False
         assert receipt["can_trade"] is False
         assert receipt["capital_permission"] == "DENY"
+
+    assert b'"production_admission_status":"NOT_PRODUCTION_ADMITTED"' in store.pointer
+    assert b'"execution_authority":"NONE"' in store.pointer
+    assert b'"can_execute":false' in store.pointer
+    assert b'"can_trade":false' in store.pointer
+    assert b'"capital_permission":"DENY"' in store.pointer
