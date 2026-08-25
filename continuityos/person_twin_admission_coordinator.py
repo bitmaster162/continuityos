@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Mapping, Protocol
 
 from .person_twin_admission_contracts import (
@@ -14,7 +16,7 @@ from .person_twin_admission_contracts import (
 )
 from .person_twin_privacy_provenance import validate_person_twin_record
 
-SCHEMA_VERSION = "continuityos.person-twin.admission-coordinator/v1"
+SCHEMA_VERSION = "continuityos.person-twin.admission-coordinator/v2"
 CURRENT_POINTER_SCHEMA_VERSION = "continuityos.person-twin.current-pointer/v1"
 
 STAGED = "STAGED"
@@ -24,6 +26,14 @@ POSTVERIFY_PASS = "POSTVERIFY_PASS"
 CURRENT = "CURRENT"
 HOLD = "HOLD"
 TERMINAL_STATES = {CURRENT, HOLD}
+
+_ALLOWED_PREFIXES = {
+    STAGED: (STAGED,),
+    VALIDATED: (STAGED, VALIDATED),
+    COMMITTED_NOT_CURRENT: (STAGED, VALIDATED, COMMITTED_NOT_CURRENT),
+    POSTVERIFY_PASS: (STAGED, VALIDATED, COMMITTED_NOT_CURRENT, POSTVERIFY_PASS),
+    CURRENT: (STAGED, VALIDATED, COMMITTED_NOT_CURRENT, POSTVERIFY_PASS, CURRENT),
+}
 
 
 class PersonTwinAdmissionError(ValueError):
@@ -41,9 +51,9 @@ class AdmissionStoreConflict(AdmissionStoreError):
 class AdmissionStore(Protocol):
     """Minimal byte-level storage boundary required by the R3 coordinator.
 
-    The implementation is deliberately outside R3. `promote_current_pointer` MUST
-    perform compare-and-swap atomically: on expected-pointer mismatch it must raise
-    AdmissionStoreConflict and leave the prior current pointer byte-identical.
+    `promote_current_pointer` MUST perform compare-and-swap atomically: on an
+    expected-pointer mismatch it must raise AdmissionStoreConflict and leave the
+    prior current pointer byte-identical.
     """
 
     def read_current_pointer_bytes(self) -> bytes | None: ...
@@ -88,20 +98,6 @@ def _require_nonempty(value: Any, field: str) -> str:
     return value.strip()
 
 
-def _hold(reason: str, *, session: "AdmissionSession") -> dict[str, Any]:
-    session.state = HOLD
-    session.reason = reason
-    session.history.append(HOLD)
-    return session.receipt()
-
-
-def _assert_state(session: "AdmissionSession", expected: str) -> None:
-    if session.state != expected:
-        raise PersonTwinAdmissionError(
-            f"invalid admission transition: expected {expected}, got {session.state}"
-        )
-
-
 def _validate_candidate_ceiling(record: Mapping[str, Any]) -> None:
     if record.get("production_admission_status") != NOT_PRODUCTION_ADMITTED:
         raise PersonTwinAdmissionError("candidate cannot claim production admission")
@@ -140,46 +136,21 @@ def _consent_decision(
     return decision
 
 
-@dataclass
-class AdmissionSession:
-    session_id: str
-    candidate_id: str
-    candidate_sha256: str
-    identity_fingerprint: str
-    expected_pointer_sha256: str | None
-    state: str = STAGED
-    reason: str = "STAGED"
-    history: list[str] | None = None
-
-    def __post_init__(self) -> None:
-        if self.history is None:
-            self.history = [STAGED]
-
-    def receipt(self) -> dict[str, Any]:
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "session_id": self.session_id,
-            "candidate_id": self.candidate_id,
-            "candidate_sha256": self.candidate_sha256,
-            "identity_fingerprint": self.identity_fingerprint,
-            "expected_pointer_sha256": self.expected_pointer_sha256,
-            "state": self.state,
-            "reason": self.reason,
-            "history": list(self.history or []),
-            "production_admission_status": NOT_PRODUCTION_ADMITTED,
-            "execution_authority": "NONE",
-            "can_execute": False,
-            "can_trade": False,
-            "capital_permission": "DENY",
-        }
+@dataclass(frozen=True)
+class _AdmissionState:
+    state: str
+    reason: str
+    history: tuple[str, ...]
+    proof: str
 
 
 class PersonTwinAdmissionCoordinator:
-    """Fail-closed R3 coordinator over an existing storage boundary.
+    """Fail-closed Person Twin admission coordinator over a byte-level store.
 
-    The coordinator never creates storage, connectors, OAuth, deployment, or runtime
-    authority. A candidate may be committed as non-current, but the current pointer
-    changes only after deterministic post-verification and atomic OCC promotion.
+    R3R1 keeps transition state private and immutable, revalidates current consent
+    and the exact revocation-ledger binding at every material boundary, commits
+    candidate bytes as non-current, post-verifies readback, and promotes only by
+    an atomic OCC/CAS current-pointer write.
     """
 
     def __init__(
@@ -199,21 +170,177 @@ class PersonTwinAdmissionCoordinator:
         self.source_record = dict(source_record)
         self.candidate_record = dict(candidate_record)
         self.purpose = _require_nonempty(purpose, "purpose")
-        candidate_id = _require_nonempty(candidate_record.get("id"), "candidate.id")
-        candidate_bytes = _canonical_bytes(self.candidate_record)
-        self._candidate_bytes = candidate_bytes
-        self.session = AdmissionSession(
-            session_id=_require_nonempty(session_id, "session_id"),
-            candidate_id=candidate_id,
-            candidate_sha256=_sha256(candidate_bytes),
-            identity_fingerprint=_require_nonempty(
-                identity.get("identity_fingerprint"), "identity.identity_fingerprint"
-            ),
-            expected_pointer_sha256=_pointer_sha(store.read_current_pointer_bytes()),
+
+        self.session_id = _require_nonempty(session_id, "session_id")
+        self.candidate_id = _require_nonempty(candidate_record.get("id"), "candidate.id")
+        self._candidate_bytes = _canonical_bytes(self.candidate_record)
+        self.candidate_sha256 = _sha256(self._candidate_bytes)
+        self.identity_fingerprint = _require_nonempty(
+            identity.get("identity_fingerprint"),
+            "identity.identity_fingerprint",
         )
+        self.expected_pointer_sha256 = _pointer_sha(store.read_current_pointer_bytes())
+
+        secret_seed = (
+            f"{self.session_id}|{self.candidate_sha256}|"
+            f"{self.identity_fingerprint}|{id(self)}"
+        ).encode("utf-8")
+        self.__transition_secret = hashlib.sha256(secret_seed).digest()
+        self.__state = self._make_state(STAGED, "STAGED", (STAGED,))
+
+    @property
+    def session(self) -> Mapping[str, Any]:
+        """Read-only session view; callers cannot set state/history directly."""
+        return MappingProxyType(self._receipt_dict())
 
     def staged(self) -> dict[str, Any]:
-        return self.session.receipt()
+        self._assert_integrity()
+        return self.receipt()
+
+    def receipt(self) -> dict[str, Any]:
+        self._assert_integrity()
+        return self._receipt_dict()
+
+    def _state_proof(
+        self,
+        state: str,
+        reason: str,
+        history: tuple[str, ...],
+    ) -> str:
+        payload = _canonical_bytes(
+            {
+                "session_id": self.session_id,
+                "candidate_id": self.candidate_id,
+                "candidate_sha256": self.candidate_sha256,
+                "identity_fingerprint": self.identity_fingerprint,
+                "expected_pointer_sha256": self.expected_pointer_sha256,
+                "state": state,
+                "reason": reason,
+                "history": list(history),
+            }
+        )
+        return hmac.new(self.__transition_secret, payload, hashlib.sha256).hexdigest()
+
+    def _make_state(
+        self,
+        state: str,
+        reason: str,
+        history: tuple[str, ...],
+    ) -> _AdmissionState:
+        return _AdmissionState(
+            state=state,
+            reason=reason,
+            history=history,
+            proof=self._state_proof(state, reason, history),
+        )
+
+    def _assert_integrity(self) -> None:
+        state = self.__state
+        if not isinstance(state, _AdmissionState):
+            raise PersonTwinAdmissionError("internal admission state type mismatch")
+        expected_proof = self._state_proof(state.state, state.reason, state.history)
+        if not hmac.compare_digest(state.proof, expected_proof):
+            raise PersonTwinAdmissionError("internal transition proof mismatch")
+
+        if state.state == HOLD:
+            if not state.history or state.history[-1] != HOLD:
+                raise PersonTwinAdmissionError("HOLD history invariant mismatch")
+            prefix = state.history[:-1]
+            if prefix not in set(_ALLOWED_PREFIXES.values()):
+                raise PersonTwinAdmissionError("invalid history before HOLD")
+            return
+
+        expected_history = _ALLOWED_PREFIXES.get(state.state)
+        if expected_history is None or state.history != expected_history:
+            raise PersonTwinAdmissionError("admission transition history mismatch")
+
+    def _assert_state(self, expected: str) -> None:
+        self._assert_integrity()
+        if self.__state.state != expected:
+            raise PersonTwinAdmissionError(
+                f"invalid admission transition: expected {expected}, "
+                f"got {self.__state.state}"
+            )
+
+    def _advance(
+        self,
+        *,
+        expected: str,
+        target: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        self._assert_state(expected)
+        expected_history = _ALLOWED_PREFIXES[target]
+        if expected_history[:-1] != self.__state.history:
+            raise PersonTwinAdmissionError("non-contiguous admission transition")
+        self.__state = self._make_state(target, reason, expected_history)
+        return self.receipt()
+
+    def _hold(self, reason: str) -> dict[str, Any]:
+        self._assert_integrity()
+        if self.__state.state in TERMINAL_STATES:
+            return self.receipt()
+        history = self.__state.history + (HOLD,)
+        self.__state = self._make_state(HOLD, reason, history)
+        return self.receipt()
+
+    def _receipt_dict(self) -> dict[str, Any]:
+        state = self.__state
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "session_id": self.session_id,
+            "candidate_id": self.candidate_id,
+            "candidate_sha256": self.candidate_sha256,
+            "identity_fingerprint": self.identity_fingerprint,
+            "expected_pointer_sha256": self.expected_pointer_sha256,
+            "state": state.state,
+            "reason": state.reason,
+            "history": state.history,
+            "production_admission_status": NOT_PRODUCTION_ADMITTED,
+            "execution_authority": "NONE",
+            "can_execute": False,
+            "can_trade": False,
+            "capital_permission": "DENY",
+        }
+
+    def _validate_current_evidence(
+        self,
+        *,
+        current_revocation_ledger: Mapping[str, Any],
+        at: str,
+        candidate_record: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
+        record = self.candidate_record if candidate_record is None else candidate_record
+        validate_person_twin_identity(self.identity)
+        validate_source_consent_receipt(self.identity, self.consent_receipt)
+        validate_person_twin_record(
+            record,
+            identity=self.identity,
+            consent_receipt=self.consent_receipt,
+            source_record=self.source_record,
+        )
+        if record.get("identity_fingerprint") != self.identity_fingerprint:
+            raise PersonTwinAdmissionError("candidate identity fingerprint drift")
+        _validate_candidate_ceiling(record)
+
+        validate_consent_revocation_ledger(current_revocation_ledger)
+        current_ledger_hash = current_revocation_ledger["ledger_hash"]
+
+        decision = _consent_decision(
+            identity=self.identity,
+            consent_receipt=self.consent_receipt,
+            revocation_ledger=current_revocation_ledger,
+            source_record=self.source_record,
+            purpose=self.purpose,
+            at=at,
+        )
+        if record.get("revocation_ledger_hash") != current_ledger_hash:
+            raise PersonTwinAdmissionError("REVOCATION_LEDGER_HASH_DRIFT")
+        if decision.get("revocation_ledger_hash") != current_ledger_hash:
+            raise PersonTwinAdmissionError(
+                "consent decision revocation ledger hash mismatch"
+            )
+        return decision
 
     def validate(
         self,
@@ -221,74 +348,66 @@ class PersonTwinAdmissionCoordinator:
         revocation_ledger: Mapping[str, Any],
         at: str,
     ) -> dict[str, Any]:
-        _assert_state(self.session, STAGED)
+        self._assert_state(STAGED)
         try:
-            validate_person_twin_identity(self.identity)
-            validate_source_consent_receipt(self.identity, self.consent_receipt)
-            validate_person_twin_record(
-                self.candidate_record,
-                identity=self.identity,
-                consent_receipt=self.consent_receipt,
-                source_record=self.source_record,
-            )
-            if self.candidate_record.get("identity_fingerprint") != self.session.identity_fingerprint:
-                raise PersonTwinAdmissionError("candidate identity fingerprint drift")
-            _validate_candidate_ceiling(self.candidate_record)
-            _consent_decision(
-                identity=self.identity,
-                consent_receipt=self.consent_receipt,
-                revocation_ledger=revocation_ledger,
-                source_record=self.source_record,
-                purpose=self.purpose,
+            self._validate_current_evidence(
+                current_revocation_ledger=revocation_ledger,
                 at=at,
             )
         except Exception as exc:
-            return _hold(
-                f"VALIDATION_FAILED:{type(exc).__name__}:{exc}",
-                session=self.session,
-            )
-        self.session.state = VALIDATED
-        self.session.reason = "EXACT_IDENTITY_CONSENT_PROVENANCE_VALIDATED"
-        self.session.history.append(VALIDATED)
-        return self.session.receipt()
+            return self._hold(f"VALIDATION_FAILED:{type(exc).__name__}:{exc}")
+        return self._advance(
+            expected=STAGED,
+            target=VALIDATED,
+            reason="EXACT_IDENTITY_CONSENT_PROVENANCE_AND_LEDGER_VALIDATED",
+        )
 
-    def commit_not_current(self) -> dict[str, Any]:
-        _assert_state(self.session, VALIDATED)
+    def commit_not_current(
+        self,
+        *,
+        current_revocation_ledger: Mapping[str, Any],
+        at: str,
+    ) -> dict[str, Any]:
+        self._assert_state(VALIDATED)
         try:
+            self._validate_current_evidence(
+                current_revocation_ledger=current_revocation_ledger,
+                at=at,
+            )
+
             current_before = self.store.read_current_pointer_bytes()
-            if _pointer_sha(current_before) != self.session.expected_pointer_sha256:
+            if _pointer_sha(current_before) != self.expected_pointer_sha256:
                 raise AdmissionStoreConflict("current pointer drift before candidate commit")
 
-            existing = self.store.read_candidate_bytes(self.session.candidate_id)
+            existing = self.store.read_candidate_bytes(self.candidate_id)
             if existing is not None and existing != self._candidate_bytes:
                 raise AdmissionStoreConflict(
                     "candidate identity already exists with different bytes"
                 )
             self.store.commit_candidate_not_current(
-                self.session.candidate_id,
+                self.candidate_id,
                 self._candidate_bytes,
             )
 
-            committed = self.store.read_candidate_bytes(self.session.candidate_id)
+            committed = self.store.read_candidate_bytes(self.candidate_id)
             if committed != self._candidate_bytes:
                 raise AdmissionStoreError("committed candidate readback mismatch")
-            if _sha256(committed) != self.session.candidate_sha256:
+            if committed is None or _sha256(committed) != self.candidate_sha256:
                 raise AdmissionStoreError("committed candidate hash mismatch")
+
             current_after = self.store.read_current_pointer_bytes()
             if current_after != current_before:
                 raise AdmissionStoreError(
                     "candidate commit modified current pointer before postverify"
                 )
         except Exception as exc:
-            return _hold(
-                f"COMMIT_HOLD:{type(exc).__name__}:{exc}",
-                session=self.session,
-            )
+            return self._hold(f"COMMIT_HOLD:{type(exc).__name__}:{exc}")
 
-        self.session.state = COMMITTED_NOT_CURRENT
-        self.session.reason = "EXACT_CANDIDATE_COMMITTED_POINTER_UNCHANGED"
-        self.session.history.append(COMMITTED_NOT_CURRENT)
-        return self.session.receipt()
+        return self._advance(
+            expected=VALIDATED,
+            target=COMMITTED_NOT_CURRENT,
+            reason="EXACT_CANDIDATE_COMMITTED_POINTER_UNCHANGED",
+        )
 
     def postverify(
         self,
@@ -296,94 +415,99 @@ class PersonTwinAdmissionCoordinator:
         current_revocation_ledger: Mapping[str, Any],
         at: str,
     ) -> dict[str, Any]:
-        _assert_state(self.session, COMMITTED_NOT_CURRENT)
+        self._assert_state(COMMITTED_NOT_CURRENT)
         try:
             current_pointer = self.store.read_current_pointer_bytes()
-            if _pointer_sha(current_pointer) != self.session.expected_pointer_sha256:
+            if _pointer_sha(current_pointer) != self.expected_pointer_sha256:
                 raise AdmissionStoreConflict("current pointer drift before postverify")
 
-            committed = self.store.read_candidate_bytes(self.session.candidate_id)
+            committed = self.store.read_candidate_bytes(self.candidate_id)
             if committed is None:
                 raise AdmissionStoreError("committed candidate missing")
             if committed != self._candidate_bytes:
                 raise AdmissionStoreConflict("candidate bytes drift after commit")
-            if _sha256(committed) != self.session.candidate_sha256:
+            if _sha256(committed) != self.candidate_sha256:
                 raise AdmissionStoreConflict("candidate hash drift after commit")
 
             decoded = json.loads(committed.decode("utf-8"))
             if not isinstance(decoded, Mapping):
                 raise PersonTwinAdmissionError("candidate root must be an object")
-            validate_person_twin_identity(self.identity)
-            validate_source_consent_receipt(self.identity, self.consent_receipt)
-            validate_person_twin_record(
-                decoded,
-                identity=self.identity,
-                consent_receipt=self.consent_receipt,
-                source_record=self.source_record,
-            )
-            _validate_candidate_ceiling(decoded)
-            _consent_decision(
-                identity=self.identity,
-                consent_receipt=self.consent_receipt,
-                revocation_ledger=current_revocation_ledger,
-                source_record=self.source_record,
-                purpose=self.purpose,
+
+            self._validate_current_evidence(
+                current_revocation_ledger=current_revocation_ledger,
                 at=at,
+                candidate_record=decoded,
             )
         except Exception as exc:
-            return _hold(
-                f"POSTVERIFY_HOLD:{type(exc).__name__}:{exc}",
-                session=self.session,
-            )
+            return self._hold(f"POSTVERIFY_HOLD:{type(exc).__name__}:{exc}")
 
-        self.session.state = POSTVERIFY_PASS
-        self.session.reason = "POSTVERIFY_PASS_POINTER_STILL_LAST_KNOWN_GOOD"
-        self.session.history.append(POSTVERIFY_PASS)
-        return self.session.receipt()
+        return self._advance(
+            expected=COMMITTED_NOT_CURRENT,
+            target=POSTVERIFY_PASS,
+            reason="POSTVERIFY_PASS_POINTER_STILL_LAST_KNOWN_GOOD",
+        )
 
-    def promote_current(self) -> dict[str, Any]:
-        _assert_state(self.session, POSTVERIFY_PASS)
+    def promote_current(
+        self,
+        *,
+        current_revocation_ledger: Mapping[str, Any],
+        at: str,
+    ) -> dict[str, Any]:
+        self._assert_state(POSTVERIFY_PASS)
         try:
-            committed = self.store.read_candidate_bytes(self.session.candidate_id)
+            committed = self.store.read_candidate_bytes(self.candidate_id)
+            if committed is None:
+                raise AdmissionStoreError("candidate missing before promotion")
             if committed != self._candidate_bytes:
                 raise AdmissionStoreConflict("candidate drift before promotion")
-            if _sha256(committed) != self.session.candidate_sha256:
+            if _sha256(committed) != self.candidate_sha256:
                 raise AdmissionStoreConflict("candidate hash drift before promotion")
+
+            decoded = json.loads(committed.decode("utf-8"))
+            if not isinstance(decoded, Mapping):
+                raise PersonTwinAdmissionError("candidate root must be an object")
+
+            self._validate_current_evidence(
+                current_revocation_ledger=current_revocation_ledger,
+                at=at,
+                candidate_record=decoded,
+            )
 
             pointer = {
                 "schema_version": CURRENT_POINTER_SCHEMA_VERSION,
                 "state": CURRENT,
-                "twin_id": self.candidate_record["twin_id"],
-                "candidate_id": self.session.candidate_id,
-                "candidate_sha256": self.session.candidate_sha256,
-                "identity_fingerprint": self.session.identity_fingerprint,
+                "twin_id": decoded["twin_id"],
+                "candidate_id": self.candidate_id,
+                "candidate_sha256": self.candidate_sha256,
+                "identity_fingerprint": self.identity_fingerprint,
                 "production_admission_status": NOT_PRODUCTION_ADMITTED,
                 "execution_authority": "NONE",
                 "can_execute": False,
+                "can_trade": False,
+                "capital_permission": "DENY",
             }
             pointer_bytes = _canonical_bytes(pointer)
 
             self.store.promote_current_pointer(
-                expected_pointer_sha256=self.session.expected_pointer_sha256,
+                expected_pointer_sha256=self.expected_pointer_sha256,
                 pointer_bytes=pointer_bytes,
             )
             readback = self.store.read_current_pointer_bytes()
             if readback != pointer_bytes:
                 raise AdmissionStoreError("promoted current pointer readback mismatch")
         except Exception as exc:
-            return _hold(
-                f"PROMOTION_HOLD:{type(exc).__name__}:{exc}",
-                session=self.session,
-            )
+            return self._hold(f"PROMOTION_HOLD:{type(exc).__name__}:{exc}")
 
-        self.session.state = CURRENT
-        self.session.reason = "EXACT_POSTVERIFIED_CANDIDATE_PROMOTED_BY_OCC"
-        self.session.history.append(CURRENT)
-        return self.session.receipt()
+        return self._advance(
+            expected=POSTVERIFY_PASS,
+            target=CURRENT,
+            reason="EXACT_POSTVERIFIED_CANDIDATE_PROMOTED_BY_OCC",
+        )
 
     def request_state(self, desired_state: str) -> dict[str, Any]:
         """No caller/model/agent may set a terminal state directly."""
         del desired_state
-        if self.session.state in TERMINAL_STATES:
-            return self.session.receipt()
-        return _hold("DIRECT_STATE_PROMOTION_FORBIDDEN", session=self.session)
+        self._assert_integrity()
+        if self.__state.state in TERMINAL_STATES:
+            return self.receipt()
+        return self._hold("DIRECT_STATE_PROMOTION_FORBIDDEN")
