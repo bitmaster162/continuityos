@@ -3,7 +3,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from bench import current_truth_bench
+import pytest
+
+try:
+    from bench import current_truth_bench
+except ModuleNotFoundError as exc:
+    if exc.name != "bench":
+        raise
+    pytest.skip(
+        "source-only benchmark modules are not packaged in wheel",
+        allow_module_level=True,
+    )
 
 
 def test_current_truth_frozen_real_project_fixtures_pass():
