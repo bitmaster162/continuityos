@@ -45,8 +45,8 @@ python bench/recall_sealed.py \
   --manifest-out /tmp/recall-manifest.json
 ```
 
-A production semantic embedder additionally requires exact model revision and a
-SHA-256 identity for the tested model bytes/artifact:
+A production semantic embedder additionally requires an exact model revision and a
+caller-supplied SHA-256 declaration for the intended model bytes/artifact:
 
 ```bash
 python bench/recall_sealed.py \
@@ -58,10 +58,17 @@ python bench/recall_sealed.py \
   --manifest-out /tmp/recall-fast-manifest.json
 ```
 
+For non-hashing embedders R1 records this as `DECLARED_MODEL_DIGEST`. The runner
+validates the digest syntax and records it with the model revision and installed
+package version, but it does **not** compute a digest over the model snapshot that
+the backend actually loads. Therefore R1 must not be described as cryptographic
+proof that loaded model bytes match the declared SHA-256. Stronger snapshot-byte
+verification is a separate future assurance layer.
+
 The sealed result contains per-case keyword/paraphrase hits and current/as-of
 checks. The manifest binds the benchmark source SHA-256, Git HEAD/tree, embedded
-corpus digest, exact installed package versions, model identity, argv, result
-SHA-256, platform/Python identity, and an explicit zero-authority ceiling.
+corpus digest, exact installed package versions, declared model identity, argv,
+result SHA-256, platform/Python identity, and an explicit zero-authority ceiling.
 
 ### LoCoMo retrieval
 
@@ -78,9 +85,11 @@ python bench/locomo_sealed.py \
 ```
 
 For FastEmbed/Model2Vec/SentenceTransformers, add `--model-revision` and
-`--model-sha256`; strict sealing fails closed without them. The result stores raw
-per-question gold evidence IDs, ranked evidence IDs, first-gold rank, Recall@k and
-MRR. A dataset hash mismatch stops before evaluation.
+`--model-sha256`; strict R1 sealing fails closed without both declarations. The
+same `DECLARED_MODEL_DIGEST` limitation above applies: the runner does not verify
+that backend-loaded snapshot bytes match the supplied digest. The result stores
+raw per-question gold evidence IDs, ranked evidence IDs, first-gold rank, Recall@k
+and MRR. A dataset hash mismatch stops before evaluation.
 
 ### CurrentTruthBench
 

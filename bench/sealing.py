@@ -141,7 +141,7 @@ def model_identity(
         else None
     )
     version = package_versions([package_name]).get(package_name) if package_name else None
-    assurance = "MODEL_BYTES_BOUND" if model_revision and digest else "NAME_ONLY"
+    assurance = "DECLARED_MODEL_DIGEST" if model_revision and digest else "NAME_ONLY"
     return {
         "embedder": embedder,
         "model_name": model_name,
@@ -156,7 +156,7 @@ def model_identity(
 def require_sealed_model(identity: dict[str, Any]) -> None:
     if identity["embedder"] == "hashing":
         return
-    if identity.get("identity_assurance") != "MODEL_BYTES_BOUND":
+    if identity.get("identity_assurance") != "DECLARED_MODEL_DIGEST":
         raise ValueError(
             "sealed benchmark requires --model-revision and --model-sha256 "
             "for non-hashing embedders"

@@ -40,6 +40,19 @@ def test_non_hashing_seal_requires_model_revision_and_digest():
         require_sealed_model(identity)
 
 
+def test_non_hashing_declared_digest_is_not_claimed_as_bytes_bound():
+    identity = model_identity(
+        embedder="fastembed",
+        model_name="BAAI/bge-small-en-v1.5",
+        model_revision="immutable-revision",
+        model_sha256="a" * 64,
+        package_name="fastembed",
+    )
+    assert identity["model_sha256"] == "a" * 64
+    assert identity["identity_assurance"] == "DECLARED_MODEL_DIGEST"
+    require_sealed_model(identity)
+
+
 def test_recall_sealed_hashing_writes_result_and_manifest(tmp_path: Path):
     result = tmp_path / "recall.json"
     manifest = tmp_path / "recall.manifest.json"
