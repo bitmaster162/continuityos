@@ -67,45 +67,48 @@ def evaluate(embedder, samples, ks=(1, 3, 5, 10)) -> tuple[dict[str, Any], list[
     for sample_index, sample in enumerate(samples):
         with tempfile.TemporaryDirectory() as tmp:
             memory = Memory(os.path.join(tmp, "locomo.db"), embedder=embedder)
-            rid_by_dia: dict[str, str] = {}
-            dia_by_rid: dict[str, str] = {}
-            for turn in sample["turns"]:
-                rid = memory.remember(
-                    turn["text"], namespace="facts", meta={"dia": turn["id"]}
-                )
-                rid_by_dia[turn["id"]] = rid
-                dia_by_rid[rid] = turn["id"]
+            try:
+                rid_by_dia: dict[str, str] = {}
+                dia_by_rid: dict[str, str] = {}
+                for turn in sample["turns"]:
+                    rid = memory.remember(
+                        turn["text"], namespace="facts", meta={"dia": turn["id"]}
+                    )
+                    rid_by_dia[turn["id"]] = rid
+                    dia_by_rid[rid] = turn["id"]
 
-            for question_index, qa in enumerate(sample["qa"]):
-                gold = {gold for gold in qa["gold"] if gold in rid_by_dia}
-                if not gold:
-                    continue
-                questions += 1
-                ranked_rids = [
-                    hit.id for hit in memory.recall(qa["q"], k=max(ks))
-                ]
-                ranked_dia = [dia_by_rid.get(rid) for rid in ranked_rids]
-                first_rank = next(
-                    (index + 1 for index, dia in enumerate(ranked_dia) if dia in gold),
-                    None,
-                )
-                if first_rank is not None:
-                    reciprocal_rank += 1.0 / first_rank
-                hit_at = {}
-                for k in ks:
-                    matched = bool(gold & set(ranked_dia[:k]))
-                    hit_at[str(k)] = matched
-                    hits[k] += int(matched)
-                rows.append(
-                    {
-                        "case_id": f"locomo-{sample_index:02d}-{question_index:04d}",
-                        "question": qa["q"],
-                        "gold_evidence_ids": sorted(gold),
-                        "ranked_evidence_ids": ranked_dia,
-                        "first_gold_rank": first_rank,
-                        "hit_at": hit_at,
-                    }
-                )
+                for question_index, qa in enumerate(sample["qa"]):
+                    gold = {gold for gold in qa["gold"] if gold in rid_by_dia}
+                    if not gold:
+                        continue
+                    questions += 1
+                    ranked_rids = [
+                        hit.id for hit in memory.recall(qa["q"], k=max(ks))
+                    ]
+                    ranked_dia = [dia_by_rid.get(rid) for rid in ranked_rids]
+                    first_rank = next(
+                        (index + 1 for index, dia in enumerate(ranked_dia) if dia in gold),
+                        None,
+                    )
+                    if first_rank is not None:
+                        reciprocal_rank += 1.0 / first_rank
+                    hit_at = {}
+                    for k in ks:
+                        matched = bool(gold & set(ranked_dia[:k]))
+                        hit_at[str(k)] = matched
+                        hits[k] += int(matched)
+                    rows.append(
+                        {
+                            "case_id": f"locomo-{sample_index:02d}-{question_index:04d}",
+                            "question": qa["q"],
+                            "gold_evidence_ids": sorted(gold),
+                            "ranked_evidence_ids": ranked_dia,
+                            "first_gold_rank": first_rank,
+                            "hit_at": hit_at,
+                        }
+                    )
+            finally:
+                memory.store.con.close()
 
     elapsed = time.perf_counter() - started
     metrics = {
