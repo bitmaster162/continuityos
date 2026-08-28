@@ -1,6 +1,6 @@
 # ContinuityOS benchmarks
 
-Honest, reproducible, zero-external-call. Run:
+Honest, reproducible, zero-external-call baseline:
 
 ```bash
 python bench/recall_bench.py
@@ -21,10 +21,85 @@ All numbers are measured at run time and written to `bench_results.json`. We do
 and a checksum-bound raw result are not shipped in this repository. Canon: ship
 only reproducible numbers.
 
-Last local run (default embedder, 170-memory corpus):
+Last legacy local run (default embedder, 170-memory corpus):
 keyword recall@1 96.7% · paraphrase recall@1 30% · knowledge-update 95% ·
 temporal as-of 100% · recall p50 11.008 ms · 0 external tokens. Latency is
-hardware/load dependent; `bench_results.json` is the machine-readable receipt.
+hardware/load dependent. `bench_results.json` is a legacy machine-readable result,
+not a sealed current-head certification: it does not bind repository HEAD/tree,
+benchmark source, environment, or external model bytes.
+
+## Sealed benchmark proof runners
+
+The strict runners preserve the legacy commands while adding checksum-bound result
+and manifest output. Write outputs outside the checkout when you want
+`working_tree_clean=true` in the manifest.
+
+### Embedded recall/current-truth corpus
+
+HashingEmbedder is fully bound by tracked code:
+
+```bash
+python bench/recall_sealed.py \
+  --embedder hashing \
+  --json-out /tmp/recall-result.json \
+  --manifest-out /tmp/recall-manifest.json
+```
+
+A production semantic embedder additionally requires exact model revision and a
+SHA-256 identity for the tested model bytes/artifact:
+
+```bash
+python bench/recall_sealed.py \
+  --embedder fastembed \
+  --model BAAI/bge-small-en-v1.5 \
+  --model-revision <immutable-revision> \
+  --model-sha256 <64-hex-sha256> \
+  --json-out /tmp/recall-fast-result.json \
+  --manifest-out /tmp/recall-fast-manifest.json
+```
+
+The sealed result contains per-case keyword/paraphrase hits and current/as-of
+checks. The manifest binds the benchmark source SHA-256, Git HEAD/tree, embedded
+corpus digest, exact installed package versions, model identity, argv, result
+SHA-256, platform/Python identity, and an explicit zero-authority ceiling.
+
+### LoCoMo retrieval
+
+The repository does not ship the LoCoMo dataset. Obtain the intended
+`locomo10.json` independently, compute/verify its SHA-256, and run:
+
+```bash
+python bench/locomo_sealed.py \
+  --data /path/to/locomo10.json \
+  --expected-sha256 <64-hex-dataset-sha256> \
+  --embedder hashing \
+  --json-out /tmp/locomo-result.json \
+  --manifest-out /tmp/locomo-manifest.json
+```
+
+For FastEmbed/Model2Vec/SentenceTransformers, add `--model-revision` and
+`--model-sha256`; strict sealing fails closed without them. The result stores raw
+per-question gold evidence IDs, ranked evidence IDs, first-gold rank, Recall@k and
+MRR. A dataset hash mismatch stops before evaluation.
+
+### Causal/current-truth governance proof
+
+`CausalBench` already supports immutable JSON output and does not need a second
+runner:
+
+```bash
+python -m bench.causalbench --json-out /tmp/causalbench.json
+```
+
+For a CI-style command receipt, wrap that existing command with
+`python -m tools.ci_review run ...` and include the result in the normal
+`receipt-manifest` path. The benchmark pass grants no source, merge, deployment,
+runtime, provider-effect, trading, wallet, order, or capital authority.
+
+Real stale-projection cases such as an issue body that says a PR is still pending
+while live provider metadata says `merged=true` should be retained as
+CurrentTruth fixtures. Structured provider readback for the physical fact must
+outrank stale coordination prose.
 
 ## Governance regression corpus
 
@@ -32,7 +107,11 @@ hardware/load dependent; `bench_results.json` is the machine-readable receipt.
 python -m bench.continuitybench
 ```
 
-This command checks 30 hand-labeled decisions plus eight obfuscated examples and exits non-zero
-on a mismatch; CI runs it. It is a regression floor for the explicitly mediated paths, not proof
-of mandatory interception, out-of-distribution detection, compliance, or production safety. See
-[`BUILD_GATE_STATUS.md`](../BUILD_GATE_STATUS.md) for the current measured result and open holds.
+This command checks 30 hand-labeled decisions plus eight obfuscated examples and
+exits non-zero on a mismatch; CI runs it. It is a regression floor for the
+explicitly mediated paths, not proof of mandatory interception,
+out-of-distribution detection, compliance, or production safety.
+
+[`BUILD_GATE_STATUS.md`](../BUILD_GATE_STATUS.md) contains historical measured
+receipts and open holds. Its dated status must not be treated as current provider
+truth without a fresh repository/provider readback.
