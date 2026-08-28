@@ -75,6 +75,39 @@ jobs:
           --output "${{ runner.temp }}/continuityos-review-receipts/clean-source-pytest.json"
           -- python -m pytest -q
 
+      - name: Run sealed hashing recall benchmark
+        if: always()
+        env:
+          CONTINUITYOS_SILENCE_EMBED_WARN: "1"
+          PYTHONUTF8: "1"
+        run: >-
+          python -m tools.ci_review run
+          --output "${{ runner.temp }}/continuityos-review-receipts/benchmark-recall-command.json"
+          -- python -m bench.recall_sealed --embedder hashing
+          --json-out "${{ runner.temp }}/continuityos-review-receipts/benchmark-recall-result.json"
+          --manifest-out "${{ runner.temp }}/continuityos-review-receipts/benchmark-recall-manifest.json"
+
+      - name: Run sealed current-truth benchmark
+        if: always()
+        env:
+          PYTHONUTF8: "1"
+        run: >-
+          python -m tools.ci_review run
+          --output "${{ runner.temp }}/continuityos-review-receipts/current-truth-command.json"
+          -- python -m bench.current_truth_bench
+          --json-out "${{ runner.temp }}/continuityos-review-receipts/current-truth-result.json"
+          --manifest-out "${{ runner.temp }}/continuityos-review-receipts/current-truth-manifest.json"
+
+      - name: Run CausalBench receipt
+        if: always()
+        env:
+          PYTHONUTF8: "1"
+        run: >-
+          python -m tools.ci_review run
+          --output "${{ runner.temp }}/continuityos-review-receipts/causalbench-command.json"
+          -- python -m bench.causalbench
+          --json-out "${{ runner.temp }}/continuityos-review-receipts/causalbench-result.json"
+
       - name: Build wheel
         run: >-
           python -m tools.ci_review run
