@@ -66,59 +66,62 @@ def ranked_ids(mem: Memory, query: str, k: int) -> list[str | None]:
 def run(embedder, model: dict[str, Any]) -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as tmp:
         mem = Memory(os.path.join(tmp, "bench.db"), embedder=embedder)
-        build_started = time.perf_counter()
-        gold_ids, chains = build(mem)
-        build_ms = (time.perf_counter() - build_started) * 1000
+        try:
+            build_started = time.perf_counter()
+            gold_ids, chains = build(mem)
+            build_ms = (time.perf_counter() - build_started) * 1000
 
-        keyword_hits = {1: 0, 3: 0, 5: 0}
-        paraphrase_hits = {1: 0, 3: 0, 5: 0}
-        latencies: list[float] = []
-        recall_cases = []
-        for index, (_fact, keyword, paraphrase) in enumerate(GOLD):
-            target = gold_ids[index]
-            keyword_ranked = ranked_ids(mem, keyword, 5)
-            paraphrase_ranked = ranked_ids(mem, paraphrase, 5)
-            keyword_case = {str(k): target in keyword_ranked[:k] for k in (1, 3, 5)}
-            paraphrase_case = {str(k): target in paraphrase_ranked[:k] for k in (1, 3, 5)}
-            for k in (1, 3, 5):
-                keyword_hits[k] += int(keyword_case[str(k)])
-                paraphrase_hits[k] += int(paraphrase_case[str(k)])
-            started = time.perf_counter()
-            mem.recall(keyword, k=5, namespace=NS)
-            latencies.append((time.perf_counter() - started) * 1000)
-            recall_cases.append(
-                {
-                    "case_id": f"recall-{index:03d}",
-                    "keyword_query": keyword,
-                    "paraphrase_query": paraphrase,
-                    "keyword_hit_at": keyword_case,
-                    "paraphrase_hit_at": paraphrase_case,
-                }
-            )
+            keyword_hits = {1: 0, 3: 0, 5: 0}
+            paraphrase_hits = {1: 0, 3: 0, 5: 0}
+            latencies: list[float] = []
+            recall_cases = []
+            for index, (_fact, keyword, paraphrase) in enumerate(GOLD):
+                target = gold_ids[index]
+                keyword_ranked = ranked_ids(mem, keyword, 5)
+                paraphrase_ranked = ranked_ids(mem, paraphrase, 5)
+                keyword_case = {str(k): target in keyword_ranked[:k] for k in (1, 3, 5)}
+                paraphrase_case = {str(k): target in paraphrase_ranked[:k] for k in (1, 3, 5)}
+                for k in (1, 3, 5):
+                    keyword_hits[k] += int(keyword_case[str(k)])
+                    paraphrase_hits[k] += int(paraphrase_case[str(k)])
+                started = time.perf_counter()
+                mem.recall(keyword, k=5, namespace=NS)
+                latencies.append((time.perf_counter() - started) * 1000)
+                recall_cases.append(
+                    {
+                        "case_id": f"recall-{index:03d}",
+                        "keyword_query": keyword,
+                        "paraphrase_query": paraphrase,
+                        "keyword_hit_at": keyword_case,
+                        "paraphrase_hit_at": paraphrase_case,
+                    }
+                )
 
-        current_ok = 0
-        temporal_ok = 0
-        update_cases = []
-        for index, ((oid, _nid, t_old, _t_new), (original, updated, query)) in enumerate(
-            zip(chains, UPDATES)
-        ):
-            current = mem.recall(query, k=5, namespace=NS, current_only=True)
-            current_texts = [getattr(item, "text", "") for item in current]
-            current_pass = updated in current_texts and original not in current_texts
-            old = mem.recall(query, k=10, namespace=NS, as_of=t_old + 1)
-            old_texts = [getattr(item, "text", "") for item in old]
-            temporal_pass = original in old_texts and updated not in old_texts
-            current_ok += int(current_pass)
-            temporal_ok += int(temporal_pass)
-            update_cases.append(
-                {
-                    "case_id": f"update-{index:03d}",
-                    "query": query,
-                    "current_only_pass": current_pass,
-                    "as_of_old_pass": temporal_pass,
-                    "superseded_id": oid,
-                }
-            )
+            current_ok = 0
+            temporal_ok = 0
+            update_cases = []
+            for index, ((oid, _nid, t_old, _t_new), (original, updated, query)) in enumerate(
+                zip(chains, UPDATES)
+            ):
+                current = mem.recall(query, k=5, namespace=NS, current_only=True)
+                current_texts = [getattr(item, "text", "") for item in current]
+                current_pass = updated in current_texts and original not in current_texts
+                old = mem.recall(query, k=10, namespace=NS, as_of=t_old + 1)
+                old_texts = [getattr(item, "text", "") for item in old]
+                temporal_pass = original in old_texts and updated not in old_texts
+                current_ok += int(current_pass)
+                temporal_ok += int(temporal_pass)
+                update_cases.append(
+                    {
+                        "case_id": f"update-{index:03d}",
+                        "query": query,
+                        "current_only_pass": current_pass,
+                        "as_of_old_pass": temporal_pass,
+                        "superseded_id": oid,
+                    }
+                )
+        finally:
+            mem.store.con.close()
 
     n = len(GOLD)
     updates = len(UPDATES)
