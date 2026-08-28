@@ -6,8 +6,16 @@ from pathlib import Path
 
 import pytest
 
-from bench import locomo_sealed, recall_sealed
-from bench.sealing import model_identity, normalize_sha256, require_sealed_model
+try:
+    from bench import locomo_sealed, recall_sealed
+    from bench.sealing import model_identity, normalize_sha256, require_sealed_model
+except ModuleNotFoundError as exc:
+    if exc.name != "bench":
+        raise
+    pytest.skip(
+        "source-only benchmark modules are not packaged in wheel",
+        allow_module_level=True,
+    )
 
 
 def _sha256(path: Path) -> str:
