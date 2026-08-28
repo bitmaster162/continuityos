@@ -82,7 +82,25 @@ For FastEmbed/Model2Vec/SentenceTransformers, add `--model-revision` and
 per-question gold evidence IDs, ranked evidence IDs, first-gold rank, Recall@k and
 MRR. A dataset hash mismatch stops before evaluation.
 
-### Causal/current-truth governance proof
+### CurrentTruthBench
+
+The offline regression corpus freezes real stale-projection classes observed in
+this repository, including Issue #111/#114 coordination text versus merged PR #115
+provider metadata and historical `BUILD_GATE_STATUS.md` versus a newer protected
+`master` readback:
+
+```bash
+python -m bench.current_truth_bench \
+  --json-out /tmp/current-truth.json \
+  --manifest-out /tmp/current-truth-manifest.json
+```
+
+It also covers a later fresh provider contradiction against an older human PASS
+and an equal-authority provider conflict. These are deterministic regression
+fixtures only: they never replace a fresh provider readback for a live decision.
+The result/manifest grant zero execution or provider-effect authority.
+
+### Causal governance proof
 
 `CausalBench` already supports immutable JSON output and does not need a second
 runner:
@@ -96,10 +114,9 @@ For a CI-style command receipt, wrap that existing command with
 `receipt-manifest` path. The benchmark pass grants no source, merge, deployment,
 runtime, provider-effect, trading, wallet, order, or capital authority.
 
-Real stale-projection cases such as an issue body that says a PR is still pending
-while live provider metadata says `merged=true` should be retained as
-CurrentTruth fixtures. Structured provider readback for the physical fact must
-outrank stale coordination prose.
+Structured provider readback for a physical fact must outrank stale coordination
+prose. A later fresh physical contradiction blocks reliance on an older accepted
+decision rather than silently manufacturing higher authority.
 
 ## Governance regression corpus
 
