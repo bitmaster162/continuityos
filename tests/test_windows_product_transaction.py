@@ -24,12 +24,14 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _fake_python_runtime(tmp_path: Path) -> Path:
+def _fake_python_runtime(tmp_path: Path, *, embeddable: bool = False) -> Path:
     root = tmp_path / "python-runtime"
     root.mkdir()
     (root / "python.exe").write_bytes(b"MZ-fake-python")
     (root / "python311.dll").write_bytes(b"MZ-fake-python-dll")
     (root / "Lib").mkdir()
+    if embeddable:
+        (root / "python311._pth").write_text("python311.zip\n.\n#import site\n", encoding="utf-8")
     return root
 
 
@@ -124,6 +126,47 @@ def test_builder_creates_versioned_immutable_shape_and_validator_accepts(tmp_pat
     assert checked["ok"] is True
     assert checked["build_id"] == runtime.name
     assert checked["runtime_tree_sha256"] == package["runtime_tree_sha256"]
+
+
+def test_builder_normalizes_embeddable_python_path_for_bundled_site_packages(tmp_path: Path):
+    py = _fake_python_runtime(tmp_path, embeddable=True)
+    wheel = _fake_wheel(tmp_path)
+    launcher = tmp_path / "sovereign-twin.exe"
+    launcher.write_bytes(b"MZ-relative-launcher-fixture")
+    result = build_runtime(
+        python_runtime=py,
+        wheel=wheel,
+        launcher=launcher,
+        output_root=tmp_path / "runtimes",
+        source_sha=SOURCE_SHA,
+    )
+    runtime = Path(result["runtime_root"])
+    pth = (runtime / "python311._pth").read_text(encoding="utf-8").splitlines()
+    assert "Lib\\site-packages" in pth
+    assert "import site" in pth
+    package = json.loads((runtime / "runtime-package.json").read_text(encoding="utf-8"))
+    assert package["python_path_config"] == "python311._pth"
+    validate_runtime_package(runtime)
+
+
+def test_builder_is_content_deterministic_across_output_roots(tmp_path: Path):
+    py = _fake_python_runtime(tmp_path, embeddable=True)
+    wheel = _fake_wheel(tmp_path)
+    launcher = tmp_path / "sovereign-twin.exe"
+    launcher.write_bytes(b"MZ-relative-launcher-fixture")
+    first = build_runtime(
+        python_runtime=py, wheel=wheel, launcher=launcher,
+        output_root=tmp_path / "out-a", source_sha=SOURCE_SHA,
+    )
+    second = build_runtime(
+        python_runtime=py, wheel=wheel, launcher=launcher,
+        output_root=tmp_path / "out-b", source_sha=SOURCE_SHA,
+    )
+    a = Path(first["runtime_root"])
+    b = Path(second["runtime_root"])
+    assert (a / "runtime-package.json").read_bytes() == (b / "runtime-package.json").read_bytes()
+    assert (a / "SHA256SUMS").read_bytes() == (b / "SHA256SUMS").read_bytes()
+    assert first["runtime_tree_sha256"] == second["runtime_tree_sha256"]
 
 
 def test_builder_refuses_to_overwrite_existing_runtime(tmp_path: Path):
