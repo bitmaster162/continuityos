@@ -66,7 +66,7 @@ def test_stable_starter_strictly_binds_complete_v3_pointer():
     ):
         assert f'"{field}"' in text
 
-    assert 'strcmp(rp.execution_authority, "NONE") == 0' in text
+    assert 'strcmp(rp.execution_authority, "NONE") != 0' in text
     assert "rp.can_execute != 0" in text
     assert "parse_loopback_url(rp.llm_server" in text
     assert "parse_loopback_url(rp.ui" in text
