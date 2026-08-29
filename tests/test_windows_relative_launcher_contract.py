@@ -2,11 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = ROOT / "native" / "windows" / "sovereign_twin_launcher.c"
 STARTER = ROOT / "native" / "windows" / "sovereign_twin_start.c"
 
 
+@pytest.mark.skipif(
+    not LAUNCHER.is_file(),
+    reason="native Windows launcher source is repo-only and is not shipped in the wheel",
+)
 def test_runtime_launcher_is_location_relative_shell_free_and_bytecode_free():
     text = LAUNCHER.read_text(encoding="utf-8")
     assert "GetModuleFileNameW" in text
@@ -22,6 +28,10 @@ def test_runtime_launcher_is_location_relative_shell_free_and_bytecode_free():
     assert "C:\\\\Users" not in text
 
 
+@pytest.mark.skipif(
+    not STARTER.is_file(),
+    reason="native Windows stable starter source is repo-only and is not shipped in the wheel",
+)
 def test_stable_starter_reads_v3_pointer_and_fails_closed_on_authority():
     text = STARTER.read_text(encoding="utf-8")
     assert 'SOURCE_SCHEMA "sovereign-twin.windows-runtime-source/v3"' in text
