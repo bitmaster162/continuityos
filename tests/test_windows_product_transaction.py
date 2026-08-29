@@ -67,8 +67,10 @@ def _fake_wheel(tmp_path: Path, version: str = "0.10.3") -> Path:
 def _built_runtime(tmp_path: Path) -> Path:
     """Create a valid packaged-runtime fixture without depending on repo-only build tooling.
 
-    This keeps validator/stage-validate coverage active in wheel-only CI, where ``tools``
-    is intentionally absent. Builder behavior has its own repo-source tests below.
+    Wheel-only CI deliberately omits ``tools``.  The packaged canonical-tree helper itself
+    requires metadata to exist before it validates the tree, so fixture construction uses
+    a two-pass metadata write.  ``runtime-package.json`` is excluded from the canonical
+    tree by the production implementation, making the second write non-self-referential.
     """
     build_id = f"0.10.3+{SOURCE_SHA[:12]}-win-x64"
     runtime = tmp_path / "runtimes" / build_id
@@ -92,7 +94,7 @@ def _built_runtime(tmp_path: Path) -> Path:
         "architecture": "win-x64",
         "wheel_sha256": "3" * 64,
         "python_path_config": None,
-        "runtime_tree_sha256": canonical_tree_sha256(runtime),
+        "runtime_tree_sha256": "0" * 64,
         "runtime_module_sha256": sha256_file(module),
         "launcher_sha256": sha256_file(launcher),
         "runtime_source_schema_supported": [RUNTIME_SOURCE_SCHEMA],
@@ -100,9 +102,10 @@ def _built_runtime(tmp_path: Path) -> Path:
         "execution_authority": "NONE",
         "can_execute": False,
     }
-    (runtime / "runtime-package.json").write_text(
-        json.dumps(package, sort_keys=True, indent=2) + "\n", encoding="utf-8"
-    )
+    metadata = runtime / "runtime-package.json"
+    metadata.write_text(json.dumps(package, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    package["runtime_tree_sha256"] = canonical_tree_sha256(runtime)
+    metadata.write_text(json.dumps(package, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     return runtime
 
 
