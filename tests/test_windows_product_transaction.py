@@ -9,6 +9,7 @@ import zipfile
 import pytest
 
 from continuityos.windows_product_transaction import (
+    EXPECTED_EMBEDDING_CONTRACT,
     RUNTIME_PACKAGE_SCHEMA,
     RUNTIME_SOURCE_SCHEMA,
     canonical_tree_lines,
@@ -26,6 +27,7 @@ except ModuleNotFoundError:
     build_runtime = None
 
 SOURCE_SHA = "1" * 40
+EMBED_MODEL = "text-embedding-nomic-embed-text-v1.5"
 
 
 def _builder_or_skip():
@@ -119,6 +121,17 @@ def _built_runtime(tmp_path: Path) -> Path:
     return runtime
 
 
+def _make_memory(path: Path, *, dimension: int = 768, bad_vector: bool = False) -> None:
+    con = sqlite3.connect(path)
+    try:
+        con.execute("create table items (id integer primary key, vec blob)")
+        width = dimension * 4
+        con.execute("insert into items(vec) values (?)", (b"\x00" * (width - 1 if bad_vector else width),))
+        con.commit()
+    finally:
+        con.close()
+
+
 def _live_pointer(
     tmp_path: Path,
     *,
@@ -130,21 +143,33 @@ def _live_pointer(
     active = tmp_path / "active-r3"
     active.mkdir(exist_ok=True)
     python = active / "python.exe"
-    twin = active / "sovereign-twin.exe"
+    scripts = active / "Scripts"
+    scripts.mkdir(exist_ok=True)
+    twin = scripts / "sovereign-twin.exe"
     python.write_bytes(b"python")
     twin.write_bytes(b"twin")
 
     memory = memory_db or (tmp_path / "memory.db")
     if memory_db is None:
-        con = sqlite3.connect(memory)
-        try:
-            con.execute("create table items (id integer primary key, vec blob)")
-            con.commit()
-        finally:
-            con.close()
+        _make_memory(memory, dimension=dimension)
 
     memory_manifest = tmp_path / "memory.manifest.json"
-    memory_manifest.write_text("{}\n", encoding="utf-8")
+    memory_manifest.write_text(
+        json.dumps(
+            {
+                "schema": "sovereign-twin.memory-manifest/v1",
+                "db": str(memory.resolve()),
+                "embedding_model": EMBED_MODEL,
+                "embedding_dimension": dimension,
+                "embedding_contract": EXPECTED_EMBEDDING_CONTRACT,
+            },
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
     pointer = tmp_path / "runtime-source.json"
     obj = {
         "schema": RUNTIME_SOURCE_SCHEMA,
@@ -159,7 +184,7 @@ def _live_pointer(
         "ui": "http://127.0.0.1:8765",
         "fast_model": "qwen3.5-4b",
         "deep_model": "qwen3.6-35b-a3b",
-        "embedding_model": "text-embedding-nomic-embed-text-v1.5",
+        "embedding_model": EMBED_MODEL,
         "execution_authority": authority,
         "can_execute": can_execute,
         "memory_activated_at_utc": "2026-08-29T00:00:00Z",
@@ -168,6 +193,20 @@ def _live_pointer(
     }
     pointer.write_text(json.dumps(obj, indent=2) + "\n", encoding="utf-8")
     return pointer
+
+
+def _mutate_pointer(pointer: Path, mutate) -> None:
+    obj = json.loads(pointer.read_text(encoding="utf-8"))
+    mutate(obj)
+    pointer.write_text(json.dumps(obj, indent=2) + "\n", encoding="utf-8")
+
+
+def _mutate_manifest(pointer: Path, mutate) -> None:
+    obj = json.loads(pointer.read_text(encoding="utf-8"))
+    manifest = Path(obj["memory_manifest"])
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    mutate(data)
+    manifest.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
 def test_builder_creates_versioned_immutable_shape_and_validator_accepts(tmp_path: Path):
@@ -288,14 +327,16 @@ def test_validator_detects_sha256sums_tamper(tmp_path: Path):
         validate_runtime_package(runtime)
 
 
-def test_stage_validate_is_read_only_and_preserves_live_memory(tmp_path: Path):
+def test_stage_validate_is_read_only_and_proves_manifest_and_vector_binding(tmp_path: Path):
     runtime = _built_runtime(tmp_path)
     pointer = _live_pointer(tmp_path)
     pointer_before = _sha(pointer)
     pointer_bytes_before = pointer.read_bytes()
     live_obj = json.loads(pointer.read_text(encoding="utf-8"))
     memory = Path(live_obj["memory_db"])
+    manifest = Path(live_obj["memory_manifest"])
     physical_before = _physical(memory)
+    manifest_before = manifest.read_bytes()
 
     receipt = stage_validate(runtime, pointer)
 
@@ -309,9 +350,16 @@ def test_stage_validate_is_read_only_and_preserves_live_memory(tmp_path: Path):
     assert receipt["live"]["memory_quick_check"].lower() == "ok"
     assert receipt["live"]["sqlite_open_mode"] == "mode=ro&immutable=1"
     assert receipt["live"]["sqlite_physical_files_unchanged"] is True
+    assert receipt["live"]["memory_manifest_bound"] is True
+    assert receipt["live"]["memory_manifest_binding"]["embedding_model"] == EMBED_MODEL
+    assert receipt["live"]["memory_manifest_binding"]["embedding_dimension"] == 768
+    assert receipt["live"]["vector_count"] == 1
+    assert receipt["live"]["bad_vector_count"] == 0
+    assert receipt["live"]["expected_vector_bytes"] == 3072
     assert _sha(pointer) == pointer_before
     assert pointer.read_bytes() == pointer_bytes_before
     assert _physical(memory) == physical_before
+    assert manifest.read_bytes() == manifest_before
 
 
 def test_stage_validate_fails_closed_on_pending_wal_without_touching_files(tmp_path: Path):
@@ -321,7 +369,7 @@ def test_stage_validate_fails_closed_on_pending_wal_without_touching_files(tmp_p
     try:
         assert con.execute("pragma journal_mode=wal").fetchone()[0].lower() == "wal"
         con.execute("create table items (id integer primary key, vec blob)")
-        con.execute("insert into items(vec) values (?)", (b"x",))
+        con.execute("insert into items(vec) values (?)", (b"\x00" * 3072,))
         con.commit()
         wal = Path(str(memory) + "-wal")
         assert wal.is_file() and wal.stat().st_size > 0
@@ -344,6 +392,42 @@ def test_live_pointer_rejects_duplicate_json_keys(tmp_path: Path):
         stage_validate(runtime, pointer)
 
 
+def test_live_pointer_rejects_unknown_v3_field(tmp_path: Path):
+    runtime = _built_runtime(tmp_path)
+    pointer = _live_pointer(tmp_path)
+    _mutate_pointer(pointer, lambda obj: obj.__setitem__("extra", "forbidden"))
+    with pytest.raises(ValueError, match="exactly 18 v3 fields"):
+        stage_validate(runtime, pointer)
+
+
+def test_live_pointer_rejects_missing_required_v3_field(tmp_path: Path):
+    runtime = _built_runtime(tmp_path)
+    pointer = _live_pointer(tmp_path)
+    _mutate_pointer(pointer, lambda obj: obj.pop("memory_activated_at_utc"))
+    with pytest.raises(ValueError, match="exactly 18 v3 fields"):
+        stage_validate(runtime, pointer)
+
+
+def test_live_pointer_rejects_remote_model_server(tmp_path: Path):
+    runtime = _built_runtime(tmp_path)
+    pointer = _live_pointer(tmp_path)
+    _mutate_pointer(pointer, lambda obj: obj.__setitem__("llm_server", "http://example.com:1234"))
+    with pytest.raises(ValueError, match="llm_server must be exact loopback"):
+        stage_validate(runtime, pointer)
+
+
+def test_live_pointer_rejects_cross_runtime_python_and_twin(tmp_path: Path):
+    runtime = _built_runtime(tmp_path)
+    pointer = _live_pointer(tmp_path)
+    other = tmp_path / "other-runtime"
+    other.mkdir()
+    other_python = other / "python.exe"
+    other_python.write_bytes(b"python")
+    _mutate_pointer(pointer, lambda obj: obj.__setitem__("python", str(other_python)))
+    with pytest.raises(ValueError, match="must bind the same runtime root"):
+        stage_validate(runtime, pointer)
+
+
 def test_stage_validate_fails_closed_on_live_execution_authority(tmp_path: Path):
     runtime = _built_runtime(tmp_path)
     pointer = _live_pointer(tmp_path, authority="ALLOW")
@@ -355,6 +439,47 @@ def test_stage_validate_fails_closed_on_embedding_dimension_mismatch(tmp_path: P
     runtime = _built_runtime(tmp_path)
     pointer = _live_pointer(tmp_path, dimension=1536)
     with pytest.raises(ValueError, match="does not declare support"):
+        stage_validate(runtime, pointer)
+
+
+def test_live_memory_rejects_vector_width_mismatch(tmp_path: Path):
+    runtime = _built_runtime(tmp_path)
+    memory = tmp_path / "bad-width.db"
+    _make_memory(memory, dimension=768, bad_vector=True)
+    pointer = _live_pointer(tmp_path, memory_db=memory)
+    with pytest.raises(ValueError, match="vector width/type mismatch"):
+        stage_validate(runtime, pointer)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("embedding_model", "other-model", "embedding_model does not bind"),
+        ("embedding_dimension", 1536, "embedding_dimension does not bind"),
+        (
+            "embedding_contract",
+            {"document_task_prefix": "wrong", "query_task_prefix": "search_query"},
+            "embedding_contract does not bind",
+        ),
+    ),
+)
+def test_live_memory_rejects_manifest_semantic_mismatch(
+    tmp_path: Path, field: str, value, message: str
+):
+    runtime = _built_runtime(tmp_path)
+    pointer = _live_pointer(tmp_path)
+    _mutate_manifest(pointer, lambda manifest: manifest.__setitem__(field, value))
+    with pytest.raises(ValueError, match=message):
+        stage_validate(runtime, pointer)
+
+
+def test_live_memory_rejects_manifest_db_mismatch(tmp_path: Path):
+    runtime = _built_runtime(tmp_path)
+    pointer = _live_pointer(tmp_path)
+    other_db = tmp_path / "other.db"
+    other_db.write_bytes(b"not-used")
+    _mutate_manifest(pointer, lambda manifest: manifest.__setitem__("db", str(other_db.resolve())))
+    with pytest.raises(ValueError, match="db path does not bind"):
         stage_validate(runtime, pointer)
 
 

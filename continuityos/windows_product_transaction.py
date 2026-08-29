@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 from typing import Any, Iterable
 
@@ -23,6 +24,36 @@ PACKAGE_MANIFEST = "runtime-package.json"
 SUMS_FILE = "SHA256SUMS"
 TREE_EXCLUDES = frozenset({PACKAGE_MANIFEST, SUMS_FILE})
 SQLITE_AUX_SUFFIXES = ("-wal", "-shm", "-journal")
+
+RUNTIME_SOURCE_FIELDS = (
+    "schema",
+    "repository",
+    "source_sha",
+    "installed_at_utc",
+    "python",
+    "twin_executable",
+    "memory_db",
+    "admission_queue",
+    "llm_server",
+    "ui",
+    "fast_model",
+    "deep_model",
+    "embedding_model",
+    "execution_authority",
+    "can_execute",
+    "memory_activated_at_utc",
+    "memory_manifest",
+    "memory_embedding_dimension",
+)
+RUNTIME_SOURCE_STRING_FIELDS = tuple(
+    field for field in RUNTIME_SOURCE_FIELDS
+    if field not in {"can_execute", "memory_embedding_dimension"}
+)
+EXPECTED_EMBEDDING_CONTRACT = {
+    "document_task_prefix": "search_document",
+    "query_task_prefix": "search_query",
+}
+_LOOPBACK_RE = re.compile(r"^https?://(?:127\.0\.0\.1|localhost):([0-9]+)(?:/)?$")
 
 
 def _norm_rel(path: Path) -> str:
@@ -153,17 +184,20 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def _require_sha256(value: Any, field: str) -> str:
-    text = str(value or "").lower()
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be SHA-256 hex string")
+    text = value.lower()
     if len(text) != 64 or any(c not in "0123456789abcdef" for c in text):
-        raise ValueError(f"{field} must be lowercase SHA-256 hex")
+        raise ValueError(f"{field} must be SHA-256 hex")
     return text
 
 
 def _require_source_sha(value: Any) -> str:
-    text = str(value or "").lower()
-    if len(text) != 40 or any(c not in "0123456789abcdef" for c in text):
+    if not isinstance(value, str):
+        raise ValueError("source_sha must be exact 40-character Git SHA string")
+    if len(value) != 40 or any(c not in "0123456789abcdefABCDEF" for c in value):
         raise ValueError("source_sha must be exact 40-character Git SHA")
-    return text
+    return value
 
 
 def _require_none_false(obj: dict[str, Any], context: str) -> None:
@@ -174,10 +208,51 @@ def _require_none_false(obj: dict[str, Any], context: str) -> None:
 
 
 def _full_path(value: Any, field: str) -> Path:
-    text = str(value or "").strip()
-    if not text:
+    if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} missing")
-    return Path(text).expanduser().resolve()
+    return Path(value).expanduser().resolve()
+
+
+def _require_exact_runtime_source_shape(pointer: dict[str, Any]) -> None:
+    expected = set(RUNTIME_SOURCE_FIELDS)
+    actual = set(pointer)
+    missing = sorted(expected - actual)
+    unexpected = sorted(actual - expected)
+    if missing or unexpected:
+        detail: list[str] = []
+        if missing:
+            detail.append("missing=" + ",".join(missing))
+        if unexpected:
+            detail.append("unexpected=" + ",".join(unexpected))
+        raise ValueError("live runtime-source must contain exactly 18 v3 fields: " + " ".join(detail))
+
+    for field in RUNTIME_SOURCE_STRING_FIELDS:
+        value = pointer[field]
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"live runtime-source {field} must be a non-empty JSON string")
+
+    if pointer["can_execute"] is not False:
+        raise ValueError("live runtime-source can_execute must be false")
+    dimension = pointer["memory_embedding_dimension"]
+    if not isinstance(dimension, int) or isinstance(dimension, bool) or dimension <= 0:
+        raise ValueError("live runtime-source memory_embedding_dimension invalid")
+
+
+def _require_loopback_url(value: str, field: str) -> int:
+    match = _LOOPBACK_RE.fullmatch(value)
+    if match is None:
+        raise ValueError(f"live runtime-source {field} must be exact loopback http(s) URL with port")
+    port = int(match.group(1))
+    if port <= 0 or port > 65535:
+        raise ValueError(f"live runtime-source {field} port invalid")
+    return port
+
+
+def _same_runtime_root(python_exe: Path, twin_exe: Path) -> bool:
+    """Mirror native starter layout: <root>/python.exe + <root>/*/sovereign-twin.exe."""
+    python_root = python_exe.parent
+    twin_root = twin_exe.parent.parent
+    return str(python_root).casefold() == str(twin_root).casefold()
 
 
 def _fingerprint_file(path: Path) -> dict[str, Any]:
@@ -204,17 +279,7 @@ def sqlite_physical_fingerprints(path: str | os.PathLike[str]) -> dict[str, dict
     return _sqlite_physical_fingerprints(Path(path).resolve())
 
 
-def _sqlite_quick_check_zero_write(path: Path) -> tuple[str, dict[str, dict[str, Any]]]:
-    """Run quick_check without permitting SQLite to create/modify WAL/SHM/journal files.
-
-    ``mode=ro`` alone can still require/create WAL shared-memory state. P1A therefore
-    admits an immutable read only when there is no non-empty pending WAL or rollback
-    journal. ``immutable=1`` then suppresses locking/journal participation. The complete
-    DB/auxiliary file fingerprints are compared before and after and any drift fails
-    closed. A live writer or pending WAL must be quiesced/checkpointed before P1A can
-    truthfully claim READ_ONLY_ZERO_EXTERNAL_EFFECTS.
-    """
-    before = _sqlite_physical_fingerprints(path)
+def _reject_pending_sqlite_state(before: dict[str, dict[str, Any]], path: Path) -> None:
     for suffix in ("-wal", "-journal"):
         fp = before[str(Path(str(path) + suffix))]
         if fp.get("present") and int(fp.get("size") or 0) > 0:
@@ -223,19 +288,107 @@ def _sqlite_quick_check_zero_write(path: Path) -> tuple[str, dict[str, dict[str,
                 "quiesce/checkpoint the memory DB first"
             )
 
+
+def _sqlite_memory_audit_zero_write(path: Path, dimension: int) -> dict[str, Any]:
+    """Verify quick_check and exact physical vector width without modifying SQLite files."""
+    before = _sqlite_physical_fingerprints(path)
+    _reject_pending_sqlite_state(before, path)
+
     uri = path.as_uri() + "?mode=ro&immutable=1"
     con = sqlite3.connect(uri, uri=True, timeout=5.0)
     try:
         con.execute("PRAGMA query_only=ON")
         row = con.execute("PRAGMA quick_check").fetchone()
         quick = str(row[0]) if row else ""
+        if quick.lower() != "ok":
+            raise ValueError(f"live memory quick_check failed: {quick}")
+
+        items = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='items'"
+        ).fetchone()
+        if items is None:
+            raise ValueError("live memory items table missing")
+
+        expected_bytes = dimension * 4
+        row = con.execute(
+            """
+            SELECT
+                COUNT(*) AS item_count,
+                SUM(CASE WHEN vec IS NOT NULL THEN 1 ELSE 0 END) AS vector_count,
+                SUM(CASE WHEN vec IS NULL THEN 1 ELSE 0 END) AS vectorless_count,
+                SUM(
+                    CASE
+                        WHEN vec IS NOT NULL
+                         AND (typeof(vec) <> 'blob' OR length(vec) <> ?)
+                        THEN 1 ELSE 0
+                    END
+                ) AS bad_vector_count
+            FROM items
+            """,
+            (expected_bytes,),
+        ).fetchone()
+        assert row is not None
+        item_count = int(row[0] or 0)
+        vector_count = int(row[1] or 0)
+        vectorless_count = int(row[2] or 0)
+        bad_vector_count = int(row[3] or 0)
+        if bad_vector_count:
+            raise ValueError(
+                "live memory vector width/type mismatch: "
+                f"{bad_vector_count} row(s) are not {expected_bytes}-byte float32 blobs"
+            )
     finally:
         con.close()
 
     after = _sqlite_physical_fingerprints(path)
     if after != before:
         raise ValueError("SQLite physical files changed during zero-write preflight")
-    return quick, before
+    return {
+        "memory_quick_check": quick,
+        "item_count": item_count,
+        "vector_count": vector_count,
+        "vectorless_count": vectorless_count,
+        "bad_vector_count": bad_vector_count,
+        "expected_vector_bytes": expected_bytes,
+        "sqlite_open_mode": "mode=ro&immutable=1",
+        "sqlite_physical_fingerprints": before,
+        "sqlite_physical_files_unchanged": True,
+    }
+
+
+def _validate_memory_manifest(
+    manifest_path: Path,
+    memory_db: Path,
+    embedding_model: str,
+    dimension: int,
+) -> dict[str, Any]:
+    manifest = _load_json(manifest_path)
+
+    manifest_db = _full_path(manifest.get("db"), "memory manifest db")
+    if manifest_db != memory_db:
+        raise ValueError("memory manifest db path does not bind live memory_db")
+    if manifest.get("embedding_model") != embedding_model:
+        raise ValueError("memory manifest embedding_model does not bind live embedding_model")
+    manifest_dimension = manifest.get("embedding_dimension")
+    if (
+        not isinstance(manifest_dimension, int)
+        or isinstance(manifest_dimension, bool)
+        or manifest_dimension != dimension
+    ):
+        raise ValueError("memory manifest embedding_dimension does not bind live memory_embedding_dimension")
+    if manifest.get("embedding_contract") != EXPECTED_EMBEDDING_CONTRACT:
+        raise ValueError("memory manifest embedding_contract does not bind Nomic task-prefix contract")
+
+    return {
+        "path": str(manifest_path),
+        "sha256": sha256_file(manifest_path),
+        "schema": manifest.get("schema"),
+        "db": str(manifest_db),
+        "embedding_model": embedding_model,
+        "embedding_dimension": dimension,
+        "embedding_contract": dict(EXPECTED_EMBEDDING_CONTRACT),
+        "bound": True,
+    }
 
 
 def _expected_sums_text(root: Path) -> str:
@@ -271,7 +424,9 @@ def validate_runtime_package(runtime_root: str | os.PathLike[str]) -> dict[str, 
         raise ValueError("runtime package does not support runtime-source/v3")
 
     dims = package.get("memory_embedding_dimensions_supported")
-    if not isinstance(dims, list) or not dims or not all(isinstance(x, int) and x > 0 for x in dims):
+    if not isinstance(dims, list) or not dims or not all(
+        isinstance(x, int) and not isinstance(x, bool) and x > 0 for x in dims
+    ):
         raise ValueError("runtime package has invalid embedding dimension support list")
 
     python_exe = root / "python.exe"
@@ -338,55 +493,45 @@ def validate_live_pointer(pointer_path: str | os.PathLike[str]) -> dict[str, Any
     path = Path(pointer_path).resolve()
     if not path.exists():
         return {"present": False, "path": str(path)}
+
     pointer = _load_json(path)
-    if pointer.get("schema") != RUNTIME_SOURCE_SCHEMA:
+    _require_exact_runtime_source_shape(pointer)
+    if pointer["schema"] != RUNTIME_SOURCE_SCHEMA:
         raise ValueError("live runtime-source schema mismatch")
     _require_none_false(pointer, "live runtime-source")
-
-    required = (
-        "repository",
-        "source_sha",
-        "installed_at_utc",
-        "python",
-        "twin_executable",
-        "memory_db",
-        "admission_queue",
-        "llm_server",
-        "ui",
-        "fast_model",
-        "deep_model",
-        "embedding_model",
-    )
-    for field in required:
-        if not str(pointer.get(field) or "").strip():
-            raise ValueError(f"live runtime-source field missing: {field}")
     _require_source_sha(pointer["source_sha"])
+    _require_loopback_url(pointer["llm_server"], "llm_server")
+    _require_loopback_url(pointer["ui"], "ui")
 
     python_exe = _full_path(pointer["python"], "python")
     twin_exe = _full_path(pointer["twin_executable"], "twin_executable")
     memory_db = _full_path(pointer["memory_db"], "memory_db")
+    memory_manifest = _full_path(pointer["memory_manifest"], "memory_manifest")
+
     for field, required_path in (
         ("python", python_exe),
         ("twin_executable", twin_exe),
         ("memory_db", memory_db),
+        ("memory_manifest", memory_manifest),
     ):
         if not required_path.is_file():
             raise ValueError(f"live runtime-source {field} missing on disk: {required_path}")
 
-    memory_manifest_value = str(pointer.get("memory_manifest") or "").strip()
-    memory_manifest = None
-    if memory_manifest_value:
-        memory_manifest = _full_path(memory_manifest_value, "memory_manifest")
-        if not memory_manifest.is_file():
-            raise ValueError(f"live runtime-source memory_manifest missing on disk: {memory_manifest}")
+    if python_exe.name.casefold() != "python.exe":
+        raise ValueError("live runtime-source python basename must be python.exe")
+    if twin_exe.name.casefold() != "sovereign-twin.exe":
+        raise ValueError("live runtime-source twin_executable basename must be sovereign-twin.exe")
+    if not _same_runtime_root(python_exe, twin_exe):
+        raise ValueError("live runtime-source python and twin_executable must bind the same runtime root")
 
-    dimension = pointer.get("memory_embedding_dimension")
-    if dimension is not None and (not isinstance(dimension, int) or isinstance(dimension, bool) or dimension <= 0):
-        raise ValueError("live runtime-source memory_embedding_dimension invalid")
-
-    quick, physical = _sqlite_quick_check_zero_write(memory_db)
-    if quick.lower() != "ok":
-        raise ValueError(f"live memory quick_check failed: {quick}")
+    dimension = pointer["memory_embedding_dimension"]
+    memory_audit = _sqlite_memory_audit_zero_write(memory_db, dimension)
+    manifest_binding = _validate_memory_manifest(
+        memory_manifest,
+        memory_db,
+        pointer["embedding_model"],
+        dimension,
+    )
 
     return {
         "present": True,
@@ -397,12 +542,11 @@ def validate_live_pointer(pointer_path: str | os.PathLike[str]) -> dict[str, Any
         "twin_executable": str(twin_exe),
         "memory_db": str(memory_db),
         "memory_db_sha256": sha256_file(memory_db),
-        "memory_manifest": str(memory_manifest) if memory_manifest else None,
+        "memory_manifest": str(memory_manifest),
+        "memory_manifest_binding": manifest_binding,
+        "memory_manifest_bound": True,
         "memory_embedding_dimension": dimension,
-        "memory_quick_check": quick,
-        "sqlite_open_mode": "mode=ro&immutable=1",
-        "sqlite_physical_fingerprints": physical,
-        "sqlite_physical_files_unchanged": True,
+        **memory_audit,
         "execution_authority": "NONE",
         "can_execute": False,
     }
@@ -425,8 +569,8 @@ def stage_validate(
         else:
             raise ValueError("staged runtime is already referenced by the active pointer")
 
-        dim = live.get("memory_embedding_dimension")
-        if dim is not None and dim not in package["memory_embedding_dimensions_supported"]:
+        dim = live["memory_embedding_dimension"]
+        if dim not in package["memory_embedding_dimensions_supported"]:
             raise ValueError(
                 "staged runtime does not declare support for active memory embedding dimension"
             )
