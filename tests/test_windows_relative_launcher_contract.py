@@ -7,13 +7,14 @@ LAUNCHER = ROOT / "native" / "windows" / "sovereign_twin_launcher.c"
 STARTER = ROOT / "native" / "windows" / "sovereign_twin_start.c"
 
 
-def test_runtime_launcher_is_location_relative_and_shell_free():
+def test_runtime_launcher_is_location_relative_shell_free_and_bytecode_free():
     text = LAUNCHER.read_text(encoding="utf-8")
     assert "GetModuleFileNameW" in text
     assert 'L"%ls\\\\python.exe"' in text
     assert "CreateProcessW" in text
     assert "continuityos.sovereign_twin_cli" in text
-    assert " -I -m " in text
+    assert " -B -I -m " in text
+    assert "__pycache__" in text
     assert "system(" not in text
     assert "ShellExecute" not in text
     assert "runtime-venv" not in text
