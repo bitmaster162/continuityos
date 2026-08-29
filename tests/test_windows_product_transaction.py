@@ -11,6 +11,7 @@ import pytest
 from continuityos.windows_product_transaction import (
     RUNTIME_PACKAGE_SCHEMA,
     RUNTIME_SOURCE_SCHEMA,
+    canonical_tree_lines,
     canonical_tree_sha256,
     sha256_file,
     stage_validate,
@@ -35,6 +36,16 @@ def _builder_or_skip():
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _physical(path: Path) -> dict[str, tuple[bool, int | None, str | None]]:
+    out = {}
+    for p in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm"), Path(str(path) + "-journal")):
+        if p.exists():
+            out[str(p)] = (True, p.stat().st_size, _sha(p))
+        else:
+            out[str(p)] = (False, None, None)
+    return out
 
 
 def _fake_python_runtime(tmp_path: Path, *, embeddable: bool = False) -> Path:
@@ -65,13 +76,7 @@ def _fake_wheel(tmp_path: Path, version: str = "0.10.3") -> Path:
 
 
 def _built_runtime(tmp_path: Path) -> Path:
-    """Create a valid packaged-runtime fixture without depending on repo-only build tooling.
-
-    Wheel-only CI deliberately omits ``tools``.  The packaged canonical-tree helper itself
-    requires metadata to exist before it validates the tree, so fixture construction uses
-    a two-pass metadata write.  ``runtime-package.json`` is excluded from the canonical
-    tree by the production implementation, making the second write non-self-referential.
-    """
+    """Create a valid packaged-runtime fixture without repo-only build tooling."""
     build_id = f"0.10.3+{SOURCE_SHA[:12]}-win-x64"
     runtime = tmp_path / "runtimes" / build_id
     runtime.mkdir(parents=True)
@@ -106,24 +111,37 @@ def _built_runtime(tmp_path: Path) -> Path:
     metadata.write_text(json.dumps(package, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     package["runtime_tree_sha256"] = canonical_tree_sha256(runtime)
     metadata.write_text(json.dumps(package, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    (runtime / "SHA256SUMS").write_text(
+        "\n".join(canonical_tree_lines(runtime)) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     return runtime
 
 
-def _live_pointer(tmp_path: Path, *, dimension: int = 768, authority: str = "NONE", can_execute: bool = False) -> Path:
+def _live_pointer(
+    tmp_path: Path,
+    *,
+    dimension: int = 768,
+    authority: str = "NONE",
+    can_execute: bool = False,
+    memory_db: Path | None = None,
+) -> Path:
     active = tmp_path / "active-r3"
-    active.mkdir()
+    active.mkdir(exist_ok=True)
     python = active / "python.exe"
     twin = active / "sovereign-twin.exe"
     python.write_bytes(b"python")
     twin.write_bytes(b"twin")
 
-    memory = tmp_path / "memory.db"
-    con = sqlite3.connect(memory)
-    try:
-        con.execute("create table items (id integer primary key, vec blob)")
-        con.commit()
-    finally:
-        con.close()
+    memory = memory_db or (tmp_path / "memory.db")
+    if memory_db is None:
+        con = sqlite3.connect(memory)
+        try:
+            con.execute("create table items (id integer primary key, vec blob)")
+            con.commit()
+        finally:
+            con.close()
 
     memory_manifest = tmp_path / "memory.manifest.json"
     memory_manifest.write_text("{}\n", encoding="utf-8")
@@ -144,6 +162,7 @@ def _live_pointer(tmp_path: Path, *, dimension: int = 768, authority: str = "NON
         "embedding_model": "text-embedding-nomic-embed-text-v1.5",
         "execution_authority": authority,
         "can_execute": can_execute,
+        "memory_activated_at_utc": "2026-08-29T00:00:00Z",
         "memory_manifest": str(memory_manifest),
         "memory_embedding_dimension": dimension,
     }
@@ -170,6 +189,7 @@ def test_builder_creates_versioned_immutable_shape_and_validator_accepts(tmp_pat
     assert (runtime / "python311.dll").is_file()
     assert (runtime / "Scripts" / "sovereign-twin.exe").is_file()
     assert (runtime / "Lib" / "site-packages" / "continuityos" / "sovereign_twin_runtime.py").is_file()
+    assert (runtime / "SHA256SUMS").is_file()
 
     package = json.loads((runtime / "runtime-package.json").read_text(encoding="utf-8"))
     assert package["schema"] == RUNTIME_PACKAGE_SCHEMA
@@ -181,6 +201,7 @@ def test_builder_creates_versioned_immutable_shape_and_validator_accepts(tmp_pat
     assert checked["ok"] is True
     assert checked["build_id"] == runtime.name
     assert checked["runtime_tree_sha256"] == package["runtime_tree_sha256"]
+    assert len(checked["sha256sums_sha256"]) == 64
 
 
 def test_builder_normalizes_embeddable_python_path_for_bundled_site_packages(tmp_path: Path):
@@ -259,6 +280,14 @@ def test_validator_detects_payload_tamper(tmp_path: Path):
         validate_runtime_package(runtime)
 
 
+def test_validator_detects_sha256sums_tamper(tmp_path: Path):
+    runtime = _built_runtime(tmp_path)
+    sums = runtime / "SHA256SUMS"
+    sums.write_text(sums.read_text(encoding="utf-8") + "# tampered\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="SHA256SUMS content mismatch"):
+        validate_runtime_package(runtime)
+
+
 def test_stage_validate_is_read_only_and_preserves_live_memory(tmp_path: Path):
     runtime = _built_runtime(tmp_path)
     pointer = _live_pointer(tmp_path)
@@ -266,7 +295,7 @@ def test_stage_validate_is_read_only_and_preserves_live_memory(tmp_path: Path):
     pointer_bytes_before = pointer.read_bytes()
     live_obj = json.loads(pointer.read_text(encoding="utf-8"))
     memory = Path(live_obj["memory_db"])
-    memory_before = _sha(memory)
+    physical_before = _physical(memory)
 
     receipt = stage_validate(runtime, pointer)
 
@@ -278,9 +307,41 @@ def test_stage_validate_is_read_only_and_preserves_live_memory(tmp_path: Path):
     assert receipt["execution_authority"] == "NONE"
     assert receipt["can_execute"] is False
     assert receipt["live"]["memory_quick_check"].lower() == "ok"
+    assert receipt["live"]["sqlite_open_mode"] == "mode=ro&immutable=1"
+    assert receipt["live"]["sqlite_physical_files_unchanged"] is True
     assert _sha(pointer) == pointer_before
     assert pointer.read_bytes() == pointer_bytes_before
-    assert _sha(memory) == memory_before
+    assert _physical(memory) == physical_before
+
+
+def test_stage_validate_fails_closed_on_pending_wal_without_touching_files(tmp_path: Path):
+    runtime = _built_runtime(tmp_path)
+    memory = tmp_path / "wal-memory.db"
+    con = sqlite3.connect(memory)
+    try:
+        assert con.execute("pragma journal_mode=wal").fetchone()[0].lower() == "wal"
+        con.execute("create table items (id integer primary key, vec blob)")
+        con.execute("insert into items(vec) values (?)", (b"x",))
+        con.commit()
+        wal = Path(str(memory) + "-wal")
+        assert wal.is_file() and wal.stat().st_size > 0
+        pointer = _live_pointer(tmp_path, memory_db=memory)
+        before = _physical(memory)
+        with pytest.raises(ValueError, match="refuses pending SQLite -wal content"):
+            stage_validate(runtime, pointer)
+        assert _physical(memory) == before
+    finally:
+        con.close()
+
+
+def test_live_pointer_rejects_duplicate_json_keys(tmp_path: Path):
+    runtime = _built_runtime(tmp_path)
+    pointer = _live_pointer(tmp_path)
+    raw = pointer.read_text(encoding="utf-8")
+    raw = raw.replace('"can_execute": false,', '"can_execute": false,\n  "can_execute": false,', 1)
+    pointer.write_text(raw, encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate JSON key: can_execute"):
+        stage_validate(runtime, pointer)
 
 
 def test_stage_validate_fails_closed_on_live_execution_authority(tmp_path: Path):
