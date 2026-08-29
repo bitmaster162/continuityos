@@ -29,9 +29,80 @@ def _norm_rel(path: Path) -> str:
     return path.as_posix()
 
 
-def sha256_file(path: str | os.PathLike[str]) -> str:
+def _sha256_file_windows_shared(path: Path) -> str:
+    """Hash a Windows file while coexisting with SQLite's live shared handles."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    read_file = kernel32.ReadFile
+    read_file.argtypes = (
+        wintypes.HANDLE,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPVOID,
+    )
+    read_file.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+
+    GENERIC_READ = 0x80000000
+    FILE_SHARE_READ = 0x00000001
+    FILE_SHARE_WRITE = 0x00000002
+    FILE_SHARE_DELETE = 0x00000004
+    OPEN_EXISTING = 3
+    FILE_ATTRIBUTE_NORMAL = 0x00000080
+    FILE_FLAG_SEQUENTIAL_SCAN = 0x08000000
+    invalid_handle = ctypes.c_void_p(-1).value
+
+    handle = create_file(
+        str(path),
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        None,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+        None,
+    )
+    if handle in (None, invalid_handle):
+        err = ctypes.get_last_error()
+        raise OSError(err, f"CreateFileW shared-read failed for {path}")
+
     h = hashlib.sha256()
-    with open(path, "rb") as fh:
+    buf = ctypes.create_string_buffer(1024 * 1024)
+    got = wintypes.DWORD(0)
+    try:
+        while True:
+            if not read_file(handle, buf, len(buf), ctypes.byref(got), None):
+                err = ctypes.get_last_error()
+                raise OSError(err, f"ReadFile shared-read failed for {path}")
+            if got.value == 0:
+                break
+            h.update(buf.raw[: got.value])
+    finally:
+        close_handle(handle)
+    return h.hexdigest()
+
+
+def sha256_file(path: str | os.PathLike[str]) -> str:
+    resolved = Path(path)
+    if os.name == "nt":
+        return _sha256_file_windows_shared(resolved)
+    h = hashlib.sha256()
+    with open(resolved, "rb") as fh:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
@@ -126,6 +197,11 @@ def _fingerprint_file(path: Path) -> dict[str, Any]:
 def _sqlite_physical_fingerprints(path: Path) -> dict[str, dict[str, Any]]:
     paths = [path, *(Path(str(path) + suffix) for suffix in SQLITE_AUX_SUFFIXES)]
     return {str(p): _fingerprint_file(p) for p in paths}
+
+
+def sqlite_physical_fingerprints(path: str | os.PathLike[str]) -> dict[str, dict[str, Any]]:
+    """Public read-only helper used by CI/installer custody checks."""
+    return _sqlite_physical_fingerprints(Path(path).resolve())
 
 
 def _sqlite_quick_check_zero_write(path: Path) -> tuple[str, dict[str, dict[str, Any]]]:
