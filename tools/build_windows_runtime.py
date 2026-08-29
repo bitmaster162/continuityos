@@ -57,6 +57,47 @@ def _copy_tree_exact(source: Path, target: Path) -> None:
             raise ValueError(f"unsupported Python runtime entry: {src}")
 
 
+def _configure_python_site_packages(runtime_root: Path) -> str | None:
+    """Make CPython embeddable distributions see bundled site-packages deterministically.
+
+    Normal Windows installs do not ship a ``pythonXY._pth`` file and need no change.
+    The embeddable distribution does; when present it takes over sys.path and commonly
+    disables ``site``.  P1A admits at most one such file, preserves existing path entries,
+    ensures ``Lib\\site-packages`` is present, and enables ``import site``.
+    """
+    pth_files = sorted(runtime_root.glob("python*._pth"))
+    if not pth_files:
+        return None
+    if len(pth_files) != 1:
+        raise ValueError("bundled Python runtime has multiple python*._pth files")
+    pth = pth_files[0]
+    raw_lines = pth.read_text(encoding="utf-8-sig").splitlines()
+    out: list[str] = []
+    saw_site_packages = False
+    saw_import_site = False
+    for raw in raw_lines:
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if stripped.lower() == "#import site" or stripped.lower() == "import site":
+            if not saw_import_site:
+                out.append("import site")
+                saw_import_site = True
+            continue
+        if stripped.lstrip("#").replace("/", "\\").lower() == "lib\\site-packages":
+            if not saw_site_packages:
+                out.append("Lib\\site-packages")
+                saw_site_packages = True
+            continue
+        out.append(raw.rstrip())
+    if not saw_site_packages:
+        out.append("Lib\\site-packages")
+    if not saw_import_site:
+        out.append("import site")
+    pth.write_text("\n".join(out) + "\n", encoding="utf-8", newline="\n")
+    return pth.name
+
+
 def _extract_wheel_exact(wheel: Path, site_packages: Path) -> tuple[str, str]:
     if not wheel.is_file() or wheel.suffix.lower() != ".whl":
         raise ValueError(f"wheel missing or invalid: {wheel}")
@@ -163,6 +204,7 @@ def build_runtime(
     prep.mkdir()
     try:
         _copy_tree_exact(py_src, prep)
+        python_pth = _configure_python_site_packages(prep)
         if not (prep / "python.exe").is_file():
             raise ValueError("bundled Python runtime has no python.exe")
         if not list(prep.glob("python3*.dll")):
@@ -192,6 +234,7 @@ def build_runtime(
             "source_sha": source_sha,
             "architecture": architecture,
             "wheel_sha256": wheel_sha,
+            "python_path_config": python_pth,
             "runtime_tree_sha256": tree_sha,
             "runtime_module_sha256": runtime_module_sha,
             "launcher_sha256": launcher_sha,
