@@ -173,7 +173,7 @@ jobs:
           $pycache = @(Get-ChildItem -LiteralPath $env:P1A_RUNTIME -Directory -Filter '__pycache__' -Recurse -ErrorAction Stop)
           if ($pycache.Count -ne 0) { throw "immutable runtime acquired __pycache__ directories: $($pycache.FullName -join ', ')" }
 
-      - name: Validate stable starter against manifest-bound temp product root
+      - name: Validate stable starter against complete strict manifest binding
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -186,14 +186,17 @@ jobs:
           $py = Join-Path $runtime 'python.exe'
           $db = Join-Path $env:RUNNER_TEMP 'p1a-memory.db'
           $queue = Join-Path $env:RUNNER_TEMP 'p1a-admissions.jsonl'
+          $memoryManifest = Join-Path $env:RUNNER_TEMP 'p1a-манифест.json'
+          '{}' | Set-Content -LiteralPath $memoryManifest -Encoding utf8
           & $twin --db $db init | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'temp memory init failed' }
 
+          $activationUtc = [DateTime]::UtcNow.ToString('o')
           $pointer = [ordered]@{
             schema = 'sovereign-twin.windows-runtime-source/v3'
             repository = 'bitmaster162/continuityos'
             source_sha = '${{ github.event.pull_request.head.sha }}'
-            installed_at_utc = [DateTime]::UtcNow.ToString('o')
+            installed_at_utc = $activationUtc
             python = $py
             twin_executable = $twin
             memory_db = $db
@@ -205,15 +208,140 @@ jobs:
             embedding_model = 'text-embedding-nomic-embed-text-v1.5'
             execution_authority = 'NONE'
             can_execute = $false
+            memory_activated_at_utc = $activationUtc
+            memory_manifest = $memoryManifest
             memory_embedding_dimension = 768
           }
-          $pointer | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $product 'runtime-source.json') -Encoding utf8
+          $pointerPath = Join-Path $product 'runtime-source.json'
+          $pointer | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $pointerPath -Encoding utf8
 
           $starter = Join-Path $product 'SovereignTwin-Start.exe'
           $output = & $starter --status 2>&1 | Out-String
           $rc = $LASTEXITCODE
           if ($rc -ne 0) { throw "stable starter --status failed rc=$rc output=$output" }
           if ($output -notmatch '"ok"\s*:\s*true') { throw "stable starter status did not report healthy memory: $output" }
+
+          "P1A_PRODUCT=$product" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P1A_POINTER=$pointerPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P1A_MEMORY=$db" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Prove strict starter rejects spoofed or incomplete bindings
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $starter = Join-Path $env:P1A_PRODUCT 'SovereignTwin-Start.exe'
+          $valid = Get-Content -LiteralPath $env:P1A_POINTER -Raw -Encoding utf8
+
+          function Assert-StarterFails([string]$json, [string]$caseName) {
+            $json | Set-Content -LiteralPath $env:P1A_POINTER -Encoding utf8
+            & $starter --status *> $null
+            $rc = $LASTEXITCODE
+            if ($rc -eq 0) { throw "starter unexpectedly accepted $caseName" }
+          }
+
+          $dup = $valid -replace '("can_execute"\s*:\s*false)', '$1, "can_execute": false'
+          Assert-StarterFails $dup 'duplicate can_execute'
+
+          $junk = $valid -replace '"can_execute"\s*:\s*false', '"can_execute": falseXYZ'
+          Assert-StarterFails $junk 'non-token false'
+
+          $obj = $valid | ConvertFrom-Json
+          $obj.llm_server = 'http://example.com:1234'
+          Assert-StarterFails ($obj | ConvertTo-Json -Depth 8) 'remote llm_server'
+
+          $obj = $valid | ConvertFrom-Json
+          $obj.python = $obj.twin_executable
+          Assert-StarterFails ($obj | ConvertTo-Json -Depth 8) 'python launcher mismatch'
+
+          $obj = $valid | ConvertFrom-Json
+          $obj.PSObject.Properties.Remove('memory_manifest')
+          Assert-StarterFails ($obj | ConvertTo-Json -Depth 8) 'missing required v3 field'
+
+          $valid | Set-Content -LiteralPath $env:P1A_POINTER -Encoding utf8
+          & $starter --status *> $null
+          if ($LASTEXITCODE -ne 0) { throw 'starter did not recover after strict rejection cases' }
+
+      - name: Prove packaged WAL preflight has zero physical effects
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $py = Join-Path $env:P1A_RUNTIME 'python.exe'
+          $walDb = Join-Path $env:RUNNER_TEMP 'p1a-live-wal.db'
+          $walPointer = Join-Path $env:RUNNER_TEMP 'p1a-live-wal-pointer.json'
+          $walManifest = Join-Path $env:RUNNER_TEMP 'p1a-live-wal.manifest.json'
+          '{}' | Set-Content -LiteralPath $walManifest -Encoding utf8
+
+          $helper = @'
+          import json, os, sqlite3, sys
+          db, pointer, runtime, manifest = sys.argv[1:5]
+          con = sqlite3.connect(db)
+          assert con.execute("pragma journal_mode=wal").fetchone()[0].lower() == "wal"
+          con.execute("create table items(id integer primary key, vec blob)")
+          con.execute("insert into items(vec) values(?)", (b"x",))
+          con.commit()
+          twin = os.path.join(runtime, "Scripts", "sovereign-twin.exe")
+          py = os.path.join(runtime, "python.exe")
+          now = "2026-08-29T00:00:00Z"
+          obj = {
+              "schema":"sovereign-twin.windows-runtime-source/v3",
+              "repository":"bitmaster162/continuityos",
+              "source_sha":"${{ github.event.pull_request.head.sha }}",
+              "installed_at_utc":now,
+              "python":py,
+              "twin_executable":twin,
+              "memory_db":db,
+              "admission_queue":db+".admissions.jsonl",
+              "llm_server":"http://127.0.0.1:1234",
+              "ui":"http://127.0.0.1:8765",
+              "fast_model":"qwen3.5-4b",
+              "deep_model":"qwen3.6-35b-a3b",
+              "embedding_model":"text-embedding-nomic-embed-text-v1.5",
+              "execution_authority":"NONE",
+              "can_execute":False,
+              "memory_activated_at_utc":now,
+              "memory_manifest":manifest,
+              "memory_embedding_dimension":768,
+          }
+          open(pointer, "w", encoding="utf-8").write(json.dumps(obj))
+          print("READY", flush=True)
+          sys.stdin.readline()
+          con.close()
+          '@
+          $helperPath = Join-Path $env:RUNNER_TEMP 'p1a-wal-holder.py'
+          $helper | Set-Content -LiteralPath $helperPath -Encoding utf8
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = 'python'
+          $psi.Arguments = "`"$helperPath`" `"$walDb`" `"$walPointer`" `"$env:P1A_RUNTIME`" `"$walManifest`""
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardInput = $true
+          $psi.RedirectStandardOutput = $true
+          $holder = New-Object System.Diagnostics.Process
+          $holder.StartInfo = $psi
+          [void]$holder.Start()
+          if ($holder.StandardOutput.ReadLine() -ne 'READY') { throw 'WAL holder failed to initialize' }
+          try {
+            $paths = @($walDb, "$walDb-wal", "$walDb-shm", "$walDb-journal")
+            $before = @{}
+            foreach ($p in $paths) {
+              if (Test-Path -LiteralPath $p) {
+                $before[$p] = "$((Get-Item -LiteralPath $p).Length):$((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash)"
+              } else { $before[$p] = 'ABSENT' }
+            }
+            $out = & $py -B -I -m continuityos.windows_product_transaction stage-validate --runtime-root $env:P1A_RUNTIME --pointer $walPointer 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0) { throw "pending WAL was unexpectedly admitted: $out" }
+            if ($out -notmatch 'refuses pending SQLite -wal content') { throw "unexpected WAL rejection: $out" }
+            foreach ($p in $paths) {
+              if (Test-Path -LiteralPath $p) {
+                $after = "$((Get-Item -LiteralPath $p).Length):$((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash)"
+              } else { $after = 'ABSENT' }
+              if ($after -ne $before[$p]) { throw "SQLite physical file changed: $p" }
+            }
+          } finally {
+            $holder.StandardInput.WriteLine('')
+            $holder.StandardInput.Close()
+            $holder.WaitForExit()
+            $holder.Dispose()
+          }
 
       - name: Prove no activation command exists in P1A transaction CLI
         shell: pwsh
@@ -230,7 +358,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $summary = [ordered]@{
-            schema = 'sovereign-twin.p1a-windows-ci-validation/v1'
+            schema = 'sovereign-twin.p1a-windows-ci-validation/v2'
             head_sha = '${{ github.event.pull_request.head.sha }}'
             os = 'windows-latest'
             architecture = 'win-x64'
@@ -241,8 +369,12 @@ jobs:
             packaged_import = 'PASS'
             foreign_cwd_launcher = 'PASS'
             immutable_runtime_tree = 'PASS'
+            sha256sums_integrity = 'PASS'
             stage_validate = 'PASS'
             stable_starter_status = 'PASS'
+            strict_pointer_parser = 'PASS'
+            complete_pointer_binding = 'PASS'
+            wal_zero_write_fail_closed = 'PASS'
             activation_commands_present = $false
             execution_authority = 'NONE'
             can_execute = $false
