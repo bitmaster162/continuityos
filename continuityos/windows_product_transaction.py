@@ -149,6 +149,17 @@ def validate_runtime_package(runtime_root: str | os.PathLike[str]) -> dict[str, 
     if not python_dlls:
         raise ValueError("runtime package Python DLL missing")
 
+    path_config = package.get("python_path_config")
+    if path_config is not None:
+        if not isinstance(path_config, str) or not path_config or Path(path_config).name != path_config:
+            raise ValueError("runtime package python_path_config invalid")
+        pth = root / path_config
+        if not pth.is_file():
+            raise ValueError("runtime package python_path_config missing")
+        pth_lines = {line.strip().lower().replace("/", "\\") for line in pth.read_text(encoding="utf-8-sig").splitlines()}
+        if "lib\\site-packages" not in pth_lines or "import site" not in pth_lines:
+            raise ValueError("runtime package python_path_config does not enable bundled site-packages")
+
     launcher_sha = sha256_file(launcher)
     module_sha = sha256_file(runtime_module)
     tree_sha = canonical_tree_sha256(root)
