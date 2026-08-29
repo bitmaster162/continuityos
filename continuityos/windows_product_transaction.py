@@ -1,8 +1,8 @@
 """Read-only Windows product transaction preflight primitives for Sovereign Twin P1A.
 
-P1A intentionally implements *no activation writes*.  It validates an immutable,
+P1A intentionally implements *no activation writes*. It validates an immutable,
 side-by-side runtime package against the existing runtime-source pointer and memory
-container.  Atomic pointer replacement, rollback, repair and uninstall are later P1
+container. Atomic pointer replacement, rollback, repair and uninstall are later P1
 slices and must not be smuggled into this foundation module.
 """
 from __future__ import annotations
@@ -22,6 +22,7 @@ LAUNCHER_REL = Path("Scripts") / "sovereign-twin.exe"
 PACKAGE_MANIFEST = "runtime-package.json"
 SUMS_FILE = "SHA256SUMS"
 TREE_EXCLUDES = frozenset({PACKAGE_MANIFEST, SUMS_FILE})
+SQLITE_AUX_SUFFIXES = ("-wal", "-shm", "-journal")
 
 
 def _norm_rel(path: Path) -> str:
@@ -63,9 +64,18 @@ def canonical_tree_sha256(root: str | os.PathLike[str]) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _reject_duplicate_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in out:
+            raise ValueError(f"duplicate JSON key: {key}")
+        out[key] = value
+    return out
+
+
 def _load_json(path: Path) -> dict[str, Any]:
-    raw = path.read_text(encoding="utf-8")
-    value = json.loads(raw)
+    raw = path.read_text(encoding="utf-8-sig")
+    value = json.loads(raw, object_pairs_hook=_reject_duplicate_object_pairs)
     if not isinstance(value, dict):
         raise ValueError(f"expected JSON object: {path}")
     return value
@@ -99,15 +109,61 @@ def _full_path(value: Any, field: str) -> Path:
     return Path(text).expanduser().resolve()
 
 
-def _sqlite_quick_check_read_only(path: Path) -> str:
-    # URI mode=ro prevents accidental DB creation or journal mutation by this preflight.
-    uri = path.as_uri() + "?mode=ro"
+def _fingerprint_file(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"present": False}
+    if not path.is_file():
+        raise ValueError(f"expected file for fingerprint: {path}")
+    st = path.stat()
+    return {
+        "present": True,
+        "size": int(st.st_size),
+        "mtime_ns": int(st.st_mtime_ns),
+        "sha256": sha256_file(path),
+    }
+
+
+def _sqlite_physical_fingerprints(path: Path) -> dict[str, dict[str, Any]]:
+    paths = [path, *(Path(str(path) + suffix) for suffix in SQLITE_AUX_SUFFIXES)]
+    return {str(p): _fingerprint_file(p) for p in paths}
+
+
+def _sqlite_quick_check_zero_write(path: Path) -> tuple[str, dict[str, dict[str, Any]]]:
+    """Run quick_check without permitting SQLite to create/modify WAL/SHM/journal files.
+
+    ``mode=ro`` alone can still require/create WAL shared-memory state. P1A therefore
+    admits an immutable read only when there is no non-empty pending WAL or rollback
+    journal. ``immutable=1`` then suppresses locking/journal participation. The complete
+    DB/auxiliary file fingerprints are compared before and after and any drift fails
+    closed. A live writer or pending WAL must be quiesced/checkpointed before P1A can
+    truthfully claim READ_ONLY_ZERO_EXTERNAL_EFFECTS.
+    """
+    before = _sqlite_physical_fingerprints(path)
+    for suffix in ("-wal", "-journal"):
+        fp = before[str(Path(str(path) + suffix))]
+        if fp.get("present") and int(fp.get("size") or 0) > 0:
+            raise ValueError(
+                f"zero-write memory preflight refuses pending SQLite {suffix} content; "
+                "quiesce/checkpoint the memory DB first"
+            )
+
+    uri = path.as_uri() + "?mode=ro&immutable=1"
     con = sqlite3.connect(uri, uri=True, timeout=5.0)
     try:
+        con.execute("PRAGMA query_only=ON")
         row = con.execute("PRAGMA quick_check").fetchone()
-        return str(row[0]) if row else ""
+        quick = str(row[0]) if row else ""
     finally:
         con.close()
+
+    after = _sqlite_physical_fingerprints(path)
+    if after != before:
+        raise ValueError("SQLite physical files changed during zero-write preflight")
+    return quick, before
+
+
+def _expected_sums_text(root: Path) -> str:
+    return "\n".join(canonical_tree_lines(root)) + "\n"
 
 
 def validate_runtime_package(runtime_root: str | os.PathLike[str]) -> dict[str, Any]:
@@ -116,8 +172,11 @@ def validate_runtime_package(runtime_root: str | os.PathLike[str]) -> dict[str, 
         raise ValueError(f"runtime root missing: {root}")
 
     manifest_path = root / PACKAGE_MANIFEST
+    sums_path = root / SUMS_FILE
     if not manifest_path.is_file():
         raise ValueError(f"runtime package manifest missing: {manifest_path}")
+    if not sums_path.is_file():
+        raise ValueError(f"runtime package SHA256SUMS missing: {sums_path}")
     package = _load_json(manifest_path)
 
     if package.get("schema") != RUNTIME_PACKAGE_SCHEMA:
@@ -156,7 +215,10 @@ def validate_runtime_package(runtime_root: str | os.PathLike[str]) -> dict[str, 
         pth = root / path_config
         if not pth.is_file():
             raise ValueError("runtime package python_path_config missing")
-        pth_lines = {line.strip().lower().replace("/", "\\") for line in pth.read_text(encoding="utf-8-sig").splitlines()}
+        pth_lines = {
+            line.strip().lower().replace("/", "\\")
+            for line in pth.read_text(encoding="utf-8-sig").splitlines()
+        }
         if "lib\\site-packages" not in pth_lines or "import site" not in pth_lines:
             raise ValueError("runtime package python_path_config does not enable bundled site-packages")
 
@@ -170,6 +232,11 @@ def validate_runtime_package(runtime_root: str | os.PathLike[str]) -> dict[str, 
     if tree_sha != _require_sha256(package.get("runtime_tree_sha256"), "runtime_tree_sha256"):
         raise ValueError("runtime package tree SHA mismatch")
 
+    expected_sums = _expected_sums_text(root).encode("utf-8")
+    actual_sums = sums_path.read_bytes()
+    if actual_sums != expected_sums:
+        raise ValueError("runtime package SHA256SUMS content mismatch")
+
     return {
         "ok": True,
         "schema": package["schema"],
@@ -182,6 +249,7 @@ def validate_runtime_package(runtime_root: str | os.PathLike[str]) -> dict[str, 
         "launcher": str(launcher),
         "runtime_module": str(runtime_module),
         "runtime_tree_sha256": tree_sha,
+        "sha256sums_sha256": hashlib.sha256(actual_sums).hexdigest(),
         "launcher_sha256": launcher_sha,
         "runtime_module_sha256": module_sha,
         "memory_embedding_dimensions_supported": dims,
@@ -202,6 +270,7 @@ def validate_live_pointer(pointer_path: str | os.PathLike[str]) -> dict[str, Any
     required = (
         "repository",
         "source_sha",
+        "installed_at_utc",
         "python",
         "twin_executable",
         "memory_db",
@@ -220,7 +289,11 @@ def validate_live_pointer(pointer_path: str | os.PathLike[str]) -> dict[str, Any
     python_exe = _full_path(pointer["python"], "python")
     twin_exe = _full_path(pointer["twin_executable"], "twin_executable")
     memory_db = _full_path(pointer["memory_db"], "memory_db")
-    for field, required_path in (("python", python_exe), ("twin_executable", twin_exe), ("memory_db", memory_db)):
+    for field, required_path in (
+        ("python", python_exe),
+        ("twin_executable", twin_exe),
+        ("memory_db", memory_db),
+    ):
         if not required_path.is_file():
             raise ValueError(f"live runtime-source {field} missing on disk: {required_path}")
 
@@ -232,10 +305,10 @@ def validate_live_pointer(pointer_path: str | os.PathLike[str]) -> dict[str, Any
             raise ValueError(f"live runtime-source memory_manifest missing on disk: {memory_manifest}")
 
     dimension = pointer.get("memory_embedding_dimension")
-    if dimension is not None and (not isinstance(dimension, int) or dimension <= 0):
+    if dimension is not None and (not isinstance(dimension, int) or isinstance(dimension, bool) or dimension <= 0):
         raise ValueError("live runtime-source memory_embedding_dimension invalid")
 
-    quick = _sqlite_quick_check_read_only(memory_db)
+    quick, physical = _sqlite_quick_check_zero_write(memory_db)
     if quick.lower() != "ok":
         raise ValueError(f"live memory quick_check failed: {quick}")
 
@@ -251,6 +324,9 @@ def validate_live_pointer(pointer_path: str | os.PathLike[str]) -> dict[str, Any
         "memory_manifest": str(memory_manifest) if memory_manifest else None,
         "memory_embedding_dimension": dimension,
         "memory_quick_check": quick,
+        "sqlite_open_mode": "mode=ro&immutable=1",
+        "sqlite_physical_fingerprints": physical,
+        "sqlite_physical_files_unchanged": True,
         "execution_authority": "NONE",
         "can_execute": False,
     }
