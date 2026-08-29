@@ -135,7 +135,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $py = Join-Path $env:P1A_RUNTIME 'python.exe'
           $code = "import json,sys,continuityos.sovereign_twin_runtime as m; print(json.dumps({'exe':sys.executable,'prefix':sys.prefix,'module':m.__file__,'authority':getattr(m,'EXECUTION_AUTHORITY',None)}))"
-          & $py -I -c $code
+          & $py -B -I -c $code
           if ($LASTEXITCODE -ne 0) { throw 'packaged runtime import failed' }
 
       - name: Validate relative sovereign-twin launcher from foreign CWD
@@ -160,7 +160,7 @@ jobs:
           $py = Join-Path $env:P1A_RUNTIME 'python.exe'
           $missingPointer = Join-Path $env:RUNNER_TEMP 'intentionally-absent-runtime-source.json'
           if (Test-Path -LiteralPath $missingPointer) { Remove-Item -LiteralPath $missingPointer -Force }
-          $output = & $py -I -m continuityos.windows_product_transaction stage-validate `
+          $output = & $py -B -I -m continuityos.windows_product_transaction stage-validate `
             --runtime-root $env:P1A_RUNTIME `
             --pointer $missingPointer 2>&1 | Out-String
           $rc = $LASTEXITCODE
@@ -170,6 +170,8 @@ jobs:
           if ($obj.effect -ne 'READ_ONLY_ZERO_EXTERNAL_EFFECTS') { throw 'stage validation effect mismatch' }
           if ($obj.live.present) { throw 'fresh-install validation unexpectedly found a live pointer' }
           if ($obj.execution_authority -ne 'NONE' -or [bool]$obj.can_execute) { throw 'stage validation authority mismatch' }
+          $pycache = @(Get-ChildItem -LiteralPath $env:P1A_RUNTIME -Directory -Filter '__pycache__' -Recurse -ErrorAction Stop)
+          if ($pycache.Count -ne 0) { throw "immutable runtime acquired __pycache__ directories: $($pycache.FullName -join ', ')" }
 
       - name: Validate stable starter against manifest-bound temp product root
         shell: pwsh
@@ -218,7 +220,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $py = Join-Path $env:P1A_RUNTIME 'python.exe'
-          $output = & $py -I -m continuityos.windows_product_transaction --help 2>&1 | Out-String
+          $output = & $py -B -I -m continuityos.windows_product_transaction --help 2>&1 | Out-String
           if ($LASTEXITCODE -ne 0) { throw 'transaction --help failed' }
           if ($output -notmatch 'stage-validate') { throw 'stage-validate command missing' }
           if ($output -match '(?m)^\s*(activate|rollback|repair|uninstall)\s') { throw 'write-capable command unexpectedly present in P1A' }
@@ -238,6 +240,7 @@ jobs:
             runtime_build = 'PASS'
             packaged_import = 'PASS'
             foreign_cwd_launcher = 'PASS'
+            immutable_runtime_tree = 'PASS'
             stage_validate = 'PASS'
             stable_starter_status = 'PASS'
             activation_commands_present = $false
