@@ -11,13 +11,26 @@ import pytest
 from continuityos.windows_product_transaction import (
     RUNTIME_PACKAGE_SCHEMA,
     RUNTIME_SOURCE_SCHEMA,
+    canonical_tree_sha256,
     sha256_file,
     stage_validate,
     validate_runtime_package,
 )
-from tools.build_windows_runtime import build_runtime
+
+try:
+    from tools.build_windows_runtime import build_runtime
+except ModuleNotFoundError:
+    # Wheel-only CI deliberately removes the repository source tree from sys.path.
+    # The builder is repo tooling and is intentionally not shipped in the wheel.
+    build_runtime = None
 
 SOURCE_SHA = "1" * 40
+
+
+def _builder_or_skip():
+    if build_runtime is None:
+        pytest.skip("repo-only Windows runtime builder is not packaged in wheel")
+    return build_runtime
 
 
 def _sha(path: Path) -> str:
@@ -52,18 +65,45 @@ def _fake_wheel(tmp_path: Path, version: str = "0.10.3") -> Path:
 
 
 def _built_runtime(tmp_path: Path) -> Path:
-    py = _fake_python_runtime(tmp_path)
-    wheel = _fake_wheel(tmp_path)
-    launcher = tmp_path / "sovereign-twin.exe"
+    """Create a valid packaged-runtime fixture without depending on repo-only build tooling.
+
+    This keeps validator/stage-validate coverage active in wheel-only CI, where ``tools``
+    is intentionally absent. Builder behavior has its own repo-source tests below.
+    """
+    build_id = f"0.10.3+{SOURCE_SHA[:12]}-win-x64"
+    runtime = tmp_path / "runtimes" / build_id
+    runtime.mkdir(parents=True)
+    (runtime / "python.exe").write_bytes(b"MZ-fake-python")
+    (runtime / "python311.dll").write_bytes(b"MZ-fake-python-dll")
+
+    launcher = runtime / "Scripts" / "sovereign-twin.exe"
+    launcher.parent.mkdir(parents=True)
     launcher.write_bytes(b"MZ-relative-launcher-fixture")
-    result = build_runtime(
-        python_runtime=py,
-        wheel=wheel,
-        launcher=launcher,
-        output_root=tmp_path / "runtimes",
-        source_sha=SOURCE_SHA,
+
+    module = runtime / "Lib" / "site-packages" / "continuityos" / "sovereign_twin_runtime.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("EXECUTION_AUTHORITY = 'NONE'\nCAN_EXECUTE = False\n", encoding="utf-8")
+
+    package = {
+        "schema": RUNTIME_PACKAGE_SCHEMA,
+        "build_id": build_id,
+        "package_version": "0.10.3",
+        "source_sha": SOURCE_SHA,
+        "architecture": "win-x64",
+        "wheel_sha256": "3" * 64,
+        "python_path_config": None,
+        "runtime_tree_sha256": canonical_tree_sha256(runtime),
+        "runtime_module_sha256": sha256_file(module),
+        "launcher_sha256": sha256_file(launcher),
+        "runtime_source_schema_supported": [RUNTIME_SOURCE_SCHEMA],
+        "memory_embedding_dimensions_supported": [768],
+        "execution_authority": "NONE",
+        "can_execute": False,
+    }
+    (runtime / "runtime-package.json").write_text(
+        json.dumps(package, sort_keys=True, indent=2) + "\n", encoding="utf-8"
     )
-    return Path(result["runtime_root"])
+    return runtime
 
 
 def _live_pointer(tmp_path: Path, *, dimension: int = 768, authority: str = "NONE", can_execute: bool = False) -> Path:
@@ -109,7 +149,19 @@ def _live_pointer(tmp_path: Path, *, dimension: int = 768, authority: str = "NON
 
 
 def test_builder_creates_versioned_immutable_shape_and_validator_accepts(tmp_path: Path):
-    runtime = _built_runtime(tmp_path)
+    builder = _builder_or_skip()
+    py = _fake_python_runtime(tmp_path)
+    wheel = _fake_wheel(tmp_path)
+    launcher = tmp_path / "sovereign-twin.exe"
+    launcher.write_bytes(b"MZ-relative-launcher-fixture")
+    result = builder(
+        python_runtime=py,
+        wheel=wheel,
+        launcher=launcher,
+        output_root=tmp_path / "runtimes",
+        source_sha=SOURCE_SHA,
+    )
+    runtime = Path(result["runtime_root"])
     assert runtime.name == f"0.10.3+{SOURCE_SHA[:12]}-win-x64"
     assert (runtime / "python.exe").is_file()
     assert (runtime / "python311.dll").is_file()
@@ -129,11 +181,12 @@ def test_builder_creates_versioned_immutable_shape_and_validator_accepts(tmp_pat
 
 
 def test_builder_normalizes_embeddable_python_path_for_bundled_site_packages(tmp_path: Path):
+    builder = _builder_or_skip()
     py = _fake_python_runtime(tmp_path, embeddable=True)
     wheel = _fake_wheel(tmp_path)
     launcher = tmp_path / "sovereign-twin.exe"
     launcher.write_bytes(b"MZ-relative-launcher-fixture")
-    result = build_runtime(
+    result = builder(
         python_runtime=py,
         wheel=wheel,
         launcher=launcher,
@@ -150,15 +203,16 @@ def test_builder_normalizes_embeddable_python_path_for_bundled_site_packages(tmp
 
 
 def test_builder_is_content_deterministic_across_output_roots(tmp_path: Path):
+    builder = _builder_or_skip()
     py = _fake_python_runtime(tmp_path, embeddable=True)
     wheel = _fake_wheel(tmp_path)
     launcher = tmp_path / "sovereign-twin.exe"
     launcher.write_bytes(b"MZ-relative-launcher-fixture")
-    first = build_runtime(
+    first = builder(
         python_runtime=py, wheel=wheel, launcher=launcher,
         output_root=tmp_path / "out-a", source_sha=SOURCE_SHA,
     )
-    second = build_runtime(
+    second = builder(
         python_runtime=py, wheel=wheel, launcher=launcher,
         output_root=tmp_path / "out-b", source_sha=SOURCE_SHA,
     )
@@ -170,12 +224,24 @@ def test_builder_is_content_deterministic_across_output_roots(tmp_path: Path):
 
 
 def test_builder_refuses_to_overwrite_existing_runtime(tmp_path: Path):
-    runtime = _built_runtime(tmp_path)
+    builder = _builder_or_skip()
+    py = _fake_python_runtime(tmp_path)
+    wheel = _fake_wheel(tmp_path)
+    launcher = tmp_path / "sovereign-twin.exe"
+    launcher.write_bytes(b"MZ-relative-launcher-fixture")
+    first = builder(
+        python_runtime=py,
+        wheel=wheel,
+        launcher=launcher,
+        output_root=tmp_path / "runtimes",
+        source_sha=SOURCE_SHA,
+    )
+    runtime = Path(first["runtime_root"])
     with pytest.raises(ValueError, match="runtime build already exists"):
-        build_runtime(
-            python_runtime=tmp_path / "python-runtime",
-            wheel=tmp_path / "continuityos-0.10.3-py3-none-any.whl",
-            launcher=tmp_path / "sovereign-twin.exe",
+        builder(
+            python_runtime=py,
+            wheel=wheel,
+            launcher=launcher,
             output_root=tmp_path / "runtimes",
             source_sha=SOURCE_SHA,
         )
