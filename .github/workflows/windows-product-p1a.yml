@@ -1,0 +1,246 @@
+name: windows-product-p1a
+
+on:
+  pull_request:
+    paths:
+      - "continuityos/windows_product_transaction.py"
+      - "tools/build_windows_runtime.py"
+      - "native/windows/**"
+      - "tests/test_windows_product_transaction.py"
+      - "tests/test_windows_relative_launcher_contract.py"
+      - ".github/workflows/windows-product-p1a.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-product-p1a-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: win-x64 / native + embeddable runtime
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out exact PR source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up build Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test/build tooling only
+        run: python -m pip install pytest==9.1.1 build==1.5.0
+
+      - name: Run bounded P1A Python tests
+        env:
+          PYTHONUTF8: "1"
+          CONTINUITYOS_SILENCE_EMBED_WARN: "1"
+        run: >-
+          python -W error::SyntaxWarning -m pytest -q
+          tests/test_windows_product_transaction.py
+          tests/test_windows_relative_launcher_contract.py
+
+      - name: Build exact ContinuityOS wheel
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $wheelhouse = Join-Path $env:RUNNER_TEMP 'p1a-wheelhouse'
+          New-Item -ItemType Directory -Path $wheelhouse -Force | Out-Null
+          python -m build --wheel --outdir $wheelhouse
+          if ($LASTEXITCODE -ne 0) { throw 'wheel build failed' }
+          $wheel = Get-ChildItem -LiteralPath $wheelhouse -Filter '*.whl' | Select-Object -Single
+          "P1A_WHEEL=$($wheel.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Locate MSVC and compile native launchers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path -LiteralPath $vswhere)) { throw 'vswhere.exe not found' }
+          $vs = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
+          if (-not $vs) { throw 'Visual C++ toolchain not found' }
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          if (-not (Test-Path -LiteralPath $vcvars)) { throw 'vcvars64.bat not found' }
+
+          $nativeOut = Join-Path $env:RUNNER_TEMP 'p1a-native'
+          New-Item -ItemType Directory -Path $nativeOut -Force | Out-Null
+          $launcher = Join-Path $nativeOut 'sovereign-twin.exe'
+          $starter = Join-Path $nativeOut 'SovereignTwin-Start.exe'
+          $launcherSrc = Join-Path $env:GITHUB_WORKSPACE 'native\windows\sovereign_twin_launcher.c'
+          $starterSrc = Join-Path $env:GITHUB_WORKSPACE 'native\windows\sovereign_twin_start.c'
+          $bat = Join-Path $env:RUNNER_TEMP 'p1a-build-native.cmd'
+
+          @"
+          @echo off
+          call "$vcvars"
+          if errorlevel 1 exit /b %errorlevel%
+          cl.exe /nologo /W4 /WX /O2 /DUNICODE /D_UNICODE /Fe:"$launcher" "$launcherSrc" shell32.lib
+          if errorlevel 1 exit /b %errorlevel%
+          cl.exe /nologo /W4 /WX /O2 /DUNICODE /D_UNICODE /Fe:"$starter" "$starterSrc" shell32.lib
+          if errorlevel 1 exit /b %errorlevel%
+          "@ | Set-Content -LiteralPath $bat -Encoding ascii
+
+          & cmd.exe /d /c $bat
+          if ($LASTEXITCODE -ne 0) { throw "native compile failed rc=$LASTEXITCODE" }
+          if (-not (Test-Path -LiteralPath $launcher)) { throw 'launcher output missing' }
+          if (-not (Test-Path -LiteralPath $starter)) { throw 'starter output missing' }
+
+          "P1A_LAUNCHER=$launcher" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P1A_STARTER=$starter" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Download exact CPython 3.11.9 embeddable runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:RUNNER_TEMP 'python-3.11.9-embed-amd64.zip'
+          $pyroot = Join-Path $env:RUNNER_TEMP 'python-3.11.9-embed-amd64'
+          Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip' -OutFile $zip
+          New-Item -ItemType Directory -Path $pyroot -Force | Out-Null
+          Expand-Archive -LiteralPath $zip -DestinationPath $pyroot -Force
+          if (-not (Test-Path -LiteralPath (Join-Path $pyroot 'python.exe'))) { throw 'embedded python.exe missing' }
+          if (-not (Test-Path -LiteralPath (Join-Path $pyroot 'python311._pth'))) { throw 'embedded python311._pth missing' }
+          "P1A_PYROOT=$pyroot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build immutable runtime payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:RUNNER_TEMP 'p1a-runtimes'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          python -m tools.build_windows_runtime `
+            --python-runtime $env:P1A_PYROOT `
+            --wheel $env:P1A_WHEEL `
+            --launcher $env:P1A_LAUNCHER `
+            --output-root $out `
+            --source-sha '${{ github.event.pull_request.head.sha }}' `
+            --architecture win-x64 `
+            --embedding-dimension 768
+          if ($LASTEXITCODE -ne 0) { throw 'runtime builder failed' }
+          $runtime = Get-ChildItem -LiteralPath $out -Directory | Where-Object { $_.Name -notlike '.p1a-prep-*' } | Select-Object -Single
+          if (-not $runtime) { throw 'runtime output not found' }
+          "P1A_RUNTIME=$($runtime.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Validate packaged CPython import identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $py = Join-Path $env:P1A_RUNTIME 'python.exe'
+          $code = "import json,sys,continuityos.sovereign_twin_runtime as m; print(json.dumps({'exe':sys.executable,'prefix':sys.prefix,'module':m.__file__,'authority':getattr(m,'EXECUTION_AUTHORITY',None)}))"
+          & $py -I -c $code
+          if ($LASTEXITCODE -ne 0) { throw 'packaged runtime import failed' }
+
+      - name: Validate relative sovereign-twin launcher from foreign CWD
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $launcher = Join-Path $env:P1A_RUNTIME 'Scripts\sovereign-twin.exe'
+          Push-Location $env:SystemRoot
+          try {
+            $output = & $launcher --help 2>&1 | Out-String
+            $rc = $LASTEXITCODE
+          } finally {
+            Pop-Location
+          }
+          if ($rc -ne 0) { throw "launcher --help failed rc=$rc output=$output" }
+          if ($output -notmatch 'usage: sovereign-twin') { throw "launcher help missing expected usage: $output" }
+
+      - name: Run packaged read-only stage validation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $py = Join-Path $env:P1A_RUNTIME 'python.exe'
+          $missingPointer = Join-Path $env:RUNNER_TEMP 'intentionally-absent-runtime-source.json'
+          if (Test-Path -LiteralPath $missingPointer) { Remove-Item -LiteralPath $missingPointer -Force }
+          $output = & $py -I -m continuityos.windows_product_transaction stage-validate `
+            --runtime-root $env:P1A_RUNTIME `
+            --pointer $missingPointer 2>&1 | Out-String
+          $rc = $LASTEXITCODE
+          if ($rc -ne 0) { throw "stage validation failed rc=$rc output=$output" }
+          $obj = $output | ConvertFrom-Json
+          if (-not $obj.ok) { throw 'stage validation did not report ok=true' }
+          if ($obj.effect -ne 'READ_ONLY_ZERO_EXTERNAL_EFFECTS') { throw 'stage validation effect mismatch' }
+          if ($obj.live.present) { throw 'fresh-install validation unexpectedly found a live pointer' }
+          if ($obj.execution_authority -ne 'NONE' -or [bool]$obj.can_execute) { throw 'stage validation authority mismatch' }
+
+      - name: Validate stable starter against manifest-bound temp product root
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $product = Join-Path $env:RUNNER_TEMP 'p1a-product-root'
+          New-Item -ItemType Directory -Path $product -Force | Out-Null
+          Copy-Item -LiteralPath $env:P1A_STARTER -Destination (Join-Path $product 'SovereignTwin-Start.exe')
+
+          $runtime = $env:P1A_RUNTIME
+          $twin = Join-Path $runtime 'Scripts\sovereign-twin.exe'
+          $py = Join-Path $runtime 'python.exe'
+          $db = Join-Path $env:RUNNER_TEMP 'p1a-memory.db'
+          $queue = Join-Path $env:RUNNER_TEMP 'p1a-admissions.jsonl'
+          & $twin --db $db init | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'temp memory init failed' }
+
+          $pointer = [ordered]@{
+            schema = 'sovereign-twin.windows-runtime-source/v3'
+            repository = 'bitmaster162/continuityos'
+            source_sha = '${{ github.event.pull_request.head.sha }}'
+            installed_at_utc = [DateTime]::UtcNow.ToString('o')
+            python = $py
+            twin_executable = $twin
+            memory_db = $db
+            admission_queue = $queue
+            llm_server = 'http://127.0.0.1:1234'
+            ui = 'http://127.0.0.1:8765'
+            fast_model = 'qwen3.5-4b'
+            deep_model = 'qwen3.6-35b-a3b'
+            embedding_model = 'text-embedding-nomic-embed-text-v1.5'
+            execution_authority = 'NONE'
+            can_execute = $false
+            memory_embedding_dimension = 768
+          }
+          $pointer | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $product 'runtime-source.json') -Encoding utf8
+
+          $starter = Join-Path $product 'SovereignTwin-Start.exe'
+          $output = & $starter --status 2>&1 | Out-String
+          $rc = $LASTEXITCODE
+          if ($rc -ne 0) { throw "stable starter --status failed rc=$rc output=$output" }
+          if ($output -notmatch '"ok"\s*:\s*true') { throw "stable starter status did not report healthy memory: $output" }
+
+      - name: Prove no activation command exists in P1A transaction CLI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $py = Join-Path $env:P1A_RUNTIME 'python.exe'
+          $output = & $py -I -m continuityos.windows_product_transaction --help 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { throw 'transaction --help failed' }
+          if ($output -notmatch 'stage-validate') { throw 'stage-validate command missing' }
+          if ($output -match '(?m)^\s*(activate|rollback|repair|uninstall)\s') { throw 'write-capable command unexpectedly present in P1A' }
+
+      - name: Emit P1A validation summary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $summary = [ordered]@{
+            schema = 'sovereign-twin.p1a-windows-ci-validation/v1'
+            head_sha = '${{ github.event.pull_request.head.sha }}'
+            os = 'windows-latest'
+            architecture = 'win-x64'
+            cpython_embeddable = '3.11.9'
+            targeted_tests = 'PASS'
+            native_compile = 'PASS'
+            runtime_build = 'PASS'
+            packaged_import = 'PASS'
+            foreign_cwd_launcher = 'PASS'
+            stage_validate = 'PASS'
+            stable_starter_status = 'PASS'
+            activation_commands_present = $false
+            execution_authority = 'NONE'
+            can_execute = $false
+          }
+          $path = Join-Path $env:RUNNER_TEMP 'p1a-validation.json'
+          $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $path -Encoding utf8
+          Get-Content -LiteralPath $path | Out-Host
