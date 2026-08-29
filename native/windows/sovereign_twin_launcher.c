@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <wchar.h>
 #include <stdlib.h>
+#include <string.h>
 
 static int append_text(wchar_t **buf, size_t *cap, size_t *len, const wchar_t *text) {
     size_t need = wcslen(text);
