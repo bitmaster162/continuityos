@@ -320,22 +320,17 @@ jobs:
           [void]$holder.Start()
           if ($holder.StandardOutput.ReadLine() -ne 'READY') { throw 'WAL holder failed to initialize' }
           try {
-            $paths = @($walDb, "$walDb-wal", "$walDb-shm", "$walDb-journal")
-            $before = @{}
-            foreach ($p in $paths) {
-              if (Test-Path -LiteralPath $p) {
-                $before[$p] = "$((Get-Item -LiteralPath $p).Length):$((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash)"
-              } else { $before[$p] = 'ABSENT' }
-            }
+            $fpCode = "import json,sys; from continuityos.windows_product_transaction import sqlite_physical_fingerprints; print(json.dumps(sqlite_physical_fingerprints(sys.argv[1]), sort_keys=True))"
+            $before = (& $py -B -I -c $fpCode $walDb | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0 -or -not $before) { throw 'shared-read preflight fingerprint failed before validation' }
+
             $out = & $py -B -I -m continuityos.windows_product_transaction stage-validate --runtime-root $env:P1A_RUNTIME --pointer $walPointer 2>&1 | Out-String
             if ($LASTEXITCODE -eq 0) { throw "pending WAL was unexpectedly admitted: $out" }
             if ($out -notmatch 'refuses pending SQLite -wal content') { throw "unexpected WAL rejection: $out" }
-            foreach ($p in $paths) {
-              if (Test-Path -LiteralPath $p) {
-                $after = "$((Get-Item -LiteralPath $p).Length):$((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash)"
-              } else { $after = 'ABSENT' }
-              if ($after -ne $before[$p]) { throw "SQLite physical file changed: $p" }
-            }
+
+            $after = (& $py -B -I -c $fpCode $walDb | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0 -or -not $after) { throw 'shared-read preflight fingerprint failed after validation' }
+            if ($after -ne $before) { throw 'SQLite physical fingerprints changed during rejected WAL preflight' }
           } finally {
             $holder.StandardInput.WriteLine('')
             $holder.StandardInput.Close()
