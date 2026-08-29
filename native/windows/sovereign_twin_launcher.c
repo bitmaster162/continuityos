@@ -79,7 +79,8 @@ int wmain(int argc, wchar_t **argv) {
     wchar_t *cmd = NULL;
     size_t cap = 0, len = 0;
     if (!append_quoted_arg(&cmd, &cap, &len, python)) return 115;
-    if (!append_text(&cmd, &cap, &len, L" -I -m continuityos.sovereign_twin_cli")) {
+    /* -B is part of the immutable-runtime contract: imports must not create __pycache__. */
+    if (!append_text(&cmd, &cap, &len, L" -B -I -m continuityos.sovereign_twin_cli")) {
         free(cmd); return 115;
     }
     for (int i = 1; i < argc; ++i) {
