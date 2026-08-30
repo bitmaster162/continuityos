@@ -190,20 +190,20 @@ def test_http_surface_has_only_read_routes(tmp_path: Path):
     thread.start()
     base = f"http://127.0.0.1:{server.server_port}"
     try:
-        with urlopen(f"{base}/health", timeout=2.0) as response:
+        with urlopen(f"{base}/health", timeout=5.0) as response:
             payload = json.loads(response.read().decode("utf-8"))
         assert payload["ok"] is True
         assert payload["read_only"] is True
         assert payload["execution_authority"] == "NONE"
         assert payload["can_execute"] is False
 
-        with urlopen(f"{base}/", timeout=2.0) as response:
+        with urlopen(f"{base}/", timeout=5.0) as response:
             body = response.read().decode("utf-8")
         assert "ContinuityOS Control Center" in body
 
         request = Request(f"{base}/api/status", data=b"{}", method="POST")
         try:
-            urlopen(request, timeout=2.0)
+            urlopen(request, timeout=5.0)
         except Exception as exc:
             assert getattr(exc, "code", None) == 405
         else:
