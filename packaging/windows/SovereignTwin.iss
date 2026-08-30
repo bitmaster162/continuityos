@@ -162,9 +162,8 @@ begin
     end;
 
     if ResultCode <> 0 then
-      RaiseException(Format(
-        'schtasks.exe failed while creating SovereignTwin-UI task (exit code %d)',
-        [ResultCode]));
+      RaiseException('schtasks.exe failed while creating SovereignTwin-UI task (exit code ' +
+        IntToStr(ResultCode) + ')');
 
     if not TaskExists(TaskName) then
       RaiseException('SovereignTwin-UI task missing immediately after creation');
@@ -205,9 +204,8 @@ begin
     end;
 
     if ResultCode <> 0 then
-      RaiseException(Format(
-        'schtasks.exe failed while deleting owned SovereignTwin-UI task (exit code %d)',
-        [ResultCode]));
+      RaiseException('schtasks.exe failed while deleting owned SovereignTwin-UI task (exit code ' +
+        IntToStr(ResultCode) + ')');
 
     if TaskExists(TaskName) then
       RaiseException('Owned SovereignTwin-UI task still exists after deletion');
