@@ -1,10 +1,10 @@
 """Secret-reference metadata contract for the ContinuityOS vault roadmap.
 
 This module is deliberately metadata-only. It accepts bounded public metadata fields,
-but it accepts no dedicated secret-value fields or concrete secret-binding fields and
-does not read, store, resolve, or verify secrets. It also does not access environment
-variables, .env files, OS keyrings, DPAPI, network services, runtime state, or the
-filesystem.
+but it accepts no dedicated secret-value fields or concrete secret-binding fields. It
+does not access secret backends, resolve or verify concrete secret bindings, or store
+dedicated secret values. It also does not access environment variables, .env files, OS
+keyrings, DPAPI, network services, runtime state, or the filesystem.
 
 ``reference_id`` and ``purpose_id`` are public caller-provided identifiers. They are
 returned in the public receipt and MUST contain only non-sensitive metadata; callers
@@ -95,8 +95,8 @@ def _identifier(value: Any, field: str) -> str:
 def _effects() -> dict[str, Any]:
     return {
         "secret_value_field_accepted": False,
-        "secret_value_read": False,
-        "secret_value_stored": False,
+        "dedicated_secret_value_read": False,
+        "dedicated_secret_value_stored": False,
         "secret_binding_accepted": False,
         "secret_backend_accessed": False,
         "environment_read": False,
