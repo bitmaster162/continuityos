@@ -125,35 +125,48 @@ def test_p1b_registers_only_stable_starter_entrypoints():
     assert any('Parameters: "--open"' in line for line in icon_lines)
 
 
-def test_p1b_has_no_pointer_activation_or_memory_runtime_mutation_logic():
+def test_p1c_activation_is_opt_in_and_delegated_to_packaged_python():
     text = _installer_text()
     lower = text.lower()
 
-    pointer_lines = [line for line in text.splitlines() if "runtime-source.json" in line]
-    assert len(pointer_lines) == 1
-    assert "Excludes:" in pointer_lines[0]
-
-    for forbidden in (
-        ".continuityos",
-        "powershell",
-        "python.exe",
-        "pip install",
-        "--activate",
-        "postbind",
-        "rollback",
-        "memory_db",
-        "llm_server",
-        "fast_model",
-        "deep_model",
-        "embedding_model",
-    ):
-        assert forbidden not in lower
-
+    assert "#ifndef P1CEnableExistingBindingActivation" in text
+    assert "#define P1CEnableExistingBindingActivation 0" in text
+    assert "#if P1CEnableExistingBindingActivation == 1" in text
+    assert "procedure CurStepChanged(CurStep: TSetupStep);" in text
+    assert "if CurStep <> ssPostInstall then" in text
+    assert "FileExists(PointerPath)" in text
+    assert "windows_product_transaction activate" in text
+    assert "Exec(PythonExe, Params" in text
+    assert "ewWaitUntilTerminated" in text
+    assert "if ResultCode <> 0 then" in text
+    assert "RaiseException('P1C activation helper failed rc='" in text
     assert "[Run]" not in text
-    assert "Start-Process" not in text
+
+    # Inno may locate the pointer and delegate the transaction, but it must not
+    # recreate the runtime-source schema or memory/model binding itself.
+    assert "memory_db" not in lower
+    assert "llm_server" not in lower
+    assert "fast_model" not in lower
+    assert "deep_model" not in lower
+    assert "embedding_model" not in lower
+    assert "execution_authority" not in lower
+    assert "can_execute" not in lower
+    assert "powershell" not in lower
+    assert "pip install" not in lower
 
 
-def test_p1b_uninstall_entry_present_without_p1c_or_manual_autostart_delete_semantics():
+def test_p1c_default_build_remains_p1b_stage_only_without_activation_define():
+    text = _installer_text()
+
+    define_line = next(
+        line for line in text.splitlines() if "#define P1CEnableExistingBindingActivation" in line
+    )
+    assert define_line.strip().endswith("0")
+    assert 'Excludes: "runtime-source.json"' in text
+    assert "P1C activation skipped: no existing runtime-source.json binding" in text
+
+
+def test_p1b_uninstall_entry_present_without_manual_autostart_delete_semantics():
     text = _installer_text()
 
     assert "Uninstallable=yes" in text
