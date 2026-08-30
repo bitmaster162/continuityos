@@ -250,7 +250,14 @@ jobs:
           $oldPath = $env:PATH
           try {
             $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
-            $args = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$freshRoot", "/LOG=$installLog")
+            $args = @(
+              '/VERYSILENT',
+              '/SUPPRESSMSGBOXES',
+              '/NORESTART',
+              '/SP-',
+              ('/DIR="' + $freshRoot + '"'),
+              ('/LOG="' + $installLog + '"')
+            )
             $proc = Start-Process -FilePath $env:P1B_SETUP -ArgumentList $args -PassThru -Wait -WindowStyle Hidden
             if ($proc.ExitCode -ne 0) {
               if (Test-Path -LiteralPath $installLog) { Get-Content -LiteralPath $installLog | Out-Host }
@@ -264,7 +271,10 @@ jobs:
           $installedRuntime = Join-Path (Join-Path $freshRoot 'runtimes') $env:P1B_RUNTIME_BUILD_ID
           $installedPy = Join-Path $installedRuntime 'python.exe'
           $installedStarter = Join-Path $freshRoot 'SovereignTwin-Start.exe'
-          if (-not (Test-Path -LiteralPath $installedPy)) { throw 'installed immutable runtime missing python.exe' }
+          if (-not (Test-Path -LiteralPath $installedPy)) {
+            if (Test-Path -LiteralPath $installLog) { Get-Content -LiteralPath $installLog | Out-Host }
+            throw 'installed immutable runtime missing python.exe'
+          }
           if (-not (Test-Path -LiteralPath $installedStarter)) { throw 'installed stable starter missing' }
           if ((Get-FileHash $installedStarter -Algorithm SHA256).Hash -ne (Get-FileHash $env:P1B_STARTER -Algorithm SHA256).Hash) {
             throw 'fresh installed starter hash differs from compiled input'
@@ -338,7 +348,14 @@ jobs:
           $baselineLog = Join-Path $env:RUNNER_TEMP 'p1b-baseline-install.log'
           $candidateLog = Join-Path $env:RUNNER_TEMP 'p1b-candidate-over-baseline.log'
 
-          $baselineArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$root", "/LOG=$baselineLog")
+          $baselineArgs = @(
+            '/VERYSILENT',
+            '/SUPPRESSMSGBOXES',
+            '/NORESTART',
+            '/SP-',
+            ('/DIR="' + $root + '"'),
+            ('/LOG="' + $baselineLog + '"')
+          )
           $baselineProc = Start-Process -FilePath $env:P1B_BASELINE_SETUP -ArgumentList $baselineArgs -PassThru -Wait -WindowStyle Hidden
           if ($baselineProc.ExitCode -ne 0) {
             if (Test-Path -LiteralPath $baselineLog) { Get-Content -LiteralPath $baselineLog | Out-Host }
@@ -375,7 +392,14 @@ jobs:
           $baselineUninstaller = Get-ChildItem -LiteralPath $baselineUninstallDir -Filter 'unins*.exe' -File | Select-Object -First 1
           if (-not $baselineUninstaller) { throw 'baseline isolated uninstaller missing' }
 
-          $candidateArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$root", "/LOG=$candidateLog")
+          $candidateArgs = @(
+            '/VERYSILENT',
+            '/SUPPRESSMSGBOXES',
+            '/NORESTART',
+            '/SP-',
+            ('/DIR="' + $root + '"'),
+            ('/LOG="' + $candidateLog + '"')
+          )
           $candidateProc = Start-Process -FilePath $env:P1B_SETUP -ArgumentList $candidateArgs -PassThru -Wait -WindowStyle Hidden
           if ($candidateProc.ExitCode -ne 0) {
             if (Test-Path -LiteralPath $candidateLog) { Get-Content -LiteralPath $candidateLog | Out-Host }
