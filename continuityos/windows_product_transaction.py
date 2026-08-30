@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import sqlite3
 import subprocess
+import sys
 import time
 import uuid
 from typing import Any, Iterable
@@ -775,6 +776,7 @@ def _fresh_postbind(
         "-I",
         "-m",
         "continuityos.windows_product_transaction",
+        "--p1c-write",
         "postbind",
         "--runtime-root",
         str(runtime_root),
@@ -1009,12 +1011,21 @@ def activate(
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Default P1A/P1B surface remains read-only."""
     p = argparse.ArgumentParser(prog="python -m continuityos.windows_product_transaction")
     sub = p.add_subparsers(dest="cmd", required=True)
-
     stage = sub.add_parser("stage-validate", help="read-only staged runtime validation")
     stage.add_argument("--runtime-root", required=True)
     stage.add_argument("--pointer", required=True)
+    return p
+
+
+def _build_p1c_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="python -m continuityos.windows_product_transaction --p1c-write",
+        description="Explicit P1C existing-binding transaction capability.",
+    )
+    sub = p.add_subparsers(dest="cmd", required=True)
 
     act = sub.add_parser("activate", help="atomically update an existing runtime binding")
     act.add_argument("--runtime-root", required=True)
@@ -1046,9 +1057,15 @@ def _failure_schema(cmd: str) -> tuple[str, str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    raw = list(sys.argv[1:] if argv is None else argv)
+    p1c_write = bool(raw and raw[0] == "--p1c-write")
+    if p1c_write:
+        args = _build_p1c_parser().parse_args(raw[1:])
+    else:
+        args = build_parser().parse_args(raw)
+
     try:
-        if args.cmd == "stage-validate":
+        if not p1c_write:
             result = stage_validate(args.runtime_root, args.pointer)
         elif args.cmd == "activate":
             result = activate(
@@ -1078,7 +1095,7 @@ def main(argv: list[str] | None = None) -> int:
         json.JSONDecodeError,
         subprocess.SubprocessError,
     ) as exc:
-        schema, effect = _failure_schema(args.cmd)
+        schema, effect = _failure_schema(args.cmd if p1c_write else "stage-validate")
         print(
             json.dumps(
                 {
