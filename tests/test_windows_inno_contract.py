@@ -39,35 +39,75 @@ def test_p1b_is_per_user_and_stages_only_immutable_runtime_payload():
     assert r"DefaultDirName={localappdata}\SovereignTwin" in text
     assert "ArchitecturesAllowed=x64compatible" in text
     assert "ArchitecturesInstallIn64BitMode=x64compatible" in text
-    assert (
-        'DestDir: "{app}\\runtimes\\{#RuntimeBuildId}"' in text
-    )
-    assert (
-        'DestName: "SovereignTwin-Start.exe"' in text
-    )
+    assert 'DestDir: "{app}\\runtimes\\{#RuntimeBuildId}"' in text
+    assert 'DestName: "SovereignTwin-Start.exe"' in text
+    assert "onlyifdoesntexist" in text
     assert "recursesubdirs" in text
     assert "createallsubdirs" in text
+
+
+def test_p1b_autostart_is_bound_to_current_user_without_password_or_global_overwrite():
+    text = _installer_text()
+    create_block = text[
+        text.index("procedure CreateAutostartTask;"):
+        text.index("procedure DeleteOwnedAutostartTask;")
+    ]
+
+    assert "GetUserNameString" in text
+    assert "GetEnv('USERDOMAIN')" in text
+    assert "GetSHA256OfUnicodeString(UpperCase(CurrentUserIdentity))" in text
+    assert "Result := 'SovereignTwin-UI-' + Copy(IdentityHash, 1, 16);" in text
+    assert "<LogonTrigger>" in text
+    assert "<UserId>" in text
+    assert "<LogonType>InteractiveToken</LogonType>" in text
+    assert "<RunLevel>LeastPrivilege</RunLevel>" in text
+    assert '/Create /TN "' in create_block
+    assert ' /XML "' in create_block
+    assert "/SC ONLOGON" not in create_block
+    assert "/RU " not in create_block
+    assert "/RP " not in create_block
+    assert "/Create /F" not in create_block
+    assert "TaskExists(TaskName)" in create_block
+    assert "Preserving pre-existing per-user SovereignTwin-UI task" in create_block
+
+
+def test_p1b_autostart_ownership_is_build_scoped_and_uninstall_is_non_destructive():
+    text = _installer_text()
+    delete_block = text[
+        text.index("procedure DeleteOwnedAutostartTask;"):
+        text.index("function ShouldCreateStartMenuShortcut")
+    ]
+
+    assert r"{app}\installer-state\{#RuntimeBuildId}.task-owned" in text
+    assert "if not FileExists(Marker) then" in delete_block
+    assert "preserving pre-existing SovereignTwin-UI task" in delete_block
+    assert '/Delete /F /TN "' in delete_block
+    assert "DeleteOwnedAutostartTask" in text
+
+
+def test_p1b_existing_install_files_and_uninstall_logs_are_isolated():
+    text = _installer_text()
+
+    assert "UninstallLogMode=new" in text
+    assert r"UninstallFilesDir={app}\uninstall\{#RuntimeBuildId}" in text
+    starter_line = next(
+        line for line in text.splitlines() if 'DestName: "SovereignTwin-Start.exe"' in line
+    )
+    assert "onlyifdoesntexist" in starter_line
+    icon_line = next(
+        line for line in text.splitlines() if line.startswith('Name: "{group}\\Sovereign Twin"')
+    )
+    assert "Check: ShouldCreateStartMenuShortcut" in icon_line
 
 
 def test_p1b_registers_only_stable_starter_entrypoints():
     text = _installer_text()
 
-    assert "ScheduledTaskName = 'SovereignTwin-UI';" in text
     assert r"{sys}\schtasks.exe" in text
-    assert "/Create /F /SC ONLOGON /RL LIMITED" in text
-    assert "--serve" in text
+    assert "<Arguments>--serve</Arguments>" in text
     assert "[Icons]" in text
     assert 'Filename: "{app}\\SovereignTwin-Start.exe"' in text
     assert 'Parameters: "--open"' in text
-
-
-def test_p1b_schtasks_command_does_not_persist_literal_quote_characters_in_execute():
-    text = _installer_text()
-
-    create_block = text[text.index("procedure CreateAutostartTask;"):text.index("procedure DeleteAutostartTask;")]
-    assert "'\" /TR \"' + Starter + ' --serve\"';" in create_block
-    assert "\\\"' + Starter" not in create_block
-    assert "Starter + '\\\"" not in create_block
 
 
 def test_p1b_has_no_pointer_activation_or_memory_runtime_mutation_logic():
@@ -98,12 +138,11 @@ def test_p1b_has_no_pointer_activation_or_memory_runtime_mutation_logic():
     assert "Start-Process" not in text
 
 
-def test_p1b_uninstall_entry_and_task_cleanup_are_present_without_p1d_semantics():
+def test_p1b_uninstall_entry_and_owned_task_cleanup_are_present_without_p1d_semantics():
     text = _installer_text()
 
     assert "Uninstallable=yes" in text
     assert "CreateUninstallRegKey=yes" in text
-    assert "procedure DeleteAutostartTask;" in text
-    assert "/Delete /F /TN" in text
+    assert "procedure DeleteOwnedAutostartTask;" in text
     assert "procedure CurUninstallStepChanged" in text
     assert "CurUninstallStep = usUninstall" in text
