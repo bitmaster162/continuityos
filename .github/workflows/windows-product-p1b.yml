@@ -28,6 +28,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Set up build Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -131,7 +132,6 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $download = Join-Path $env:RUNNER_TEMP 'inno-download'
-          $innoRoot = Join-Path $env:RUNNER_TEMP 'inno-7.1.0-x64'
           New-Item -ItemType Directory -Path $download -Force | Out-Null
 
           gh release download is-7_1_0 --repo jrsoftware/issrc --pattern 'innosetup-7.1.0-x64.exe' --dir $download
@@ -153,15 +153,27 @@ jobs:
             throw "unexpected Inno Setup signer: $($sig.SignerCertificate.Subject)"
           }
 
-          & $asset '/VERYSILENT' '/SUPPRESSMSGBOXES' '/NORESTART' '/SP-' '/CURRENTUSER' "/DIR=$innoRoot"
+          & $asset '/VERYSILENT' '/SUPPRESSMSGBOXES' '/NORESTART' '/SP-' '/CURRENTUSER'
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup compiler install failed rc=$LASTEXITCODE" }
-          $iscc = Get-ChildItem -LiteralPath $innoRoot -Filter 'ISCC.exe' -File -Recurse | Select-Object -First 1
-          if (-not $iscc) { throw 'ISCC.exe not found after verified compiler install' }
-          $versionText = (& $iscc.FullName --version 2>&1 | Out-String).Trim()
+
+          $candidatePaths = @(
+            (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 7\ISCC.exe'),
+            (Join-Path $env:LOCALAPPDATA 'Inno Setup 7\ISCC.exe'),
+            (Join-Path $env:ProgramFiles 'Inno Setup 7\ISCC.exe'),
+            (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 7\ISCC.exe')
+          )
+          $isccPath = $candidatePaths | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+          if (-not $isccPath) {
+            $fallback = Get-ChildItem -LiteralPath $env:LOCALAPPDATA -Filter 'ISCC.exe' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($fallback) { $isccPath = $fallback.FullName }
+          }
+          if (-not $isccPath) { throw 'ISCC.exe not found after verified current-user compiler install' }
+
+          $versionText = (& $isccPath --version 2>&1 | Out-String).Trim()
           if ($LASTEXITCODE -ne 0 -or $versionText -notmatch '7\.1\.0') {
             throw "unexpected ISCC version: $versionText"
           }
-          "P1B_ISCC=$($iscc.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P1B_ISCC=$isccPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Compile unsigned P1B setup from immutable inputs
         shell: pwsh
@@ -200,6 +212,7 @@ jobs:
           $memoryHashBefore = (Get-FileHash -LiteralPath $memorySentinel -Algorithm SHA256).Hash
 
           & "$env:SystemRoot\System32\schtasks.exe" /Delete /F /TN 'SovereignTwin-UI' *> $null
+          $global:LASTEXITCODE = 0
           $oldPath = $env:PATH
           try {
             $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
@@ -319,14 +332,19 @@ jobs:
         run: |
           $ErrorActionPreference = 'SilentlyContinue'
           & "$env:SystemRoot\System32\schtasks.exe" /Delete /F /TN 'SovereignTwin-UI' *> $null
+          $global:LASTEXITCODE = 0
           foreach ($rootName in @('p1b-install-fresh', 'p1b-install-existing-pointer')) {
             $root = Join-Path $env:RUNNER_TEMP $rootName
             if (Test-Path -LiteralPath $root) {
               $uninstaller = Get-ChildItem -LiteralPath $root -Filter 'unins*.exe' -File | Select-Object -First 1
-              if ($uninstaller) { & $uninstaller.FullName '/VERYSILENT' '/SUPPRESSMSGBOXES' '/NORESTART' *> $null }
+              if ($uninstaller) {
+                & $uninstaller.FullName '/VERYSILENT' '/SUPPRESSMSGBOXES' '/NORESTART' *> $null
+                $global:LASTEXITCODE = 0
+              }
               Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
             }
           }
           if ($env:P1B_MEMORY_SENTINEL -and (Test-Path -LiteralPath $env:P1B_MEMORY_SENTINEL)) {
             Remove-Item -LiteralPath $env:P1B_MEMORY_SENTINEL -Force -ErrorAction SilentlyContinue
           }
+          exit 0
