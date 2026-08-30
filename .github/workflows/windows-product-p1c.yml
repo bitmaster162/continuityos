@@ -531,6 +531,7 @@ jobs:
           if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($backup)) -ne [string]$baseline.pointer_b64) {
             throw 'rollback receipt backup is not byte-exact old pointer'
           }
+          exit 0
 
       - name: Emit bounded P1C validation summary
         shell: pwsh
