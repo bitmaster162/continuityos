@@ -55,6 +55,7 @@ Source: "{#StableStarter}"; DestDir: "{app}"; DestName: "SovereignTwin-Start.exe
 [Icons]
 Name: "{userstartup}\Sovereign Twin UI"; Filename: "{app}\SovereignTwin-Start.exe"; Parameters: "--serve"; WorkingDir: "{app}"; Check: ShouldCreateAutostartShortcut
 Name: "{group}\Sovereign Twin"; Filename: "{app}\SovereignTwin-Start.exe"; Parameters: "--open"; WorkingDir: "{app}"; Check: ShouldCreateStartMenuShortcut
+Name: "{group}\Sovereign Twin Control Center"; Filename: "{app}\SovereignTwin-Start.exe"; Parameters: "--control-center"; WorkingDir: "{app}"; Check: ShouldCreateControlCenterShortcut
 
 [Code]
 function ShouldCreateAutostartShortcut: Boolean;
@@ -71,6 +72,14 @@ begin
   if not Result then
     Log('Preserving pre-existing Start Menu shortcut: ' +
       ExpandConstant('{group}\Sovereign Twin.lnk'));
+end;
+
+function ShouldCreateControlCenterShortcut: Boolean;
+begin
+  Result := not FileExists(ExpandConstant('{group}\Sovereign Twin Control Center.lnk'));
+  if not Result then
+    Log('Preserving pre-existing Control Center shortcut: ' +
+      ExpandConstant('{group}\Sovereign Twin Control Center.lnk'));
 end;
 
 #if P1CEnableExistingBindingActivation == "1"
