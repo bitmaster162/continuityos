@@ -136,10 +136,11 @@ def test_p1c_activation_is_opt_in_and_delegated_to_packaged_python():
     assert "if CurStep <> ssPostInstall then" in text
     assert "FileExists(PointerPath)" in text
     assert "windows_product_transaction --p1c-write activate" in text
-    assert "Exec(PythonExe, Params" in text
-    assert "ewWaitUntilTerminated" in text
+    assert "ExecAndLogOutput(PythonExe, Params" in text
+    assert "ewWaitUntilTerminated, ResultCode, nil)" in text
     assert "if ResultCode <> 0 then" in text
-    assert "RaiseException('P1C activation helper failed rc='" in text
+    assert "Exec(PythonExe, Params" not in text
+    assert "RaiseException('P1C activation helper failed rc='" not in text
     assert "[Run]" not in text
 
     # Inno may locate the pointer and delegate the transaction, but it must not
@@ -153,6 +154,22 @@ def test_p1c_activation_is_opt_in_and_delegated_to_packaged_python():
     assert "can_execute" not in lower
     assert "powershell" not in lower
     assert "pip install" not in lower
+
+
+def test_p1c_helper_failure_is_logged_and_forces_nonzero_setup_exit():
+    text = _installer_text()
+
+    assert "P1CActivationFailureExitCode = 90;" in text
+    assert "P1CActivationFailed: Boolean;" in text
+    assert "procedure MarkP1CActivationFailure" in text
+    assert "P1CActivationFailed := True;" in text
+    assert "function GetCustomSetupExitCode: Integer;" in text
+    assert "if P1CActivationFailed then" in text
+    assert "Result := P1CActivationFailureExitCode;" in text
+    assert "P1C fail-closed custom setup exit code=" in text
+    assert "P1C activation helper output capture failed:" in text
+    assert "GetExceptionMessage" in text
+    assert "P1C activation helper failed rc=" in text
 
 
 def test_p1c_default_build_remains_p1b_stage_only_without_activation_define():
