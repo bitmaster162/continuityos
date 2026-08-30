@@ -236,6 +236,11 @@ def inspect_restore_readiness(
             )
     except restore.RestoreHold as exc:
         raise RestoreReadinessHold(exc.reason, exc.detail) from exc
+    except OSError as exc:
+        raise RestoreReadinessHold(
+            "READINESS_INPUT_UNAVAILABLE",
+            f"readiness input became unavailable: {type(exc).__name__}",
+        ) from exc
 
     effect_state = inspect_current_session(os.environ if env is None else env)
     effect_allowed = effect_state.get("mode") == MODE_LEGACY
