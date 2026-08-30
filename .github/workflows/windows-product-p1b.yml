@@ -155,12 +155,26 @@ jobs:
             throw "unexpected Inno Setup signer: $($sig.SignerCertificate.Subject)"
           }
 
-          & $asset '/PORTABLE=1' '/VERYSILENT' '/SUPPRESSMSGBOXES' '/NORESTART' '/SP-' '/CURRENTUSER' "/DIR=$innoRoot" "/LOG=$innoLog"
-          if ($LASTEXITCODE -ne 0) { throw "Inno Setup portable compiler extraction failed rc=$LASTEXITCODE" }
+          $installerArgs = @(
+            '/PORTABLE=1',
+            '/VERYSILENT',
+            '/SUPPRESSMSGBOXES',
+            '/NORESTART',
+            '/SP-',
+            '/CURRENTUSER',
+            "/DIR=$innoRoot",
+            "/LOG=$innoLog"
+          )
+          $proc = Start-Process -FilePath $asset -ArgumentList $installerArgs -PassThru -Wait -WindowStyle Hidden
+          if ($proc.ExitCode -ne 0) {
+            if (Test-Path -LiteralPath $innoLog) { Get-Content -LiteralPath $innoLog | Out-Host }
+            throw "Inno Setup portable compiler extraction failed rc=$($proc.ExitCode)"
+          }
 
           $iscc = Get-ChildItem -LiteralPath $innoRoot -Filter 'ISCC.exe' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $iscc) {
             if (Test-Path -LiteralPath $innoLog) { Get-Content -LiteralPath $innoLog | Out-Host }
+            Get-Process | Where-Object { $_.ProcessName -match 'setup|inno|is-' } | Select-Object ProcessName, Id, Path | Format-Table | Out-Host
             throw 'ISCC.exe not found after verified portable compiler extraction'
           }
 
