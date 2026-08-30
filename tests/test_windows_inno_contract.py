@@ -135,7 +135,7 @@ def test_p1c_activation_is_opt_in_and_delegated_to_packaged_python():
     assert "procedure CurStepChanged(CurStep: TSetupStep);" in text
     assert "if CurStep <> ssPostInstall then" in text
     assert "FileExists(PointerPath)" in text
-    assert "windows_product_transaction activate" in text
+    assert "windows_product_transaction --p1c-write activate" in text
     assert "Exec(PythonExe, Params" in text
     assert "ewWaitUntilTerminated" in text
     assert "if ResultCode <> 0 then" in text
