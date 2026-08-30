@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 
@@ -19,7 +20,9 @@ def test_unbound_reference_is_metadata_only_and_preserves_none_false_authority()
     assert receipt["schema"] == "continuityos.vault_secret_reference/v1"
     assert receipt["mode"] == "METADATA_ONLY"
     assert receipt["provider"] == "unbound"
-    assert receipt["locator"] is None
+    assert "locator" not in receipt
+    assert receipt["binding_present"] is False
+    assert receipt["binding_authorized"] is False
     assert receipt["readiness"] == "PROVIDER_UNBOUND"
     assert receipt["secret_value_present"] is False
     assert receipt["live_secret_access_available"] is False
@@ -30,21 +33,24 @@ def test_unbound_reference_is_metadata_only_and_preserves_none_false_authority()
     assert all(value is False for value in receipt["effects"].values())
 
 
-def test_declared_environment_reference_never_reads_or_verifies_environment(monkeypatch):
+def test_declared_environment_provider_class_never_reads_or_binds_environment(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "super-secret-value-that-must-never-be-read")
 
     receipt = vsr.build_secret_reference(
         reference_id="openai.primary",
         provider="environment",
-        locator="OPENAI_API_KEY",
         purpose_id="cross_ai_demo",
         secret_kind="api_key",
     )
 
     encoded = json.dumps(receipt, sort_keys=True)
-    assert receipt["readiness"] == "REFERENCE_DECLARED_NOT_VERIFIED"
-    assert receipt["locator"] == "OPENAI_API_KEY"
+    assert receipt["readiness"] == "PROVIDER_CLASS_DECLARED_BINDING_NOT_AUTHORIZED"
+    assert receipt["binding_present"] is False
+    assert receipt["binding_authorized"] is False
+    assert receipt["effects"]["secret_binding_accepted"] is False
     assert receipt["effects"]["environment_read"] is False
+    assert "locator" not in receipt
+    assert "OPENAI_API_KEY" not in encoded
     assert "super-secret-value-that-must-never-be-read" not in encoded
 
 
@@ -74,51 +80,60 @@ def test_secret_bearing_fields_are_rejected(field):
 
 
 @pytest.mark.parametrize(
-    "locator",
+    ("field", "value"),
     [
-        "API_KEY=secret",
-        "api key",
-        "token\nvalue",
-        "Bearer abc",
-        "abc$def",
-        "",
+        ("locator", "OPENAI_API_KEY"),
+        ("locator", "ghp_abcdefghijklmnopqrstuvwxyz0123456789"),
+        ("locator", "sk-proj-abcdefghijklmnopqrstuvwxyz"),
+        ("binding", "provider-owned-reference"),
+        ("binding_id", "credential-123"),
+        ("secret_id", "secret-123"),
+        ("environment_variable", "OPENAI_API_KEY"),
+        ("env_name", "OPENAI_API_KEY"),
+        ("variable_name", "OPENAI_API_KEY"),
+        ("keyring_entry", "continuityos/openai"),
+        ("external_secret_id", "vault/path/item"),
     ],
 )
-def test_locator_is_identifier_only_and_rejects_value_like_shapes(locator):
-    with pytest.raises(vsr.SecretReferenceError, match="LOCATOR_INVALID"):
-        vsr.build_secret_reference(
+def test_concrete_binding_fields_are_rejected_before_any_value_can_be_echoable(field, value):
+    payload = {
+        "reference_id": "service.primary",
+        "provider": "environment",
+        "purpose_id": "connector_auth",
+        field: value,
+    }
+    with pytest.raises(vsr.SecretReferenceError, match="SECRET_BINDING_FIELD_FORBIDDEN"):
+        vsr.validate_secret_reference(payload)
+
+
+def test_build_api_has_no_locator_or_concrete_binding_parameter():
+    parameters = inspect.signature(vsr.build_secret_reference).parameters
+    assert "locator" not in parameters
+    assert "binding" not in parameters
+    assert "binding_id" not in parameters
+    assert "secret_id" not in parameters
+
+
+def test_provider_classes_never_imply_a_binding():
+    for provider in vsr.SUPPORTED_PROVIDERS:
+        receipt = vsr.build_secret_reference(
             reference_id="service.primary",
-            provider="environment",
-            locator=locator,
+            provider=provider,
             purpose_id="connector_auth",
         )
+        assert receipt["provider"] == provider
+        assert receipt["binding_present"] is False
+        assert receipt["binding_authorized"] is False
+        assert "locator" not in receipt
+        assert receipt["redaction"]["binding_locators"] == "NOT_ACCEPTED_IN_METADATA_ONLY_V1"
 
 
-def test_provider_binding_rules_fail_closed():
-    with pytest.raises(vsr.SecretReferenceError, match="UNBOUND_PROVIDER_MUST_NOT_HAVE_LOCATOR"):
-        vsr.build_secret_reference(
-            reference_id="service.primary",
-            provider="unbound",
-            locator="SHOULD_NOT_BE_HERE",
-            purpose_id="connector_auth",
-        )
-
-    for provider in ("environment", "os-keyring", "external"):
-        with pytest.raises(vsr.SecretReferenceError, match="BOUND_PROVIDER_REQUIRES_LOCATOR"):
-            vsr.build_secret_reference(
-                reference_id="service.primary",
-                provider=provider,
-                purpose_id="connector_auth",
-            )
-
-
-def test_validation_is_strict_and_canonical_json_is_stable():
+def test_validation_is_strict_and_canonical_json_is_stable_without_binding_locator():
     payload = {
         "schema": vsr.SCHEMA,
         "mode": vsr.MODE,
         "reference_id": "github.primary",
         "provider": "external",
-        "locator": "github/pat/primary",
         "secret_kind": "token",
         "purpose_id": "github_connector",
         "required": True,
@@ -129,6 +144,9 @@ def test_validation_is_strict_and_canonical_json_is_stable():
 
     assert first == second
     decoded = json.loads(first)
+    assert "locator" not in decoded
+    assert decoded["binding_present"] is False
+    assert decoded["binding_authorized"] is False
     assert decoded["secret_value_present"] is False
     assert decoded["live_secret_access_available"] is False
 
@@ -160,3 +178,4 @@ def test_module_has_no_secret_backend_or_runtime_io_surface():
     assert "read_secret" not in public
     assert "write_secret" not in public
     assert "store_secret" not in public
+    assert "bind_secret" not in public
