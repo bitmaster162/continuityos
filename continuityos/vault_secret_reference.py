@@ -1,11 +1,14 @@
 """Secret-reference metadata contract for the ContinuityOS vault roadmap.
 
 This module is deliberately metadata-only. It does not read, accept, store, resolve,
-or verify secret values and it does not access environment variables, .env files,
-OS keyrings, DPAPI, network services, runtime state, or the filesystem.
+or verify secret values or concrete secret bindings, and it does not access environment
+variables, .env files, OS keyrings, DPAPI, network services, runtime state, or the
+filesystem.
 
 A secret reference is only a bounded declaration that a future vault implementation
-may bind under a separate authorization gate.
+may bind under a separate authorization gate. Provider values in this v1 contract are
+provider *classes* only; no environment variable name, keyring entry, external secret
+ID, token-like locator, or other concrete binding identifier is accepted or returned.
 """
 from __future__ import annotations
 
@@ -28,7 +31,6 @@ SUPPORTED_SECRET_KINDS = (
 )
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
-_LOCATOR = re.compile(r"^[A-Za-z][A-Za-z0-9_.:/-]{0,127}$")
 
 _ALLOWED_INPUT_FIELDS = frozenset(
     {
@@ -36,7 +38,6 @@ _ALLOWED_INPUT_FIELDS = frozenset(
         "mode",
         "reference_id",
         "provider",
-        "locator",
         "secret_kind",
         "purpose_id",
         "required",
@@ -58,6 +59,20 @@ _FORBIDDEN_SECRET_FIELDS = frozenset(
     }
 )
 
+_FORBIDDEN_BINDING_FIELDS = frozenset(
+    {
+        "locator",
+        "binding",
+        "binding_id",
+        "secret_id",
+        "environment_variable",
+        "env_name",
+        "variable_name",
+        "keyring_entry",
+        "external_secret_id",
+    }
+)
+
 
 @dataclass(frozen=True)
 class SecretReferenceError(ValueError):
@@ -73,17 +88,12 @@ def _identifier(value: Any, field: str) -> str:
     return value
 
 
-def _locator(value: Any) -> str:
-    if not isinstance(value, str) or not _LOCATOR.fullmatch(value):
-        raise SecretReferenceError("LOCATOR_INVALID")
-    return value
-
-
 def _effects() -> dict[str, Any]:
     return {
         "secret_value_accepted": False,
         "secret_value_read": False,
         "secret_value_stored": False,
+        "secret_binding_accepted": False,
         "secret_backend_accessed": False,
         "environment_read": False,
         "dotenv_read": False,
@@ -113,15 +123,14 @@ def build_secret_reference(
     *,
     reference_id: str,
     provider: str = "unbound",
-    locator: str | None = None,
     secret_kind: str = "credential",
     purpose_id: str,
     required: bool = True,
 ) -> dict[str, Any]:
     """Build one bounded metadata-only secret reference.
 
-    ``locator`` is an identifier such as an environment variable name or future
-    provider-owned reference key. It is never interpreted or dereferenced here.
+    ``provider`` is only a provider class describing a possible future binding lane.
+    This function accepts no concrete binding locator and performs no provider access.
     """
     ref_id = _identifier(reference_id, "reference_id")
     purpose = _identifier(purpose_id, "purpose_id")
@@ -134,31 +143,26 @@ def build_secret_reference(
         raise SecretReferenceError("REQUIRED_INVALID")
 
     if provider == "unbound":
-        if locator is not None:
-            raise SecretReferenceError("UNBOUND_PROVIDER_MUST_NOT_HAVE_LOCATOR")
-        normalized_locator = None
         readiness = "PROVIDER_UNBOUND"
     else:
-        if locator is None:
-            raise SecretReferenceError("BOUND_PROVIDER_REQUIRES_LOCATOR")
-        normalized_locator = _locator(locator)
-        readiness = "REFERENCE_DECLARED_NOT_VERIFIED"
+        readiness = "PROVIDER_CLASS_DECLARED_BINDING_NOT_AUTHORIZED"
 
     return {
         "schema": SCHEMA,
         "mode": MODE,
         "reference_id": ref_id,
         "provider": provider,
-        "locator": normalized_locator,
         "secret_kind": secret_kind,
         "purpose_id": purpose,
         "required": required,
         "readiness": readiness,
+        "binding_present": False,
+        "binding_authorized": False,
         "secret_value_present": False,
         "live_secret_access_available": False,
         "redaction": {
             "secret_values": "NEVER_ACCEPTED_OR_INCLUDED",
-            "locator_class": "IDENTIFIER_ONLY",
+            "binding_locators": "NOT_ACCEPTED_IN_METADATA_ONLY_V1",
         },
         "effects": _effects(),
         **_governance(),
@@ -168,17 +172,21 @@ def build_secret_reference(
 def validate_secret_reference(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Validate an input declaration and return the canonical public receipt.
 
-    The accepted input shape intentionally excludes all secret-bearing value fields
-    and all receipt/status fields. Callers cannot smuggle a secret value into the
-    canonical metadata object as an "extra" property.
+    The accepted input shape intentionally excludes all secret-bearing value fields,
+    concrete secret-binding fields, and receipt/status fields. Binding identifiers are
+    a separate future lane and cannot be smuggled into this metadata-only v1 object.
     """
     if not isinstance(payload, Mapping):
         raise SecretReferenceError("PAYLOAD_INVALID")
 
     keys = set(payload)
-    forbidden = keys & _FORBIDDEN_SECRET_FIELDS
-    if forbidden:
+    forbidden_secret = keys & _FORBIDDEN_SECRET_FIELDS
+    if forbidden_secret:
         raise SecretReferenceError("SECRET_VALUE_FIELD_FORBIDDEN")
+
+    forbidden_binding = keys & _FORBIDDEN_BINDING_FIELDS
+    if forbidden_binding:
+        raise SecretReferenceError("SECRET_BINDING_FIELD_FORBIDDEN")
 
     unexpected = keys - _ALLOWED_INPUT_FIELDS
     if unexpected:
@@ -192,7 +200,6 @@ def validate_secret_reference(payload: Mapping[str, Any]) -> dict[str, Any]:
     return build_secret_reference(
         reference_id=payload.get("reference_id"),
         provider=payload.get("provider", "unbound"),
-        locator=payload.get("locator"),
         secret_kind=payload.get("secret_kind", "credential"),
         purpose_id=payload.get("purpose_id"),
         required=payload.get("required", True),
