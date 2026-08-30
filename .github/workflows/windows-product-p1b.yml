@@ -183,7 +183,7 @@ jobs:
           }
           "P1B_ISCC=$($iscc.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Compile unsigned candidate and baseline staging setups
+      - name: Compile unsigned candidate and baseline same-app setups
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -196,7 +196,7 @@ jobs:
             "--define=RuntimeRoot=$env:P1B_RUNTIME" `
             "--define=RuntimeBuildId=$env:P1B_RUNTIME_BUILD_ID" `
             "--define=StableStarter=$env:P1B_STARTER" `
-            '--define=ProductVersion=0.1.0-p1b-r2' `
+            '--define=ProductVersion=0.1.0-p1b-r3' `
             "--define=SourceSha=${{ github.event.pull_request.head.sha }}" `
             "--define=OutputDir=$candidateOut" `
             $script
@@ -206,7 +206,7 @@ jobs:
 
           $baselineRuntime = Join-Path $env:RUNNER_TEMP 'p1b-baseline-runtime'
           New-Item -ItemType Directory -Path $baselineRuntime -Force | Out-Null
-          'BASELINE_RUNTIME_MUST_SURVIVE_CANDIDATE_UNINSTALL' |
+          'BASELINE_RUNTIME_OWNED_BY_SAME_APP' |
             Set-Content -LiteralPath (Join-Path $baselineRuntime 'baseline-runtime-sentinel.txt') -Encoding ascii
           $baselineStarter = Join-Path $env:RUNNER_TEMP 'p1b-baseline-starter.exe'
           Copy-Item -LiteralPath "$env:SystemRoot\System32\cmd.exe" -Destination $baselineStarter -Force
@@ -216,7 +216,7 @@ jobs:
           & $env:P1B_ISCC `
             '--no-signing' `
             "--define=RuntimeRoot=$baselineRuntime" `
-            '--define=RuntimeBuildId=baseline-p1b-r2' `
+            '--define=RuntimeBuildId=baseline-p1b-r3' `
             "--define=StableStarter=$baselineStarter" `
             '--define=ProductVersion=0.0.1-p1b-baseline' `
             '--define=SourceSha=0000000000000000000000000000000000000001' `
@@ -230,12 +230,40 @@ jobs:
           "P1B_BASELINE_SETUP=$($baseline[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "P1B_BASELINE_STARTER=$baselineStarter" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Fresh install proves per-user Startup binding and staging-only state
+      - name: Fresh install proves stable ARP identity and staging-only state
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+
+          function Get-SovereignTwinArpEntries {
+            $root = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+            if (-not (Test-Path -LiteralPath $root)) { return @() }
+            return @(
+              Get-ChildItem -LiteralPath $root -ErrorAction Stop |
+                ForEach-Object {
+                  $props = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction Stop
+                  if ([string]$props.DisplayName -eq 'Sovereign Twin') {
+                    [pscustomobject]@{
+                      Key = $_.PSChildName
+                      Path = $_.PSPath
+                      Props = $props
+                    }
+                  }
+                }
+            )
+          }
+
+          function Get-UninstallerPath([string]$Command) {
+            if ($Command -match '^\s*"([^"]+)"') { return $Matches[1] }
+            if ($Command -match '^\s*(.+?\.exe)(?:\s|$)') { return $Matches[1].Trim('"') }
+            throw "unable to parse uninstall command: $Command"
+          }
+
           $startupShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\Sovereign Twin UI.lnk'
+          $menuShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Sovereign Twin\Sovereign Twin.lnk'
           Remove-Item -LiteralPath $startupShortcut -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $menuShortcut -Force -ErrorAction SilentlyContinue
+          if ((Get-SovereignTwinArpEntries).Count -ne 0) { throw 'pre-existing Sovereign Twin ARP entry on clean runner' }
 
           $freshRoot = Join-Path $env:RUNNER_TEMP 'p1b fresh install with spaces'
           $installLog = Join-Path $env:RUNNER_TEMP 'p1b-fresh-install.log'
@@ -270,10 +298,7 @@ jobs:
           $installedRuntime = Join-Path (Join-Path $freshRoot 'runtimes') $env:P1B_RUNTIME_BUILD_ID
           $installedPy = Join-Path $installedRuntime 'python.exe'
           $installedStarter = Join-Path $freshRoot 'SovereignTwin-Start.exe'
-          if (-not (Test-Path -LiteralPath $installedPy)) {
-            if (Test-Path -LiteralPath $installLog) { Get-Content -LiteralPath $installLog | Out-Host }
-            throw 'installed immutable runtime missing python.exe'
-          }
+          if (-not (Test-Path -LiteralPath $installedPy)) { throw 'installed immutable runtime missing python.exe' }
           if (-not (Test-Path -LiteralPath $installedStarter)) { throw 'installed stable starter missing' }
           if ((Get-FileHash $installedStarter -Algorithm SHA256).Hash -ne (Get-FileHash $env:P1B_STARTER -Algorithm SHA256).Hash) {
             throw 'fresh installed starter hash differs from compiled input'
@@ -297,7 +322,6 @@ jobs:
             throw "Startup shortcut working directory mismatch: $($startupLink.WorkingDirectory)"
           }
 
-          $menuShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Sovereign Twin\Sovereign Twin.lnk'
           if (-not (Test-Path -LiteralPath $menuShortcut)) { throw "Start Menu shortcut missing: $menuShortcut" }
           $menuLink = $shell.CreateShortcut($menuShortcut)
           if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$menuLink.TargetPath, $installedStarter)) {
@@ -305,15 +329,28 @@ jobs:
           }
           if ([string]$menuLink.Arguments -ne '--open') { throw "Start Menu shortcut arguments mismatch: $($menuLink.Arguments)" }
 
+          $arp = @(Get-SovereignTwinArpEntries)
+          if ($arp.Count -ne 1) { throw "fresh install expected one Sovereign Twin ARP entry, found $($arp.Count)" }
+          if ([string]$arp[0].Props.DisplayVersion -ne '0.1.0-p1b-r3') {
+            throw "fresh ARP DisplayVersion mismatch: $($arp[0].Props.DisplayVersion)"
+          }
+          $uninstallCommand = [string]$arp[0].Props.UninstallString
+          $uninstallerPath = Get-UninstallerPath $uninstallCommand
+          $expectedUninstallDir = Join-Path $freshRoot 'uninstall'
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals((Split-Path -Parent $uninstallerPath), $expectedUninstallDir)) {
+            throw "fresh uninstaller is not in stable uninstall directory: $uninstallerPath"
+          }
+          if ($uninstallCommand -like "*$env:P1B_RUNTIME_BUILD_ID*") {
+            throw 'fresh uninstall identity leaked runtime build id'
+          }
+
           if ((Get-FileHash -LiteralPath $memorySentinel -Algorithm SHA256).Hash -ne $memoryHashBefore) {
             throw 'fresh installer mutated .continuityos memory sentinel'
           }
 
-          $uninstallerDir = Join-Path (Join-Path $freshRoot 'uninstall') $env:P1B_RUNTIME_BUILD_ID
-          $uninstaller = Get-ChildItem -LiteralPath $uninstallerDir -Filter 'unins*.exe' -File | Select-Object -First 1
-          if (-not $uninstaller) { throw 'fresh candidate uninstaller missing' }
-          $unProc = Start-Process -FilePath $uninstaller.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -PassThru -Wait -WindowStyle Hidden
+          $unProc = Start-Process -FilePath $uninstallerPath -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -PassThru -Wait -WindowStyle Hidden
           if ($unProc.ExitCode -ne 0) { throw "fresh uninstall failed rc=$($unProc.ExitCode)" }
+          if ((Get-SovereignTwinArpEntries).Count -ne 0) { throw 'fresh ARP entry remained after uninstall' }
           if (Test-Path -LiteralPath $startupShortcut) { throw 'fresh installer-owned Startup shortcut remained after uninstall' }
           if ((Get-FileHash -LiteralPath $memorySentinel -Algorithm SHA256).Hash -ne $memoryHashBefore) {
             throw 'fresh uninstall mutated .continuityos memory sentinel'
@@ -322,14 +359,42 @@ jobs:
           "P1B_MEMORY_SENTINEL=$memorySentinel" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "P1B_MEMORY_HASH=$memoryHashBefore" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Existing install survives candidate install and candidate uninstall
+      - name: Same-app upgrade preserves binding and unified uninstall owns ARP state
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $startupShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\Sovereign Twin UI.lnk'
-          Remove-Item -LiteralPath $startupShortcut -Force -ErrorAction SilentlyContinue
 
-          $root = Join-Path $env:RUNNER_TEMP 'p1b existing install safety'
+          function Get-SovereignTwinArpEntries {
+            $root = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+            if (-not (Test-Path -LiteralPath $root)) { return @() }
+            return @(
+              Get-ChildItem -LiteralPath $root -ErrorAction Stop |
+                ForEach-Object {
+                  $props = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction Stop
+                  if ([string]$props.DisplayName -eq 'Sovereign Twin') {
+                    [pscustomobject]@{
+                      Key = $_.PSChildName
+                      Path = $_.PSPath
+                      Props = $props
+                    }
+                  }
+                }
+            )
+          }
+
+          function Get-UninstallerPath([string]$Command) {
+            if ($Command -match '^\s*"([^"]+)"') { return $Matches[1] }
+            if ($Command -match '^\s*(.+?\.exe)(?:\s|$)') { return $Matches[1].Trim('"') }
+            throw "unable to parse uninstall command: $Command"
+          }
+
+          $startupShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\Sovereign Twin UI.lnk'
+          $menuShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Sovereign Twin\Sovereign Twin.lnk'
+          Remove-Item -LiteralPath $startupShortcut -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $menuShortcut -Force -ErrorAction SilentlyContinue
+          if ((Get-SovereignTwinArpEntries).Count -ne 0) { throw 'stale Sovereign Twin ARP entry before same-app upgrade test' }
+
+          $root = Join-Path $env:RUNNER_TEMP 'p1b same app upgrade safety'
           $baselineLog = Join-Path $env:RUNNER_TEMP 'p1b-baseline-install.log'
           $candidateLog = Join-Path $env:RUNNER_TEMP 'p1b-candidate-over-baseline.log'
 
@@ -347,6 +412,18 @@ jobs:
             throw "baseline install failed rc=$($baselineProc.ExitCode)"
           }
 
+          $baselineArp = @(Get-SovereignTwinArpEntries)
+          if ($baselineArp.Count -ne 1) { throw "baseline expected one ARP entry, found $($baselineArp.Count)" }
+          if ([string]$baselineArp[0].Props.DisplayVersion -ne '0.0.1-p1b-baseline') {
+            throw "baseline ARP DisplayVersion mismatch: $($baselineArp[0].Props.DisplayVersion)"
+          }
+          $baselineArpKey = [string]$baselineArp[0].Key
+          $baselineUninstallPath = Get-UninstallerPath ([string]$baselineArp[0].Props.UninstallString)
+          $stableUninstallDir = Join-Path $root 'uninstall'
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals((Split-Path -Parent $baselineUninstallPath), $stableUninstallDir)) {
+            throw "baseline uninstaller is not in stable uninstall directory: $baselineUninstallPath"
+          }
+
           $pointer = Join-Path $root 'runtime-source.json'
           $pointerBytes = '{"p1b":"pre-existing-binding","execution_authority":"NONE","can_execute":false}'
           [System.IO.File]::WriteAllText($pointer, $pointerBytes, [System.Text.UTF8Encoding]::new($false))
@@ -357,7 +434,8 @@ jobs:
           $expectedBaselineStarterHash = (Get-FileHash -LiteralPath $env:P1B_BASELINE_STARTER -Algorithm SHA256).Hash
           if ($starterHash -ne $expectedBaselineStarterHash) { throw 'baseline starter was not installed as expected' }
 
-          $baselineRuntimeSentinel = Join-Path $root 'runtimes\baseline-p1b-r2\baseline-runtime-sentinel.txt'
+          $baselineRuntime = Join-Path $root 'runtimes\baseline-p1b-r3'
+          $baselineRuntimeSentinel = Join-Path $baselineRuntime 'baseline-runtime-sentinel.txt'
           if (-not (Test-Path -LiteralPath $baselineRuntimeSentinel)) { throw 'baseline runtime sentinel missing' }
           $baselineRuntimeHash = (Get-FileHash -LiteralPath $baselineRuntimeSentinel -Algorithm SHA256).Hash
 
@@ -368,19 +446,11 @@ jobs:
           $baselineStartupArgs = [string]$baselineStartupLink.Arguments
           $baselineStartupWorkDir = [string]$baselineStartupLink.WorkingDirectory
           $baselineStartupHash = (Get-FileHash -LiteralPath $startupShortcut -Algorithm SHA256).Hash
-          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals($baselineStartupTarget, $starter)) {
-            throw 'baseline Startup shortcut target mismatch'
-          }
-          if ($baselineStartupArgs -ne '--serve') { throw 'baseline Startup shortcut arguments mismatch' }
 
-          $menuShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Sovereign Twin\Sovereign Twin.lnk'
           if (-not (Test-Path -LiteralPath $menuShortcut)) { throw 'baseline Start Menu shortcut missing' }
           $baselineMenuLink = $shell.CreateShortcut($menuShortcut)
           $baselineMenuTarget = [string]$baselineMenuLink.TargetPath
-
-          $baselineUninstallDir = Join-Path $root 'uninstall\baseline-p1b-r2'
-          $baselineUninstaller = Get-ChildItem -LiteralPath $baselineUninstallDir -Filter 'unins*.exe' -File | Select-Object -First 1
-          if (-not $baselineUninstaller) { throw 'baseline isolated uninstaller missing' }
+          $baselineMenuHash = (Get-FileHash -LiteralPath $menuShortcut -Algorithm SHA256).Hash
 
           $candidateArgs = @(
             '/VERYSILENT',
@@ -396,10 +466,29 @@ jobs:
             throw "candidate-over-baseline install failed rc=$($candidateProc.ExitCode)"
           }
 
+          $candidateArp = @(Get-SovereignTwinArpEntries)
+          if ($candidateArp.Count -ne 1) { throw "same-app upgrade created duplicate ARP entries: $($candidateArp.Count)" }
+          if ([string]$candidateArp[0].Key -ne $baselineArpKey) {
+            throw "same-app upgrade changed ARP key: $baselineArpKey -> $($candidateArp[0].Key)"
+          }
+          if ([string]$candidateArp[0].Props.DisplayVersion -ne '0.1.0-p1b-r3') {
+            throw "candidate ARP DisplayVersion mismatch: $($candidateArp[0].Props.DisplayVersion)"
+          }
+          $candidateUninstallCommand = [string]$candidateArp[0].Props.UninstallString
+          $candidateUninstallPath = Get-UninstallerPath $candidateUninstallCommand
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals((Split-Path -Parent $candidateUninstallPath), $stableUninstallDir)) {
+            throw "candidate uninstaller is not in stable uninstall directory: $candidateUninstallPath"
+          }
+          if ($candidateUninstallCommand -like "*$env:P1B_RUNTIME_BUILD_ID*" -or
+              $candidateUninstallCommand -like '*baseline-p1b-r3*') {
+            throw 'same-app uninstall identity leaked runtime build id'
+          }
+
           if ((Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash -ne $pointerHash) { throw 'candidate install modified existing pointer' }
           if ((Get-FileHash -LiteralPath $starter -Algorithm SHA256).Hash -ne $starterHash) { throw 'candidate install replaced existing stable starter' }
           if ((Get-FileHash -LiteralPath $baselineRuntimeSentinel -Algorithm SHA256).Hash -ne $baselineRuntimeHash) { throw 'candidate install modified baseline runtime' }
           if ((Get-FileHash -LiteralPath $startupShortcut -Algorithm SHA256).Hash -ne $baselineStartupHash) { throw 'candidate install replaced pre-existing Startup shortcut' }
+          if ((Get-FileHash -LiteralPath $menuShortcut -Algorithm SHA256).Hash -ne $baselineMenuHash) { throw 'candidate install replaced pre-existing Start Menu shortcut' }
 
           $candidateStartupLink = $shell.CreateShortcut($startupShortcut)
           if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$candidateStartupLink.TargetPath, $baselineStartupTarget)) {
@@ -411,53 +500,41 @@ jobs:
           if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$candidateStartupLink.WorkingDirectory, $baselineStartupWorkDir)) {
             throw 'candidate install changed pre-existing Startup shortcut working directory'
           }
+          $candidateMenuLink = $shell.CreateShortcut($menuShortcut)
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$candidateMenuLink.TargetPath, $baselineMenuTarget)) {
+            throw 'candidate install changed pre-existing Start Menu shortcut target'
+          }
 
           $candidateRuntime = Join-Path (Join-Path $root 'runtimes') $env:P1B_RUNTIME_BUILD_ID
           if (-not (Test-Path -LiteralPath (Join-Path $candidateRuntime 'python.exe'))) { throw 'candidate runtime was not staged' }
 
-          $candidateMenuLink = $shell.CreateShortcut($menuShortcut)
-          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$candidateMenuLink.TargetPath, $baselineMenuTarget)) {
-            throw 'candidate install replaced pre-existing Start Menu shortcut'
-          }
-
-          $candidateUninstallDir = Join-Path (Join-Path $root 'uninstall') $env:P1B_RUNTIME_BUILD_ID
-          $candidateUninstaller = Get-ChildItem -LiteralPath $candidateUninstallDir -Filter 'unins*.exe' -File | Select-Object -First 1
-          if (-not $candidateUninstaller) { throw 'candidate isolated uninstaller missing' }
-          $candidateUnProc = Start-Process -FilePath $candidateUninstaller.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -PassThru -Wait -WindowStyle Hidden
-          if ($candidateUnProc.ExitCode -ne 0) { throw "candidate uninstall failed rc=$($candidateUnProc.ExitCode)" }
-
-          if (-not (Test-Path -LiteralPath $pointer)) { throw 'candidate uninstall removed pre-existing pointer' }
-          if ((Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash -ne $pointerHash) { throw 'candidate uninstall modified existing pointer' }
-          if ((Get-FileHash -LiteralPath $starter -Algorithm SHA256).Hash -ne $starterHash) { throw 'candidate uninstall removed or modified existing stable starter' }
-          if ((Get-FileHash -LiteralPath $baselineRuntimeSentinel -Algorithm SHA256).Hash -ne $baselineRuntimeHash) { throw 'candidate uninstall removed or modified baseline runtime' }
-          if (Test-Path -LiteralPath $candidateRuntime) { throw 'candidate uninstall left candidate runtime staged' }
-          if (-not (Test-Path -LiteralPath $startupShortcut)) { throw 'candidate uninstall removed pre-existing Startup shortcut' }
-          if ((Get-FileHash -LiteralPath $startupShortcut -Algorithm SHA256).Hash -ne $baselineStartupHash) { throw 'candidate uninstall modified pre-existing Startup shortcut' }
-          if (-not (Test-Path -LiteralPath $baselineUninstaller.FullName)) { throw 'candidate uninstall removed baseline uninstaller' }
-
-          $postMenuLink = $shell.CreateShortcut($menuShortcut)
-          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$postMenuLink.TargetPath, $baselineMenuTarget)) {
-            throw 'candidate uninstall removed or replaced pre-existing Start Menu shortcut'
-          }
-
           if ((Get-FileHash -LiteralPath $env:P1B_MEMORY_SENTINEL -Algorithm SHA256).Hash -ne $env:P1B_MEMORY_HASH) {
-            throw 'existing-install flow mutated .continuityos memory sentinel'
+            throw 'same-app upgrade mutated .continuityos memory sentinel'
           }
 
-          $baselineUnProc = Start-Process -FilePath $baselineUninstaller.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -PassThru -Wait -WindowStyle Hidden
-          if ($baselineUnProc.ExitCode -ne 0) { throw "baseline cleanup uninstall failed rc=$($baselineUnProc.ExitCode)" }
-          if (Test-Path -LiteralPath $startupShortcut) { throw 'baseline-owned Startup shortcut remained after baseline uninstall' }
-          if (-not (Test-Path -LiteralPath $pointer)) { throw 'baseline cleanup removed manually pre-existing pointer' }
-          if ((Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash -ne $pointerHash) { throw 'baseline cleanup modified manually pre-existing pointer' }
+          $unProc = Start-Process -FilePath $candidateUninstallPath -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -PassThru -Wait -WindowStyle Hidden
+          if ($unProc.ExitCode -ne 0) { throw "same-app uninstall failed rc=$($unProc.ExitCode)" }
+
+          if ((Get-SovereignTwinArpEntries).Count -ne 0) { throw 'same-app ARP entry remained after unified uninstall' }
+          if (-not (Test-Path -LiteralPath $pointer)) { throw 'same-app uninstall removed manually pre-existing pointer' }
+          if ((Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash -ne $pointerHash) { throw 'same-app uninstall modified manually pre-existing pointer' }
+          if (Test-Path -LiteralPath $starter) { throw 'same-app uninstall left installer-owned stable starter' }
+          if (Test-Path -LiteralPath $baselineRuntime) { throw 'same-app uninstall left baseline installer-owned runtime' }
+          if (Test-Path -LiteralPath $candidateRuntime) { throw 'same-app uninstall left candidate installer-owned runtime' }
+          if (Test-Path -LiteralPath $startupShortcut) { throw 'same-app uninstall left installer-owned Startup shortcut' }
+          if (Test-Path -LiteralPath $menuShortcut) { throw 'same-app uninstall left installer-owned Start Menu shortcut' }
+          if ((Get-FileHash -LiteralPath $env:P1B_MEMORY_SENTINEL -Algorithm SHA256).Hash -ne $env:P1B_MEMORY_HASH) {
+            throw 'same-app uninstall mutated .continuityos memory sentinel'
+          }
 
           "P1B_PRESERVE_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Emit bounded P1B R2 validation summary
+      - name: Emit bounded P1B R3 validation summary
         shell: pwsh
         run: |
           @"
           {
-            "schema": "sovereign-twin.p1b-windows-ci-validation/v3",
+            "schema": "sovereign-twin.p1b-windows-ci-validation/v4",
             "os": "windows-latest",
             "architecture": "win-x64",
             "inno_setup": "7.1.0-x64",
@@ -468,12 +545,16 @@ jobs:
             "per_user_startup_shortcut": true,
             "startup_target_stable_starter": true,
             "startup_arguments": "--serve",
-            "pre_existing_startup_shortcut_preserved": true,
-            "existing_starter_preserved": true,
-            "existing_runtime_preserved": true,
-            "existing_start_menu_shortcut_preserved": true,
-            "isolated_uninstall_log": true,
-            "existing_runtime_source_preserved": true,
+            "same_app_arp_entry_count_after_upgrade": 1,
+            "same_app_arp_key_stable": true,
+            "stable_uninstall_directory": true,
+            "append_uninstall_log": true,
+            "pre_existing_binding_preserved_during_upgrade": true,
+            "pre_existing_startup_shortcut_preserved_during_upgrade": true,
+            "existing_starter_preserved_during_upgrade": true,
+            "existing_runtime_preserved_during_upgrade": true,
+            "unified_uninstall_removes_installer_owned_payload": true,
+            "manual_runtime_source_preserved_after_uninstall": true,
             "memory_mutated_by_installer": false,
             "pointer_switch_performed": false,
             "activation_performed": false,
@@ -487,20 +568,46 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'SilentlyContinue'
-          $startupShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\Sovereign Twin UI.lnk'
 
-          foreach ($rootName in @('p1b fresh install with spaces', 'p1b existing install safety')) {
+          function Get-SovereignTwinArpEntries {
+            $root = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+            if (-not (Test-Path -LiteralPath $root)) { return @() }
+            return @(
+              Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue |
+                ForEach-Object {
+                  $props = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue
+                  if ([string]$props.DisplayName -eq 'Sovereign Twin') {
+                    [pscustomobject]@{ Props = $props }
+                  }
+                }
+            )
+          }
+
+          function Get-UninstallerPath([string]$Command) {
+            if ($Command -match '^\s*"([^"]+)"') { return $Matches[1] }
+            if ($Command -match '^\s*(.+?\.exe)(?:\s|$)') { return $Matches[1].Trim('"') }
+            return $null
+          }
+
+          foreach ($entry in @(Get-SovereignTwinArpEntries)) {
+            $path = Get-UninstallerPath ([string]$entry.Props.UninstallString)
+            if ($path -and (Test-Path -LiteralPath $path)) {
+              Start-Process -FilePath $path -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
+            }
+          }
+
+          $startupShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\Sovereign Twin UI.lnk'
+          $menuShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Sovereign Twin\Sovereign Twin.lnk'
+          Remove-Item -LiteralPath $startupShortcut -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $menuShortcut -Force -ErrorAction SilentlyContinue
+
+          foreach ($rootName in @('p1b fresh install with spaces', 'p1b same app upgrade safety')) {
             $root = Join-Path $env:RUNNER_TEMP $rootName
             if (Test-Path -LiteralPath $root) {
-              Get-ChildItem -LiteralPath (Join-Path $root 'uninstall') -Filter 'unins*.exe' -File -Recurse -ErrorAction SilentlyContinue |
-                ForEach-Object {
-                  Start-Process -FilePath $_.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
-                }
               Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
             }
           }
 
-          Remove-Item -LiteralPath $startupShortcut -Force -ErrorAction SilentlyContinue
           if ($env:P1B_MEMORY_SENTINEL -and (Test-Path -LiteralPath $env:P1B_MEMORY_SENTINEL)) {
             Remove-Item -LiteralPath $env:P1B_MEMORY_SENTINEL -Force -ErrorAction SilentlyContinue
           }

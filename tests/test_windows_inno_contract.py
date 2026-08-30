@@ -46,10 +46,25 @@ def test_p1b_is_per_user_and_stages_only_immutable_runtime_payload():
     assert "createallsubdirs" in text
 
 
+def test_p1b_same_app_uninstall_identity_is_stable_and_append_only():
+    text = _installer_text()
+
+    assert "AppId=SovereignTwin.Windows" in text
+    assert "UninstallLogMode=append" in text
+    assert r"UninstallFilesDir={app}\uninstall" in text
+
+    uninstall_dir_line = next(
+        line for line in text.splitlines() if line.startswith("UninstallFilesDir=")
+    )
+    assert "{#RuntimeBuildId}" not in uninstall_dir_line
+    assert "UninstallDisplayName=Sovereign Twin" in text
+
+
 def test_p1b_autostart_is_current_user_startup_only_and_preserves_preexisting_shortcut():
     text = _installer_text()
     autostart_line = next(
-        line for line in text.splitlines()
+        line
+        for line in text.splitlines()
         if line.startswith('Name: "{userstartup}\\Sovereign Twin UI"')
     )
 
@@ -83,20 +98,21 @@ def test_p1b_autostart_uninstall_ownership_is_inno_logged_not_manual_global_clea
     assert "/Delete /F /TN" not in text
 
 
-def test_p1b_existing_install_files_and_uninstall_logs_are_isolated():
+def test_p1b_existing_install_entrypoints_are_preserved_during_same_app_upgrade():
     text = _installer_text()
 
-    assert "UninstallLogMode=new" in text
-    assert r"UninstallFilesDir={app}\uninstall\{#RuntimeBuildId}" in text
     starter_line = next(
         line for line in text.splitlines() if 'DestName: "SovereignTwin-Start.exe"' in line
     )
     assert "onlyifdoesntexist" in starter_line
 
     start_menu_line = next(
-        line for line in text.splitlines() if line.startswith('Name: "{group}\\Sovereign Twin"')
+        line
+        for line in text.splitlines()
+        if line.startswith('Name: "{group}\\Sovereign Twin"')
     )
     assert "Check: ShouldCreateStartMenuShortcut" in start_menu_line
+    assert "Check: ShouldCreateAutostartShortcut" in text
 
 
 def test_p1b_registers_only_stable_starter_entrypoints():
@@ -142,6 +158,7 @@ def test_p1b_uninstall_entry_present_without_p1c_or_manual_autostart_delete_sema
 
     assert "Uninstallable=yes" in text
     assert "CreateUninstallRegKey=yes" in text
-    assert r"UninstallFilesDir={app}\uninstall\{#RuntimeBuildId}" in text
+    assert "UninstallLogMode=append" in text
+    assert r"UninstallFilesDir={app}\uninstall" in text
     assert "CurUninstallStepChanged" not in text
     assert "DeleteFile(" not in text
