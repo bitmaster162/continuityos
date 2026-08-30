@@ -472,7 +472,7 @@ static wchar_t *port_to_wide(int port) {
 }
 
 int wmain(int argc, wchar_t **argv) {
-    if (argc != 2 || (wcscmp(argv[1], L"--serve") && wcscmp(argv[1], L"--open") && wcscmp(argv[1], L"--status")))
+    if (argc != 2 || (wcscmp(argv[1], L"--serve") && wcscmp(argv[1], L"--open") && wcscmp(argv[1], L"--status") && wcscmp(argv[1], L"--control-center")))
         return 120;
 
     wchar_t product_root[MAX_PATH * 4];
@@ -552,6 +552,21 @@ int wmain(int argc, wchar_t **argv) {
         free(python); free(twin); free(db); free(queue); free(llm); free(ui);
         free(fast); free(deep); free(embed); free(memory_manifest); free_pointer(&rp);
         return 130;
+    }
+
+    if (wcscmp(argv[1], L"--control-center") == 0) {
+        wchar_t *ccargs[16]; int ccac = 0;
+        ccargs[ccac++] = L"-B";
+        ccargs[ccac++] = L"-I";
+        ccargs[ccac++] = L"-m";
+        ccargs[ccac++] = L"continuityos.windows_control_center_entry";
+        ccargs[ccac++] = L"--runtime-root"; ccargs[ccac++] = product_root;
+        ccargs[ccac++] = L"--twin-url"; ccargs[ccac++] = ui;
+        ccargs[ccac++] = L"--lm-studio-url"; ccargs[ccac++] = llm;
+        int cc_rc = spawn(python_full, ccargs, ccac, python_root);
+        free(python); free(twin); free(db); free(queue); free(llm); free(ui);
+        free(fast); free(deep); free(embed); free(memory_manifest); free_pointer(&rp);
+        return cc_rc;
     }
 
     wchar_t *port = port_to_wide(ui_port);

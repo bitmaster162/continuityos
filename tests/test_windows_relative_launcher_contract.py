@@ -83,6 +83,15 @@ def test_stable_starter_strictly_binds_complete_v3_pointer():
     assert 'L"--serve"' in text
     assert 'L"--open"' in text
     assert 'L"--status"' in text
+    assert 'L"--control-center"' in text
+    assert 'L"continuityos.windows_control_center_entry"' in text
+    assert 'ccargs[ccac++] = L"-B"' in text
+    assert 'ccargs[ccac++] = L"-I"' in text
+    assert 'ccargs[ccac++] = L"-m"' in text
+    assert 'ccargs[ccac++] = L"--runtime-root"; ccargs[ccac++] = product_root;' in text
+    assert 'ccargs[ccac++] = L"--twin-url"; ccargs[ccac++] = ui;' in text
+    assert 'ccargs[ccac++] = L"--lm-studio-url"; ccargs[ccac++] = llm;' in text
+    assert "spawn(python_full, ccargs, ccac, python_root)" in text
     assert "CreateProcessW" in text
 
     assert "powershell" not in text.lower()

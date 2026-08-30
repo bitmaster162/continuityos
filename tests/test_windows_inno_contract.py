@@ -137,20 +137,38 @@ def test_p1b_existing_install_entrypoints_are_preserved_during_same_app_upgrade(
     start_menu_line = next(
         line
         for line in text.splitlines()
-        if line.startswith('Name: "{group}\\Sovereign Twin"')
+        if line.startswith('Name: "{group}\\Sovereign Twin";')
+    )
+    control_center_line = next(
+        line
+        for line in text.splitlines()
+        if line.startswith('Name: "{group}\\Sovereign Twin Control Center"')
     )
     assert "Check: ShouldCreateStartMenuShortcut" in start_menu_line
+    assert "Check: ShouldCreateControlCenterShortcut" in control_center_line
     assert "Check: ShouldCreateAutostartShortcut" in text
+    assert "function ShouldCreateControlCenterShortcut: Boolean;" in text
+    assert "Preserving pre-existing Control Center shortcut" in text
 
 
 def test_p1b_registers_only_stable_starter_entrypoints():
     text = _installer_text()
     icon_lines = [line for line in text.splitlines() if line.startswith("Name: ")]
 
-    assert len(icon_lines) == 2
+    assert len(icon_lines) == 3
     assert all('Filename: "{app}\\SovereignTwin-Start.exe"' in line for line in icon_lines)
     assert any('Parameters: "--serve"' in line for line in icon_lines)
     assert any('Parameters: "--open"' in line for line in icon_lines)
+    assert any('Parameters: "--control-center"' in line for line in icon_lines)
+
+    control_center_line = next(
+        line for line in icon_lines if 'Parameters: "--control-center"' in line
+    )
+    assert control_center_line.startswith(
+        'Name: "{group}\\Sovereign Twin Control Center"'
+    )
+    assert "{userstartup}" not in control_center_line
+    assert "Check: ShouldCreateControlCenterShortcut" in control_center_line
 
 
 def test_p1c_activation_is_opt_in_and_delegated_to_packaged_python():
