@@ -43,6 +43,7 @@ Start here:
   status                   read-only product health and continuity status
   demo continuity          prove fresh-process continuity on an isolated temporary DB
   boot                     offline handoff + doctor; --check-updates opts into PyPI
+  backup                   create a local quiescent memory snapshot; no restore
 
 Core memory:
   remember | find | recall | namespaces | extract
@@ -62,6 +63,7 @@ Useful commands:
   cos demo continuity --json
   cos boot
   cos boot --check-updates
+  cos backup --json
   cos --version
 
 Product commands are routed through the same current-session containment boundary as
@@ -257,6 +259,10 @@ def _boot_args(args: Sequence[str]) -> list[str]:
     return _product_args(args, "boot")
 
 
+def _backup_args(args: Sequence[str]) -> list[str]:
+    return _product_args(args, "backup")
+
+
 def _help_main(argv: Sequence[str] | None = None) -> int:
     print(PRODUCT_HELP.rstrip())
     return 0
@@ -362,6 +368,13 @@ def cos_main(argv: Sequence[str] | None = None) -> int:
 
             def routed(passed: Sequence[str] | None = None) -> int:
                 return int(boot_main(_boot_args(_args(passed))) or 0)
+
+            return routed
+        if command == "backup":
+            from .memory_backup import main as backup_main
+
+            def routed(passed: Sequence[str] | None = None) -> int:
+                return int(backup_main(_backup_args(_args(passed))) or 0)
 
             return routed
         return _legacy_cos_loader(command)
