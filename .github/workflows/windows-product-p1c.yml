@@ -499,6 +499,9 @@ jobs:
             --pointer $pointer `
             --starter $failStarter 2>&1 | Out-String
           $rc = $LASTEXITCODE
+          Write-Host "P1C forced rollback helper rc=$rc"
+          Write-Host 'P1C forced rollback helper output:'
+          $out | Write-Host
           if ($rc -eq 0) { throw "forced postbind failure unexpectedly succeeded: $out" }
 
           if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($pointer)) -ne [string]$baseline.pointer_b64) {
@@ -518,6 +521,8 @@ jobs:
           if ($txns.Count -ne 1) { throw "expected one rollback transaction receipt, found $($txns.Count)" }
           $resultPath = Join-Path $txns[0].FullName 'result.json'
           $backup = Join-Path $txns[0].FullName 'before.runtime-source.json'
+          Write-Host "P1C forced rollback result.json: $resultPath"
+          Get-Content -LiteralPath $resultPath -Raw -Encoding utf8 | Write-Host
           $result = Get-Content -LiteralPath $resultPath -Raw -Encoding utf8 | ConvertFrom-Json
           if ([bool]$result.ok) { throw 'failure receipt unexpectedly reports ok=true' }
           if (-not [bool]$result.pointer_switch_performed) { throw 'failure case did not reach pointer switch' }
