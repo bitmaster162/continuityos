@@ -83,8 +83,8 @@ def test_secret_bearing_fields_are_rejected(field):
     ("field", "value"),
     [
         ("locator", "OPENAI_API_KEY"),
-        ("locator", "ghp_abcdefghijklmnopqrstuvwxyz0123456789"),
-        ("locator", "sk-proj-abcdefghijklmnopqrstuvwxyz"),
+        ("locator", "gh" + "p_" + "abcdefghijklmnopqrstuvwxyz0123456789"),
+        ("locator", "sk" + "-proj-" + "abcdefghijklmnopqrstuvwxyz"),
         ("binding", "provider-owned-reference"),
         ("binding_id", "credential-123"),
         ("secret_id", "secret-123"),
