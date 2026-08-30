@@ -56,6 +56,15 @@ def test_p1b_registers_only_stable_starter_entrypoints():
     assert 'Parameters: "--open"' in text
 
 
+def test_p1b_schtasks_command_does_not_persist_literal_quote_characters_in_execute():
+    text = _installer_text()
+
+    create_block = text[text.index("procedure CreateAutostartTask;"):text.index("procedure DeleteAutostartTask;")]
+    assert "'\" /TR \"' + Starter + ' --serve\"';" in create_block
+    assert "\\\"' + Starter" not in create_block
+    assert "Starter + '\\\"" not in create_block
+
+
 def test_p1b_has_no_pointer_activation_or_memory_runtime_mutation_logic():
     text = _installer_text()
     lower = text.lower()
