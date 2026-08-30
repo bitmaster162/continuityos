@@ -144,7 +144,11 @@ def test_public_identifiers_are_caller_responsible_and_may_echo_token_shaped_tex
     }
     assert vsr.PUBLIC_IDENTIFIER_POLICY == "PUBLIC_NON_SENSITIVE_CALLER_RESPONSIBILITY"
     assert receipt["effects"]["secret_value_field_accepted"] is False
+    assert receipt["effects"]["dedicated_secret_value_read"] is False
+    assert receipt["effects"]["dedicated_secret_value_stored"] is False
     assert "secret_value_accepted" not in receipt["effects"]
+    assert "secret_value_read" not in receipt["effects"]
+    assert "secret_value_stored" not in receipt["effects"]
     assert receipt["dedicated_secret_value_present"] is False
     assert "secret_value_present" not in receipt
     assert receipt["redaction"]["secret_values"] == "NO_SECRET_VALUE_FIELDS_ACCEPTED"
