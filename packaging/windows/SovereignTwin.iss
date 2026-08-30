@@ -96,7 +96,7 @@ begin
   RuntimeRootPath := ExpandConstant('{app}\runtimes\{#RuntimeBuildId}');
   PythonExe := RuntimeRootPath + '\python.exe';
   StarterPath := ExpandConstant('{app}\SovereignTwin-Start.exe');
-  Params := '-B -I -m continuityos.windows_product_transaction activate' +
+  Params := '-B -I -m continuityos.windows_product_transaction --p1c-write activate' +
     ' --runtime-root "' + RuntimeRootPath + '"' +
     ' --pointer "' + PointerPath + '"' +
     ' --starter "' + StarterPath + '"';
