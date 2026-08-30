@@ -265,7 +265,8 @@ jobs:
           $runtimes = Join-Path $Root 'runtimes'
           New-Item -ItemType Directory -Path $runtimes -Force | Out-Null
           $runtime = Join-Path $runtimes $RuntimeBuildId
-          Copy-Item -LiteralPath $RuntimeSource -Destination $runtime -Recurse -Force
+          New-Item -ItemType Directory -Path $runtime -Force | Out-Null
+          Get-ChildItem -LiteralPath $RuntimeSource -Force | Copy-Item -Destination $runtime -Recurse -Force
           $starter = Join-Path $Root 'SovereignTwin-Start.exe'
           Copy-Item -LiteralPath $StarterSource -Destination $starter -Force
 
@@ -363,20 +364,27 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'failed to create success baseline' }
           $baseline = ($baselineJson | Select-Object -Last 1) | ConvertFrom-Json
           $pointer = [string]$baseline.pointer
-          $oldBytes = [Convert]::FromBase64String([string]$baseline.pointer_b64)
 
+          $installLog = Join-Path $env:RUNNER_TEMP 'p1c-success-install.log'
           $args = @(
             '/VERYSILENT',
             '/SUPPRESSMSGBOXES',
             '/NORESTART',
             '/SP-',
-            ('/DIR="' + $root + '"')
+            ('/DIR="' + $root + '"'),
+            ('/LOG="' + $installLog + '"')
           )
           $proc = Start-Process -FilePath $env:P1C_SETUP -ArgumentList $args -PassThru -Wait -WindowStyle Hidden
-          if ($proc.ExitCode -ne 0) { throw "P1C setup failed rc=$($proc.ExitCode)" }
+          if ($proc.ExitCode -ne 0) {
+            if (Test-Path -LiteralPath $installLog) { Get-Content -LiteralPath $installLog | Out-Host }
+            throw "P1C setup failed rc=$($proc.ExitCode)"
+          }
 
           $obj = Get-Content -LiteralPath $pointer -Raw -Encoding utf8 | ConvertFrom-Json
-          if ([string]$obj.source_sha -ne '${{ github.event.pull_request.head.sha }}') { throw 'pointer source_sha did not switch to candidate' }
+          if ([string]$obj.source_sha -ne '${{ github.event.pull_request.head.sha }}') {
+            if (Test-Path -LiteralPath $installLog) { Get-Content -LiteralPath $installLog | Out-Host }
+            throw 'pointer source_sha did not switch to candidate'
+          }
           $candidateRoot = Join-Path (Join-Path $root 'runtimes') $env:P1C_CANDIDATE_BUILD_ID
           $expectedPy = [System.IO.Path]::GetFullPath((Join-Path $candidateRoot 'python.exe'))
           $expectedTwin = [System.IO.Path]::GetFullPath((Join-Path $candidateRoot 'Scripts\sovereign-twin.exe'))
@@ -478,10 +486,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'failed to create rollback baseline' }
           $baseline = ($baselineJson | Select-Object -Last 1) | ConvertFrom-Json
           $pointer = [string]$baseline.pointer
-          $oldBytes = [Convert]::FromBase64String([string]$baseline.pointer_b64)
 
           $candidateRoot = Join-Path (Join-Path $root 'runtimes') $env:P1C_CANDIDATE_BUILD_ID
-          Copy-Item -LiteralPath $env:P1C_CANDIDATE_RUNTIME -Destination $candidateRoot -Recurse -Force
+          New-Item -ItemType Directory -Path $candidateRoot -Force | Out-Null
+          Get-ChildItem -LiteralPath $env:P1C_CANDIDATE_RUNTIME -Force | Copy-Item -Destination $candidateRoot -Recurse -Force
           $failStarter = Join-Path $root 'p1c-fail-starter.exe'
           Copy-Item -LiteralPath $env:P1C_FAIL_STARTER -Destination $failStarter -Force
 
