@@ -46,43 +46,41 @@ def test_p1b_is_per_user_and_stages_only_immutable_runtime_payload():
     assert "createallsubdirs" in text
 
 
-def test_p1b_autostart_is_bound_to_current_user_without_password_or_global_overwrite():
+def test_p1b_autostart_is_current_user_startup_only_and_preserves_preexisting_shortcut():
     text = _installer_text()
-    create_block = text[
-        text.index("procedure CreateAutostartTask;"):
-        text.index("procedure DeleteOwnedAutostartTask;")
-    ]
+    autostart_line = next(
+        line for line in text.splitlines()
+        if line.startswith('Name: "{userstartup}\\Sovereign Twin UI"')
+    )
 
-    assert "GetUserNameString" in text
-    assert "GetEnv('USERDOMAIN')" in text
-    assert "GetSHA256OfUnicodeString(UpperCase(CurrentUserIdentity))" in text
-    assert "Result := 'SovereignTwin-UI-' + Copy(IdentityHash, 1, 16);" in text
-    assert "<LogonTrigger>" in text
-    assert "<UserId>" in text
-    assert "<LogonType>InteractiveToken</LogonType>" in text
-    assert "<RunLevel>LeastPrivilege</RunLevel>" in text
-    assert '/Create /TN "' in create_block
-    assert ' /XML "' in create_block
-    assert "/SC ONLOGON" not in create_block
-    assert "/RU " not in create_block
-    assert "/RP " not in create_block
-    assert "/Create /F" not in create_block
-    assert "TaskExists(TaskName)" in create_block
-    assert "Preserving pre-existing per-user SovereignTwin-UI task" in create_block
+    assert 'Filename: "{app}\\SovereignTwin-Start.exe"' in autostart_line
+    assert 'Parameters: "--serve"' in autostart_line
+    assert 'WorkingDir: "{app}"' in autostart_line
+    assert "Check: ShouldCreateAutostartShortcut" in autostart_line
+    assert "function ShouldCreateAutostartShortcut: Boolean;" in text
+    assert (
+        "Result := not FileExists(ExpandConstant("
+        "'{userstartup}\\Sovereign Twin UI.lnk'));"
+    ) in text
+    assert "Preserving pre-existing per-user Startup shortcut" in text
+
+    lower = text.lower()
+    assert "schtasks.exe" not in lower
+    assert "<logontrigger>" not in lower
+    assert "interactivetoken" not in lower
+    assert "/ru " not in lower
+    assert "/rp " not in lower
 
 
-def test_p1b_autostart_ownership_is_build_scoped_and_uninstall_is_non_destructive():
+def test_p1b_autostart_uninstall_ownership_is_inno_logged_not_manual_global_cleanup():
     text = _installer_text()
-    delete_block = text[
-        text.index("procedure DeleteOwnedAutostartTask;"):
-        text.index("function ShouldCreateStartMenuShortcut")
-    ]
 
-    assert r"{app}\installer-state\{#RuntimeBuildId}.task-owned" in text
-    assert "if not FileExists(Marker) then" in delete_block
-    assert "preserving pre-existing SovereignTwin-UI task" in delete_block
-    assert '/Delete /F /TN "' in delete_block
-    assert "DeleteOwnedAutostartTask" in text
+    assert r"{userstartup}\Sovereign Twin UI" in text
+    assert "ShouldCreateAutostartShortcut" in text
+    assert "installer-state" not in text
+    assert "DeleteOwnedAutostartTask" not in text
+    assert "CurUninstallStepChanged" not in text
+    assert "/Delete /F /TN" not in text
 
 
 def test_p1b_existing_install_files_and_uninstall_logs_are_isolated():
@@ -94,20 +92,21 @@ def test_p1b_existing_install_files_and_uninstall_logs_are_isolated():
         line for line in text.splitlines() if 'DestName: "SovereignTwin-Start.exe"' in line
     )
     assert "onlyifdoesntexist" in starter_line
-    icon_line = next(
+
+    start_menu_line = next(
         line for line in text.splitlines() if line.startswith('Name: "{group}\\Sovereign Twin"')
     )
-    assert "Check: ShouldCreateStartMenuShortcut" in icon_line
+    assert "Check: ShouldCreateStartMenuShortcut" in start_menu_line
 
 
 def test_p1b_registers_only_stable_starter_entrypoints():
     text = _installer_text()
+    icon_lines = [line for line in text.splitlines() if line.startswith("Name: ")]
 
-    assert r"{sys}\schtasks.exe" in text
-    assert "<Arguments>--serve</Arguments>" in text
-    assert "[Icons]" in text
-    assert 'Filename: "{app}\\SovereignTwin-Start.exe"' in text
-    assert 'Parameters: "--open"' in text
+    assert len(icon_lines) == 2
+    assert all('Filename: "{app}\\SovereignTwin-Start.exe"' in line for line in icon_lines)
+    assert any('Parameters: "--serve"' in line for line in icon_lines)
+    assert any('Parameters: "--open"' in line for line in icon_lines)
 
 
 def test_p1b_has_no_pointer_activation_or_memory_runtime_mutation_logic():
@@ -138,11 +137,11 @@ def test_p1b_has_no_pointer_activation_or_memory_runtime_mutation_logic():
     assert "Start-Process" not in text
 
 
-def test_p1b_uninstall_entry_and_owned_task_cleanup_are_present_without_p1d_semantics():
+def test_p1b_uninstall_entry_present_without_p1c_or_manual_autostart_delete_semantics():
     text = _installer_text()
 
     assert "Uninstallable=yes" in text
     assert "CreateUninstallRegKey=yes" in text
-    assert "procedure DeleteOwnedAutostartTask;" in text
-    assert "procedure CurUninstallStepChanged" in text
-    assert "CurUninstallStep = usUninstall" in text
+    assert r"UninstallFilesDir={app}\uninstall\{#RuntimeBuildId}" in text
+    assert "CurUninstallStepChanged" not in text
+    assert "DeleteFile(" not in text

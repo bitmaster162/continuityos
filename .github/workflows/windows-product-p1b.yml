@@ -162,8 +162,8 @@ jobs:
             '/NORESTART',
             '/SP-',
             '/CURRENTUSER',
-            "/DIR=$innoRoot",
-            "/LOG=$innoLog"
+            ('/DIR="' + $innoRoot + '"'),
+            ('/LOG="' + $innoLog + '"')
           )
           $proc = Start-Process -FilePath $asset -ArgumentList $installerArgs -PassThru -Wait -WindowStyle Hidden
           if ($proc.ExitCode -ne 0) {
@@ -230,13 +230,12 @@ jobs:
           "P1B_BASELINE_SETUP=$($baseline[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "P1B_BASELINE_STARTER=$baselineStarter" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Fresh install proves per-user task binding and staging-only state
+      - name: Fresh install proves per-user Startup binding and staging-only state
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          Get-ScheduledTask -ErrorAction SilentlyContinue |
-            Where-Object { $_.TaskName -like 'SovereignTwin-UI-*' } |
-            Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
+          $startupShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\Sovereign Twin UI.lnk'
+          Remove-Item -LiteralPath $startupShortcut -Force -ErrorAction SilentlyContinue
 
           $freshRoot = Join-Path $env:RUNNER_TEMP 'p1b fresh install with spaces'
           $installLog = Join-Path $env:RUNNER_TEMP 'p1b-fresh-install.log'
@@ -287,37 +286,24 @@ jobs:
           if (-not $stage.ok -or $stage.live.present) { throw 'fresh installed runtime did not validate with absent live pointer' }
           if ($stage.execution_authority -ne 'NONE' -or [bool]$stage.can_execute) { throw 'installed runtime authority boundary changed' }
 
-          $tasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskName -like 'SovereignTwin-UI-*' })
-          if ($tasks.Count -ne 1) { throw "expected exactly one per-user task, found $($tasks.Count)" }
-          $task = $tasks[0]
-          if ($task.TaskName -eq 'SovereignTwin-UI') { throw 'global legacy task name was used' }
-
-          $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-          $allowedIds = @($identity.Name, $identity.User.Value)
-          if ($allowedIds -notcontains [string]$task.Principal.UserId) {
-            throw "task principal is not current user: $($task.Principal.UserId)"
-          }
-          if ($task.Triggers.Count -ne 1) { throw 'per-user task must have exactly one logon trigger' }
-          if ($allowedIds -notcontains [string]$task.Triggers[0].UserId) {
-            throw "logon trigger is not scoped to current user: $($task.Triggers[0].UserId)"
-          }
-          if ($task.Actions.Count -ne 1) { throw 'per-user task must have exactly one action' }
-          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$task.Actions[0].Execute, $installedStarter)) {
-            throw "task executable mismatch: $($task.Actions[0].Execute)"
-          }
-          if ([string]$task.Actions[0].Arguments -ne '--serve') { throw "task arguments mismatch: $($task.Actions[0].Arguments)" }
-
-          $markers = @(Get-ChildItem -LiteralPath (Join-Path $freshRoot 'installer-state') -Filter '*.task-owned' -File)
-          if ($markers.Count -ne 1) { throw "fresh install expected one task ownership marker, found $($markers.Count)" }
-
-          $shortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Sovereign Twin\Sovereign Twin.lnk'
-          if (-not (Test-Path -LiteralPath $shortcut)) { throw "Start Menu shortcut missing: $shortcut" }
+          if (-not (Test-Path -LiteralPath $startupShortcut)) { throw "per-user Startup shortcut missing: $startupShortcut" }
           $shell = New-Object -ComObject WScript.Shell
-          $link = $shell.CreateShortcut($shortcut)
-          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$link.TargetPath, $installedStarter)) {
-            throw "shortcut target mismatch: $($link.TargetPath)"
+          $startupLink = $shell.CreateShortcut($startupShortcut)
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$startupLink.TargetPath, $installedStarter)) {
+            throw "Startup shortcut target mismatch: $($startupLink.TargetPath)"
           }
-          if ([string]$link.Arguments -ne '--open') { throw "shortcut arguments mismatch: $($link.Arguments)" }
+          if ([string]$startupLink.Arguments -ne '--serve') { throw "Startup shortcut arguments mismatch: $($startupLink.Arguments)" }
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$startupLink.WorkingDirectory, $freshRoot)) {
+            throw "Startup shortcut working directory mismatch: $($startupLink.WorkingDirectory)"
+          }
+
+          $menuShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Sovereign Twin\Sovereign Twin.lnk'
+          if (-not (Test-Path -LiteralPath $menuShortcut)) { throw "Start Menu shortcut missing: $menuShortcut" }
+          $menuLink = $shell.CreateShortcut($menuShortcut)
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$menuLink.TargetPath, $installedStarter)) {
+            throw "Start Menu shortcut target mismatch: $($menuLink.TargetPath)"
+          }
+          if ([string]$menuLink.Arguments -ne '--open') { throw "Start Menu shortcut arguments mismatch: $($menuLink.Arguments)" }
 
           if ((Get-FileHash -LiteralPath $memorySentinel -Algorithm SHA256).Hash -ne $memoryHashBefore) {
             throw 'fresh installer mutated .continuityos memory sentinel'
@@ -328,7 +314,7 @@ jobs:
           if (-not $uninstaller) { throw 'fresh candidate uninstaller missing' }
           $unProc = Start-Process -FilePath $uninstaller.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -PassThru -Wait -WindowStyle Hidden
           if ($unProc.ExitCode -ne 0) { throw "fresh uninstall failed rc=$($unProc.ExitCode)" }
-          if (Get-ScheduledTask -TaskName $task.TaskName -ErrorAction SilentlyContinue) { throw 'fresh owned task remained after uninstall' }
+          if (Test-Path -LiteralPath $startupShortcut) { throw 'fresh installer-owned Startup shortcut remained after uninstall' }
           if ((Get-FileHash -LiteralPath $memorySentinel -Algorithm SHA256).Hash -ne $memoryHashBefore) {
             throw 'fresh uninstall mutated .continuityos memory sentinel'
           }
@@ -340,9 +326,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          Get-ScheduledTask -ErrorAction SilentlyContinue |
-            Where-Object { $_.TaskName -like 'SovereignTwin-UI-*' } |
-            Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
+          $startupShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\Sovereign Twin UI.lnk'
+          Remove-Item -LiteralPath $startupShortcut -Force -ErrorAction SilentlyContinue
 
           $root = Join-Path $env:RUNNER_TEMP 'p1b existing install safety'
           $baselineLog = Join-Path $env:RUNNER_TEMP 'p1b-baseline-install.log'
@@ -376,17 +361,22 @@ jobs:
           if (-not (Test-Path -LiteralPath $baselineRuntimeSentinel)) { throw 'baseline runtime sentinel missing' }
           $baselineRuntimeHash = (Get-FileHash -LiteralPath $baselineRuntimeSentinel -Algorithm SHA256).Hash
 
-          $tasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskName -like 'SovereignTwin-UI-*' })
-          if ($tasks.Count -ne 1) { throw "baseline expected exactly one per-user task, found $($tasks.Count)" }
-          $taskName = $tasks[0].TaskName
-          $taskXmlBefore = Export-ScheduledTask -TaskName $taskName
-          $baselineMarker = Join-Path $root 'installer-state\baseline-p1b-r2.task-owned'
-          if (-not (Test-Path -LiteralPath $baselineMarker)) { throw 'baseline task ownership marker missing' }
-
-          $shortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Sovereign Twin\Sovereign Twin.lnk'
+          if (-not (Test-Path -LiteralPath $startupShortcut)) { throw 'baseline per-user Startup shortcut missing' }
           $shell = New-Object -ComObject WScript.Shell
-          $baselineLink = $shell.CreateShortcut($shortcut)
-          $baselineShortcutTarget = [string]$baselineLink.TargetPath
+          $baselineStartupLink = $shell.CreateShortcut($startupShortcut)
+          $baselineStartupTarget = [string]$baselineStartupLink.TargetPath
+          $baselineStartupArgs = [string]$baselineStartupLink.Arguments
+          $baselineStartupWorkDir = [string]$baselineStartupLink.WorkingDirectory
+          $baselineStartupHash = (Get-FileHash -LiteralPath $startupShortcut -Algorithm SHA256).Hash
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals($baselineStartupTarget, $starter)) {
+            throw 'baseline Startup shortcut target mismatch'
+          }
+          if ($baselineStartupArgs -ne '--serve') { throw 'baseline Startup shortcut arguments mismatch' }
+
+          $menuShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Sovereign Twin\Sovereign Twin.lnk'
+          if (-not (Test-Path -LiteralPath $menuShortcut)) { throw 'baseline Start Menu shortcut missing' }
+          $baselineMenuLink = $shell.CreateShortcut($menuShortcut)
+          $baselineMenuTarget = [string]$baselineMenuLink.TargetPath
 
           $baselineUninstallDir = Join-Path $root 'uninstall\baseline-p1b-r2'
           $baselineUninstaller = Get-ChildItem -LiteralPath $baselineUninstallDir -Filter 'unins*.exe' -File | Select-Object -First 1
@@ -409,16 +399,24 @@ jobs:
           if ((Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash -ne $pointerHash) { throw 'candidate install modified existing pointer' }
           if ((Get-FileHash -LiteralPath $starter -Algorithm SHA256).Hash -ne $starterHash) { throw 'candidate install replaced existing stable starter' }
           if ((Get-FileHash -LiteralPath $baselineRuntimeSentinel -Algorithm SHA256).Hash -ne $baselineRuntimeHash) { throw 'candidate install modified baseline runtime' }
-          if ((Export-ScheduledTask -TaskName $taskName) -ne $taskXmlBefore) { throw 'candidate install replaced or modified pre-existing task' }
+          if ((Get-FileHash -LiteralPath $startupShortcut -Algorithm SHA256).Hash -ne $baselineStartupHash) { throw 'candidate install replaced pre-existing Startup shortcut' }
 
-          $candidateMarker = Join-Path (Join-Path $root 'installer-state') "$env:P1B_RUNTIME_BUILD_ID.task-owned"
-          if (Test-Path -LiteralPath $candidateMarker) { throw 'candidate claimed ownership of pre-existing per-user task' }
+          $candidateStartupLink = $shell.CreateShortcut($startupShortcut)
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$candidateStartupLink.TargetPath, $baselineStartupTarget)) {
+            throw 'candidate install changed pre-existing Startup shortcut target'
+          }
+          if ([string]$candidateStartupLink.Arguments -ne $baselineStartupArgs) {
+            throw 'candidate install changed pre-existing Startup shortcut arguments'
+          }
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$candidateStartupLink.WorkingDirectory, $baselineStartupWorkDir)) {
+            throw 'candidate install changed pre-existing Startup shortcut working directory'
+          }
 
           $candidateRuntime = Join-Path (Join-Path $root 'runtimes') $env:P1B_RUNTIME_BUILD_ID
           if (-not (Test-Path -LiteralPath (Join-Path $candidateRuntime 'python.exe'))) { throw 'candidate runtime was not staged' }
 
-          $candidateLink = $shell.CreateShortcut($shortcut)
-          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$candidateLink.TargetPath, $baselineShortcutTarget)) {
+          $candidateMenuLink = $shell.CreateShortcut($menuShortcut)
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$candidateMenuLink.TargetPath, $baselineMenuTarget)) {
             throw 'candidate install replaced pre-existing Start Menu shortcut'
           }
 
@@ -433,13 +431,13 @@ jobs:
           if ((Get-FileHash -LiteralPath $starter -Algorithm SHA256).Hash -ne $starterHash) { throw 'candidate uninstall removed or modified existing stable starter' }
           if ((Get-FileHash -LiteralPath $baselineRuntimeSentinel -Algorithm SHA256).Hash -ne $baselineRuntimeHash) { throw 'candidate uninstall removed or modified baseline runtime' }
           if (Test-Path -LiteralPath $candidateRuntime) { throw 'candidate uninstall left candidate runtime staged' }
-          if (-not (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)) { throw 'candidate uninstall removed pre-existing per-user task' }
-          if ((Export-ScheduledTask -TaskName $taskName) -ne $taskXmlBefore) { throw 'candidate uninstall modified pre-existing task' }
+          if (-not (Test-Path -LiteralPath $startupShortcut)) { throw 'candidate uninstall removed pre-existing Startup shortcut' }
+          if ((Get-FileHash -LiteralPath $startupShortcut -Algorithm SHA256).Hash -ne $baselineStartupHash) { throw 'candidate uninstall modified pre-existing Startup shortcut' }
           if (-not (Test-Path -LiteralPath $baselineUninstaller.FullName)) { throw 'candidate uninstall removed baseline uninstaller' }
 
-          $postLink = $shell.CreateShortcut($shortcut)
-          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$postLink.TargetPath, $baselineShortcutTarget)) {
-            throw 'candidate uninstall removed or replaced pre-existing shortcut'
+          $postMenuLink = $shell.CreateShortcut($menuShortcut)
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$postMenuLink.TargetPath, $baselineMenuTarget)) {
+            throw 'candidate uninstall removed or replaced pre-existing Start Menu shortcut'
           }
 
           if ((Get-FileHash -LiteralPath $env:P1B_MEMORY_SENTINEL -Algorithm SHA256).Hash -ne $env:P1B_MEMORY_HASH) {
@@ -448,7 +446,7 @@ jobs:
 
           $baselineUnProc = Start-Process -FilePath $baselineUninstaller.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -PassThru -Wait -WindowStyle Hidden
           if ($baselineUnProc.ExitCode -ne 0) { throw "baseline cleanup uninstall failed rc=$($baselineUnProc.ExitCode)" }
-          if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) { throw 'baseline-owned task remained after baseline uninstall' }
+          if (Test-Path -LiteralPath $startupShortcut) { throw 'baseline-owned Startup shortcut remained after baseline uninstall' }
           if (-not (Test-Path -LiteralPath $pointer)) { throw 'baseline cleanup removed manually pre-existing pointer' }
           if ((Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash -ne $pointerHash) { throw 'baseline cleanup modified manually pre-existing pointer' }
 
@@ -459,7 +457,7 @@ jobs:
         run: |
           @"
           {
-            "schema": "sovereign-twin.p1b-windows-ci-validation/v2",
+            "schema": "sovereign-twin.p1b-windows-ci-validation/v3",
             "os": "windows-latest",
             "architecture": "win-x64",
             "inno_setup": "7.1.0-x64",
@@ -467,13 +465,13 @@ jobs:
             "system_python_required_by_installer": false,
             "immutable_runtime_stage": "PASS",
             "fresh_runtime_source_present": false,
-            "per_user_task_name": true,
-            "per_user_logon_trigger": true,
-            "interactive_token_least_privilege": true,
-            "pre_existing_task_preserved": true,
+            "per_user_startup_shortcut": true,
+            "startup_target_stable_starter": true,
+            "startup_arguments": "--serve",
+            "pre_existing_startup_shortcut_preserved": true,
             "existing_starter_preserved": true,
             "existing_runtime_preserved": true,
-            "existing_shortcut_preserved": true,
+            "existing_start_menu_shortcut_preserved": true,
             "isolated_uninstall_log": true,
             "existing_runtime_source_preserved": true,
             "memory_mutated_by_installer": false,
@@ -489,9 +487,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'SilentlyContinue'
-          Get-ScheduledTask -ErrorAction SilentlyContinue |
-            Where-Object { $_.TaskName -like 'SovereignTwin-UI-*' } |
-            Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
+          $startupShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\Sovereign Twin UI.lnk'
 
           foreach ($rootName in @('p1b fresh install with spaces', 'p1b existing install safety')) {
             $root = Join-Path $env:RUNNER_TEMP $rootName
@@ -503,6 +499,8 @@ jobs:
               Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
             }
           }
+
+          Remove-Item -LiteralPath $startupShortcut -Force -ErrorAction SilentlyContinue
           if ($env:P1B_MEMORY_SENTINEL -and (Test-Path -LiteralPath $env:P1B_MEMORY_SENTINEL)) {
             Remove-Item -LiteralPath $env:P1B_MEMORY_SENTINEL -Force -ErrorAction SilentlyContinue
           }
