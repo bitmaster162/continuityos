@@ -24,7 +24,7 @@ def test_unbound_reference_is_metadata_only_and_preserves_none_false_authority()
     assert receipt["binding_present"] is False
     assert receipt["binding_authorized"] is False
     assert receipt["readiness"] == "PROVIDER_UNBOUND"
-    assert receipt["secret_value_present"] is False
+    assert receipt["dedicated_secret_value_present"] is False
     assert receipt["live_secret_access_available"] is False
     assert receipt["execution_authority"] == "NONE"
     assert receipt["can_execute"] is False
@@ -128,6 +128,29 @@ def test_provider_classes_never_imply_a_binding():
         assert receipt["redaction"]["binding_locators"] == "NOT_ACCEPTED_IN_METADATA_ONLY_V1"
 
 
+def test_public_identifiers_are_caller_responsible_and_may_echo_token_shaped_text():
+    token_shaped = "sk" + "-proj-" + "abcdefghijklmnopqrstuvwxyz"
+    receipt = vsr.build_secret_reference(
+        reference_id=token_shaped,
+        provider="unbound",
+        purpose_id=token_shaped,
+    )
+
+    assert receipt["reference_id"] == token_shaped
+    assert receipt["purpose_id"] == token_shaped
+    assert receipt["identifier_policy"] == {
+        "reference_id": vsr.PUBLIC_IDENTIFIER_POLICY,
+        "purpose_id": vsr.PUBLIC_IDENTIFIER_POLICY,
+    }
+    assert vsr.PUBLIC_IDENTIFIER_POLICY == "PUBLIC_NON_SENSITIVE_CALLER_RESPONSIBILITY"
+    assert receipt["effects"]["secret_value_field_accepted"] is False
+    assert "secret_value_accepted" not in receipt["effects"]
+    assert receipt["dedicated_secret_value_present"] is False
+    assert "secret_value_present" not in receipt
+    assert receipt["redaction"]["secret_values"] == "NO_SECRET_VALUE_FIELDS_ACCEPTED"
+    assert token_shaped in json.dumps(receipt, sort_keys=True)
+
+
 def test_validation_is_strict_and_canonical_json_is_stable_without_binding_locator():
     payload = {
         "schema": vsr.SCHEMA,
@@ -147,7 +170,7 @@ def test_validation_is_strict_and_canonical_json_is_stable_without_binding_locat
     assert "locator" not in decoded
     assert decoded["binding_present"] is False
     assert decoded["binding_authorized"] is False
-    assert decoded["secret_value_present"] is False
+    assert decoded["dedicated_secret_value_present"] is False
     assert decoded["live_secret_access_available"] is False
 
     with pytest.raises(vsr.SecretReferenceError, match="UNEXPECTED_FIELD"):
