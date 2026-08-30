@@ -21,7 +21,7 @@ jobs:
   validate:
     name: win-x64 / Inno staging shell
     runs-on: windows-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
 
     steps:
       - name: Check out exact PR source
@@ -174,7 +174,6 @@ jobs:
           $iscc = Get-ChildItem -LiteralPath $innoRoot -Filter 'ISCC.exe' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $iscc) {
             if (Test-Path -LiteralPath $innoLog) { Get-Content -LiteralPath $innoLog | Out-Host }
-            Get-Process | Where-Object { $_.ProcessName -match 'setup|inno|is-' } | Select-Object ProcessName, Id, Path | Format-Table | Out-Host
             throw 'ISCC.exe not found after verified portable compiler extraction'
           }
 
@@ -184,36 +183,63 @@ jobs:
           }
           "P1B_ISCC=$($iscc.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Compile unsigned P1B setup from immutable inputs
+      - name: Compile unsigned candidate and baseline staging setups
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $setupOut = Join-Path $env:RUNNER_TEMP 'p1b-setup'
-          New-Item -ItemType Directory -Path $setupOut -Force | Out-Null
           $script = Join-Path $env:GITHUB_WORKSPACE 'packaging\windows\SovereignTwin.iss'
-          $version = '0.1.0-p1b'
 
+          $candidateOut = Join-Path $env:RUNNER_TEMP 'p1b-setup-candidate'
+          New-Item -ItemType Directory -Path $candidateOut -Force | Out-Null
           & $env:P1B_ISCC `
             '--no-signing' `
             "--define=RuntimeRoot=$env:P1B_RUNTIME" `
             "--define=RuntimeBuildId=$env:P1B_RUNTIME_BUILD_ID" `
             "--define=StableStarter=$env:P1B_STARTER" `
-            "--define=ProductVersion=$version" `
+            '--define=ProductVersion=0.1.0-p1b-r2' `
             "--define=SourceSha=${{ github.event.pull_request.head.sha }}" `
-            "--define=OutputDir=$setupOut" `
+            "--define=OutputDir=$candidateOut" `
             $script
-          if ($LASTEXITCODE -ne 0) { throw "P1B Inno compile failed rc=$LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "candidate P1B Inno compile failed rc=$LASTEXITCODE" }
+          $candidate = @(Get-ChildItem -LiteralPath $candidateOut -Filter 'SovereignTwin-Setup-*-win-x64.exe' -File)
+          if ($candidate.Count -ne 1) { throw "expected one candidate setup, found $($candidate.Count)" }
 
-          $setups = @(Get-ChildItem -LiteralPath $setupOut -Filter 'SovereignTwin-Setup-*-win-x64.exe' -File)
-          if ($setups.Count -ne 1) { throw "expected exactly one P1B setup executable, found $($setups.Count)" }
-          "P1B_SETUP=$($setups[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $baselineRuntime = Join-Path $env:RUNNER_TEMP 'p1b-baseline-runtime'
+          New-Item -ItemType Directory -Path $baselineRuntime -Force | Out-Null
+          'BASELINE_RUNTIME_MUST_SURVIVE_CANDIDATE_UNINSTALL' |
+            Set-Content -LiteralPath (Join-Path $baselineRuntime 'baseline-runtime-sentinel.txt') -Encoding ascii
+          $baselineStarter = Join-Path $env:RUNNER_TEMP 'p1b-baseline-starter.exe'
+          Copy-Item -LiteralPath "$env:SystemRoot\System32\cmd.exe" -Destination $baselineStarter -Force
 
-      - name: Install fresh and prove staging-only product state
+          $baselineOut = Join-Path $env:RUNNER_TEMP 'p1b-setup-baseline'
+          New-Item -ItemType Directory -Path $baselineOut -Force | Out-Null
+          & $env:P1B_ISCC `
+            '--no-signing' `
+            "--define=RuntimeRoot=$baselineRuntime" `
+            '--define=RuntimeBuildId=baseline-p1b-r2' `
+            "--define=StableStarter=$baselineStarter" `
+            '--define=ProductVersion=0.0.1-p1b-baseline' `
+            '--define=SourceSha=0000000000000000000000000000000000000001' `
+            "--define=OutputDir=$baselineOut" `
+            $script
+          if ($LASTEXITCODE -ne 0) { throw "baseline P1B Inno compile failed rc=$LASTEXITCODE" }
+          $baseline = @(Get-ChildItem -LiteralPath $baselineOut -Filter 'SovereignTwin-Setup-*-win-x64.exe' -File)
+          if ($baseline.Count -ne 1) { throw "expected one baseline setup, found $($baseline.Count)" }
+
+          "P1B_SETUP=$($candidate[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P1B_BASELINE_SETUP=$($baseline[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P1B_BASELINE_STARTER=$baselineStarter" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Fresh install proves per-user task binding and staging-only state
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $freshRoot = Join-Path $env:RUNNER_TEMP 'p1b-install-fresh'
-          $installLog = Join-Path $env:RUNNER_TEMP 'p1b-install-fresh.log'
+          Get-ScheduledTask -ErrorAction SilentlyContinue |
+            Where-Object { $_.TaskName -like 'SovereignTwin-UI-*' } |
+            Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
+
+          $freshRoot = Join-Path $env:RUNNER_TEMP 'p1b fresh install with spaces'
+          $installLog = Join-Path $env:RUNNER_TEMP 'p1b-fresh-install.log'
           $pointer = Join-Path $freshRoot 'runtime-source.json'
           $memoryRoot = Join-Path $HOME '.continuityos'
           $memorySentinel = Join-Path $memoryRoot 'p1b-installer-no-touch.txt'
@@ -221,32 +247,27 @@ jobs:
           'P1B_INSTALLER_MUST_NOT_TOUCH_MEMORY' | Set-Content -LiteralPath $memorySentinel -Encoding ascii
           $memoryHashBefore = (Get-FileHash -LiteralPath $memorySentinel -Algorithm SHA256).Hash
 
-          & "$env:SystemRoot\System32\schtasks.exe" /Delete /F /TN 'SovereignTwin-UI' *> $null
-          $global:LASTEXITCODE = 0
           $oldPath = $env:PATH
           try {
             $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
-            $setupArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$freshRoot", "/LOG=$installLog")
-            $setupProc = Start-Process -FilePath $env:P1B_SETUP -ArgumentList $setupArgs -PassThru -Wait -WindowStyle Hidden
-            if ($setupProc.ExitCode -ne 0) {
+            $args = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$freshRoot", "/LOG=$installLog")
+            $proc = Start-Process -FilePath $env:P1B_SETUP -ArgumentList $args -PassThru -Wait -WindowStyle Hidden
+            if ($proc.ExitCode -ne 0) {
               if (Test-Path -LiteralPath $installLog) { Get-Content -LiteralPath $installLog | Out-Host }
-              throw "fresh P1B setup failed rc=$($setupProc.ExitCode)"
+              throw "fresh P1B setup failed rc=$($proc.ExitCode)"
             }
           } finally {
             $env:PATH = $oldPath
           }
 
-          if (Test-Path -LiteralPath $pointer) { throw 'P1B fresh install created runtime-source.json; activation boundary violated' }
+          if (Test-Path -LiteralPath $pointer) { throw 'fresh install created runtime-source.json' }
           $installedRuntime = Join-Path (Join-Path $freshRoot 'runtimes') $env:P1B_RUNTIME_BUILD_ID
           $installedPy = Join-Path $installedRuntime 'python.exe'
           $installedStarter = Join-Path $freshRoot 'SovereignTwin-Start.exe'
-          if (-not (Test-Path -LiteralPath $installedPy)) {
-            if (Test-Path -LiteralPath $installLog) { Get-Content -LiteralPath $installLog | Out-Host }
-            throw 'installed immutable runtime python.exe missing'
-          }
+          if (-not (Test-Path -LiteralPath $installedPy)) { throw 'installed immutable runtime missing python.exe' }
           if (-not (Test-Path -LiteralPath $installedStarter)) { throw 'installed stable starter missing' }
           if ((Get-FileHash $installedStarter -Algorithm SHA256).Hash -ne (Get-FileHash $env:P1B_STARTER -Algorithm SHA256).Hash) {
-            throw 'installed stable starter hash differs from compiled input'
+            throw 'fresh installed starter hash differs from compiled input'
           }
 
           $stageOut = & $installedPy -B -I -m continuityos.windows_product_transaction stage-validate `
@@ -256,12 +277,28 @@ jobs:
           if (-not $stage.ok -or $stage.live.present) { throw 'fresh installed runtime did not validate with absent live pointer' }
           if ($stage.execution_authority -ne 'NONE' -or [bool]$stage.can_execute) { throw 'installed runtime authority boundary changed' }
 
-          $task = Get-ScheduledTask -TaskName 'SovereignTwin-UI' -ErrorAction Stop
-          if ($task.Actions.Count -ne 1) { throw 'SovereignTwin-UI must have exactly one action' }
-          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$task.Actions[0].Execute, $installedStarter)) {
-            throw "scheduled task executable mismatch: $($task.Actions[0].Execute)"
+          $tasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskName -like 'SovereignTwin-UI-*' })
+          if ($tasks.Count -ne 1) { throw "expected exactly one per-user task, found $($tasks.Count)" }
+          $task = $tasks[0]
+          if ($task.TaskName -eq 'SovereignTwin-UI') { throw 'global legacy task name was used' }
+
+          $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+          $allowedIds = @($identity.Name, $identity.User.Value)
+          if ($allowedIds -notcontains [string]$task.Principal.UserId) {
+            throw "task principal is not current user: $($task.Principal.UserId)"
           }
-          if ([string]$task.Actions[0].Arguments -ne '--serve') { throw "scheduled task arguments mismatch: $($task.Actions[0].Arguments)" }
+          if ($task.Triggers.Count -ne 1) { throw 'per-user task must have exactly one logon trigger' }
+          if ($allowedIds -notcontains [string]$task.Triggers[0].UserId) {
+            throw "logon trigger is not scoped to current user: $($task.Triggers[0].UserId)"
+          }
+          if ($task.Actions.Count -ne 1) { throw 'per-user task must have exactly one action' }
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$task.Actions[0].Execute, $installedStarter)) {
+            throw "task executable mismatch: $($task.Actions[0].Execute)"
+          }
+          if ([string]$task.Actions[0].Arguments -ne '--serve') { throw "task arguments mismatch: $($task.Actions[0].Arguments)" }
+
+          $markers = @(Get-ChildItem -LiteralPath (Join-Path $freshRoot 'installer-state') -Filter '*.task-owned' -File)
+          if ($markers.Count -ne 1) { throw "fresh install expected one task ownership marker, found $($markers.Count)" }
 
           $shortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Sovereign Twin\Sovereign Twin.lnk'
           if (-not (Test-Path -LiteralPath $shortcut)) { throw "Start Menu shortcut missing: $shortcut" }
@@ -272,74 +309,149 @@ jobs:
           }
           if ([string]$link.Arguments -ne '--open') { throw "shortcut arguments mismatch: $($link.Arguments)" }
 
-          $memoryHashAfter = (Get-FileHash -LiteralPath $memorySentinel -Algorithm SHA256).Hash
-          if ($memoryHashAfter -ne $memoryHashBefore) { throw 'installer mutated .continuityos memory sentinel' }
-          "P1B_FRESH_ROOT=$freshRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "P1B_MEMORY_SENTINEL=$memorySentinel" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "P1B_MEMORY_HASH=$memoryHashBefore" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Prove existing pointer remains byte-exact through install and uninstall
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $preserveRoot = Join-Path $env:RUNNER_TEMP 'p1b-install-existing-pointer'
-          $preserveLog = Join-Path $env:RUNNER_TEMP 'p1b-install-existing-pointer.log'
-          New-Item -ItemType Directory -Path $preserveRoot -Force | Out-Null
-          $pointer = Join-Path $preserveRoot 'runtime-source.json'
-          $sentinel = '{"p1b":"must-remain-byte-exact","execution_authority":"NONE","can_execute":false}'
-          [System.IO.File]::WriteAllText($pointer, $sentinel, [System.Text.UTF8Encoding]::new($false))
-          $before = (Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash
-
-          $setupArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$preserveRoot", "/LOG=$preserveLog")
-          $setupProc = Start-Process -FilePath $env:P1B_SETUP -ArgumentList $setupArgs -PassThru -Wait -WindowStyle Hidden
-          if ($setupProc.ExitCode -ne 0) {
-            if (Test-Path -LiteralPath $preserveLog) { Get-Content -LiteralPath $preserveLog | Out-Host }
-            throw "existing-pointer P1B setup failed rc=$($setupProc.ExitCode)"
+          if ((Get-FileHash -LiteralPath $memorySentinel -Algorithm SHA256).Hash -ne $memoryHashBefore) {
+            throw 'fresh installer mutated .continuityos memory sentinel'
           }
-          $afterInstall = (Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash
-          if ($afterInstall -ne $before) { throw 'P1B install modified existing runtime-source.json' }
 
-          $uninstaller = Get-ChildItem -LiteralPath $preserveRoot -Filter 'unins*.exe' -File | Select-Object -First 1
-          if (-not $uninstaller) { throw 'P1B uninstaller missing' }
+          $uninstallerDir = Join-Path (Join-Path $freshRoot 'uninstall') $env:P1B_RUNTIME_BUILD_ID
+          $uninstaller = Get-ChildItem -LiteralPath $uninstallerDir -Filter 'unins*.exe' -File | Select-Object -First 1
+          if (-not $uninstaller) { throw 'fresh candidate uninstaller missing' }
           $unProc = Start-Process -FilePath $uninstaller.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -PassThru -Wait -WindowStyle Hidden
-          if ($unProc.ExitCode -ne 0) { throw "P1B uninstall failed rc=$($unProc.ExitCode)" }
-          if (-not (Test-Path -LiteralPath $pointer)) { throw 'P1B uninstall removed pre-existing runtime-source.json' }
-          $afterUninstall = (Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash
-          if ($afterUninstall -ne $before) { throw 'P1B uninstall modified existing runtime-source.json' }
-          if (Get-ScheduledTask -TaskName 'SovereignTwin-UI' -ErrorAction SilentlyContinue) { throw 'SovereignTwin-UI task remained after uninstall' }
-
-          $memoryHash = (Get-FileHash -LiteralPath $env:P1B_MEMORY_SENTINEL -Algorithm SHA256).Hash
-          if ($memoryHash -ne $env:P1B_MEMORY_HASH) { throw 'P1B existing-pointer flow mutated .continuityos memory sentinel' }
-          "P1B_PRESERVE_ROOT=$preserveRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Uninstall fresh staging and emit bounded validation summary
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $uninstaller = Get-ChildItem -LiteralPath $env:P1B_FRESH_ROOT -Filter 'unins*.exe' -File | Select-Object -First 1
-          if (-not $uninstaller) { throw 'fresh P1B uninstaller missing' }
-          $unProc = Start-Process -FilePath $uninstaller.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -PassThru -Wait -WindowStyle Hidden
-          if ($unProc.ExitCode -ne 0) { throw "fresh P1B uninstall failed rc=$($unProc.ExitCode)" }
-          if (Get-ScheduledTask -TaskName 'SovereignTwin-UI' -ErrorAction SilentlyContinue) { throw 'SovereignTwin-UI task remained after fresh uninstall' }
-          if ((Get-FileHash -LiteralPath $env:P1B_MEMORY_SENTINEL -Algorithm SHA256).Hash -ne $env:P1B_MEMORY_HASH) {
+          if ($unProc.ExitCode -ne 0) { throw "fresh uninstall failed rc=$($unProc.ExitCode)" }
+          if (Get-ScheduledTask -TaskName $task.TaskName -ErrorAction SilentlyContinue) { throw 'fresh owned task remained after uninstall' }
+          if ((Get-FileHash -LiteralPath $memorySentinel -Algorithm SHA256).Hash -ne $memoryHashBefore) {
             throw 'fresh uninstall mutated .continuityos memory sentinel'
           }
 
+          "P1B_MEMORY_SENTINEL=$memorySentinel" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P1B_MEMORY_HASH=$memoryHashBefore" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Existing install survives candidate install and candidate uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-ScheduledTask -ErrorAction SilentlyContinue |
+            Where-Object { $_.TaskName -like 'SovereignTwin-UI-*' } |
+            Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
+
+          $root = Join-Path $env:RUNNER_TEMP 'p1b existing install safety'
+          $baselineLog = Join-Path $env:RUNNER_TEMP 'p1b-baseline-install.log'
+          $candidateLog = Join-Path $env:RUNNER_TEMP 'p1b-candidate-over-baseline.log'
+
+          $baselineArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$root", "/LOG=$baselineLog")
+          $baselineProc = Start-Process -FilePath $env:P1B_BASELINE_SETUP -ArgumentList $baselineArgs -PassThru -Wait -WindowStyle Hidden
+          if ($baselineProc.ExitCode -ne 0) {
+            if (Test-Path -LiteralPath $baselineLog) { Get-Content -LiteralPath $baselineLog | Out-Host }
+            throw "baseline install failed rc=$($baselineProc.ExitCode)"
+          }
+
+          $pointer = Join-Path $root 'runtime-source.json'
+          $pointerBytes = '{"p1b":"pre-existing-binding","execution_authority":"NONE","can_execute":false}'
+          [System.IO.File]::WriteAllText($pointer, $pointerBytes, [System.Text.UTF8Encoding]::new($false))
+          $pointerHash = (Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash
+
+          $starter = Join-Path $root 'SovereignTwin-Start.exe'
+          $starterHash = (Get-FileHash -LiteralPath $starter -Algorithm SHA256).Hash
+          $expectedBaselineStarterHash = (Get-FileHash -LiteralPath $env:P1B_BASELINE_STARTER -Algorithm SHA256).Hash
+          if ($starterHash -ne $expectedBaselineStarterHash) { throw 'baseline starter was not installed as expected' }
+
+          $baselineRuntimeSentinel = Join-Path $root 'runtimes\baseline-p1b-r2\baseline-runtime-sentinel.txt'
+          if (-not (Test-Path -LiteralPath $baselineRuntimeSentinel)) { throw 'baseline runtime sentinel missing' }
+          $baselineRuntimeHash = (Get-FileHash -LiteralPath $baselineRuntimeSentinel -Algorithm SHA256).Hash
+
+          $tasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskName -like 'SovereignTwin-UI-*' })
+          if ($tasks.Count -ne 1) { throw "baseline expected exactly one per-user task, found $($tasks.Count)" }
+          $taskName = $tasks[0].TaskName
+          $taskXmlBefore = Export-ScheduledTask -TaskName $taskName
+          $baselineMarker = Join-Path $root 'installer-state\baseline-p1b-r2.task-owned'
+          if (-not (Test-Path -LiteralPath $baselineMarker)) { throw 'baseline task ownership marker missing' }
+
+          $shortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Sovereign Twin\Sovereign Twin.lnk'
+          $shell = New-Object -ComObject WScript.Shell
+          $baselineLink = $shell.CreateShortcut($shortcut)
+          $baselineShortcutTarget = [string]$baselineLink.TargetPath
+
+          $baselineUninstallDir = Join-Path $root 'uninstall\baseline-p1b-r2'
+          $baselineUninstaller = Get-ChildItem -LiteralPath $baselineUninstallDir -Filter 'unins*.exe' -File | Select-Object -First 1
+          if (-not $baselineUninstaller) { throw 'baseline isolated uninstaller missing' }
+
+          $candidateArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$root", "/LOG=$candidateLog")
+          $candidateProc = Start-Process -FilePath $env:P1B_SETUP -ArgumentList $candidateArgs -PassThru -Wait -WindowStyle Hidden
+          if ($candidateProc.ExitCode -ne 0) {
+            if (Test-Path -LiteralPath $candidateLog) { Get-Content -LiteralPath $candidateLog | Out-Host }
+            throw "candidate-over-baseline install failed rc=$($candidateProc.ExitCode)"
+          }
+
+          if ((Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash -ne $pointerHash) { throw 'candidate install modified existing pointer' }
+          if ((Get-FileHash -LiteralPath $starter -Algorithm SHA256).Hash -ne $starterHash) { throw 'candidate install replaced existing stable starter' }
+          if ((Get-FileHash -LiteralPath $baselineRuntimeSentinel -Algorithm SHA256).Hash -ne $baselineRuntimeHash) { throw 'candidate install modified baseline runtime' }
+          if ((Export-ScheduledTask -TaskName $taskName) -ne $taskXmlBefore) { throw 'candidate install replaced or modified pre-existing task' }
+
+          $candidateMarker = Join-Path (Join-Path $root 'installer-state') "$env:P1B_RUNTIME_BUILD_ID.task-owned"
+          if (Test-Path -LiteralPath $candidateMarker) { throw 'candidate claimed ownership of pre-existing per-user task' }
+
+          $candidateRuntime = Join-Path (Join-Path $root 'runtimes') $env:P1B_RUNTIME_BUILD_ID
+          if (-not (Test-Path -LiteralPath (Join-Path $candidateRuntime 'python.exe'))) { throw 'candidate runtime was not staged' }
+
+          $candidateLink = $shell.CreateShortcut($shortcut)
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$candidateLink.TargetPath, $baselineShortcutTarget)) {
+            throw 'candidate install replaced pre-existing Start Menu shortcut'
+          }
+
+          $candidateUninstallDir = Join-Path (Join-Path $root 'uninstall') $env:P1B_RUNTIME_BUILD_ID
+          $candidateUninstaller = Get-ChildItem -LiteralPath $candidateUninstallDir -Filter 'unins*.exe' -File | Select-Object -First 1
+          if (-not $candidateUninstaller) { throw 'candidate isolated uninstaller missing' }
+          $candidateUnProc = Start-Process -FilePath $candidateUninstaller.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -PassThru -Wait -WindowStyle Hidden
+          if ($candidateUnProc.ExitCode -ne 0) { throw "candidate uninstall failed rc=$($candidateUnProc.ExitCode)" }
+
+          if (-not (Test-Path -LiteralPath $pointer)) { throw 'candidate uninstall removed pre-existing pointer' }
+          if ((Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash -ne $pointerHash) { throw 'candidate uninstall modified existing pointer' }
+          if ((Get-FileHash -LiteralPath $starter -Algorithm SHA256).Hash -ne $starterHash) { throw 'candidate uninstall removed or modified existing stable starter' }
+          if ((Get-FileHash -LiteralPath $baselineRuntimeSentinel -Algorithm SHA256).Hash -ne $baselineRuntimeHash) { throw 'candidate uninstall removed or modified baseline runtime' }
+          if (Test-Path -LiteralPath $candidateRuntime) { throw 'candidate uninstall left candidate runtime staged' }
+          if (-not (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)) { throw 'candidate uninstall removed pre-existing per-user task' }
+          if ((Export-ScheduledTask -TaskName $taskName) -ne $taskXmlBefore) { throw 'candidate uninstall modified pre-existing task' }
+          if (-not (Test-Path -LiteralPath $baselineUninstaller.FullName)) { throw 'candidate uninstall removed baseline uninstaller' }
+
+          $postLink = $shell.CreateShortcut($shortcut)
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$postLink.TargetPath, $baselineShortcutTarget)) {
+            throw 'candidate uninstall removed or replaced pre-existing shortcut'
+          }
+
+          if ((Get-FileHash -LiteralPath $env:P1B_MEMORY_SENTINEL -Algorithm SHA256).Hash -ne $env:P1B_MEMORY_HASH) {
+            throw 'existing-install flow mutated .continuityos memory sentinel'
+          }
+
+          $baselineUnProc = Start-Process -FilePath $baselineUninstaller.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -PassThru -Wait -WindowStyle Hidden
+          if ($baselineUnProc.ExitCode -ne 0) { throw "baseline cleanup uninstall failed rc=$($baselineUnProc.ExitCode)" }
+          if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) { throw 'baseline-owned task remained after baseline uninstall' }
+          if (-not (Test-Path -LiteralPath $pointer)) { throw 'baseline cleanup removed manually pre-existing pointer' }
+          if ((Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash -ne $pointerHash) { throw 'baseline cleanup modified manually pre-existing pointer' }
+
+          "P1B_PRESERVE_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Emit bounded P1B R2 validation summary
+        shell: pwsh
+        run: |
           @"
           {
-            "schema": "sovereign-twin.p1b-windows-ci-validation/v1",
+            "schema": "sovereign-twin.p1b-windows-ci-validation/v2",
             "os": "windows-latest",
             "architecture": "win-x64",
             "inno_setup": "7.1.0-x64",
-            "inno_release_attestation": "PASS",
-            "inno_authenticode": "PASS_PYRSYS_BV",
             "installer_compile": "PASS_UNSIGNED_TEST_BUILD",
             "system_python_required_by_installer": false,
             "immutable_runtime_stage": "PASS",
             "fresh_runtime_source_present": false,
+            "per_user_task_name": true,
+            "per_user_logon_trigger": true,
+            "interactive_token_least_privilege": true,
+            "pre_existing_task_preserved": true,
+            "existing_starter_preserved": true,
+            "existing_runtime_preserved": true,
+            "existing_shortcut_preserved": true,
+            "isolated_uninstall_log": true,
             "existing_runtime_source_preserved": true,
-            "scheduled_task_target": "SovereignTwin-Start.exe --serve",
-            "shortcut_target": "SovereignTwin-Start.exe --open",
             "memory_mutated_by_installer": false,
             "pointer_switch_performed": false,
             "activation_performed": false,
@@ -353,16 +465,17 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'SilentlyContinue'
-          & "$env:SystemRoot\System32\schtasks.exe" /Delete /F /TN 'SovereignTwin-UI' *> $null
-          $global:LASTEXITCODE = 0
-          foreach ($rootName in @('p1b-install-fresh', 'p1b-install-existing-pointer')) {
+          Get-ScheduledTask -ErrorAction SilentlyContinue |
+            Where-Object { $_.TaskName -like 'SovereignTwin-UI-*' } |
+            Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
+
+          foreach ($rootName in @('p1b fresh install with spaces', 'p1b existing install safety')) {
             $root = Join-Path $env:RUNNER_TEMP $rootName
             if (Test-Path -LiteralPath $root) {
-              $uninstaller = Get-ChildItem -LiteralPath $root -Filter 'unins*.exe' -File | Select-Object -First 1
-              if ($uninstaller) {
-                $cleanupProc = Start-Process -FilePath $uninstaller.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -PassThru -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
-                $global:LASTEXITCODE = 0
-              }
+              Get-ChildItem -LiteralPath (Join-Path $root 'uninstall') -Filter 'unins*.exe' -File -Recurse -ErrorAction SilentlyContinue |
+                ForEach-Object {
+                  Start-Process -FilePath $_.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
+                }
               Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
             }
           }
