@@ -213,6 +213,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $freshRoot = Join-Path $env:RUNNER_TEMP 'p1b-install-fresh'
+          $installLog = Join-Path $env:RUNNER_TEMP 'p1b-install-fresh.log'
           $pointer = Join-Path $freshRoot 'runtime-source.json'
           $memoryRoot = Join-Path $HOME '.continuityos'
           $memorySentinel = Join-Path $memoryRoot 'p1b-installer-no-touch.txt'
@@ -225,8 +226,12 @@ jobs:
           $oldPath = $env:PATH
           try {
             $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
-            & $env:P1B_SETUP '/VERYSILENT' '/SUPPRESSMSGBOXES' '/NORESTART' '/SP-' "/DIR=$freshRoot"
-            if ($LASTEXITCODE -ne 0) { throw "fresh P1B setup failed rc=$LASTEXITCODE" }
+            $setupArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$freshRoot", "/LOG=$installLog")
+            $setupProc = Start-Process -FilePath $env:P1B_SETUP -ArgumentList $setupArgs -PassThru -Wait -WindowStyle Hidden
+            if ($setupProc.ExitCode -ne 0) {
+              if (Test-Path -LiteralPath $installLog) { Get-Content -LiteralPath $installLog | Out-Host }
+              throw "fresh P1B setup failed rc=$($setupProc.ExitCode)"
+            }
           } finally {
             $env:PATH = $oldPath
           }
@@ -235,7 +240,10 @@ jobs:
           $installedRuntime = Join-Path (Join-Path $freshRoot 'runtimes') $env:P1B_RUNTIME_BUILD_ID
           $installedPy = Join-Path $installedRuntime 'python.exe'
           $installedStarter = Join-Path $freshRoot 'SovereignTwin-Start.exe'
-          if (-not (Test-Path -LiteralPath $installedPy)) { throw 'installed immutable runtime python.exe missing' }
+          if (-not (Test-Path -LiteralPath $installedPy)) {
+            if (Test-Path -LiteralPath $installLog) { Get-Content -LiteralPath $installLog | Out-Host }
+            throw 'installed immutable runtime python.exe missing'
+          }
           if (-not (Test-Path -LiteralPath $installedStarter)) { throw 'installed stable starter missing' }
           if ((Get-FileHash $installedStarter -Algorithm SHA256).Hash -ne (Get-FileHash $env:P1B_STARTER -Algorithm SHA256).Hash) {
             throw 'installed stable starter hash differs from compiled input'
@@ -275,21 +283,26 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $preserveRoot = Join-Path $env:RUNNER_TEMP 'p1b-install-existing-pointer'
+          $preserveLog = Join-Path $env:RUNNER_TEMP 'p1b-install-existing-pointer.log'
           New-Item -ItemType Directory -Path $preserveRoot -Force | Out-Null
           $pointer = Join-Path $preserveRoot 'runtime-source.json'
           $sentinel = '{"p1b":"must-remain-byte-exact","execution_authority":"NONE","can_execute":false}'
           [System.IO.File]::WriteAllText($pointer, $sentinel, [System.Text.UTF8Encoding]::new($false))
           $before = (Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash
 
-          & $env:P1B_SETUP '/VERYSILENT' '/SUPPRESSMSGBOXES' '/NORESTART' '/SP-' "/DIR=$preserveRoot"
-          if ($LASTEXITCODE -ne 0) { throw "existing-pointer P1B setup failed rc=$LASTEXITCODE" }
+          $setupArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$preserveRoot", "/LOG=$preserveLog")
+          $setupProc = Start-Process -FilePath $env:P1B_SETUP -ArgumentList $setupArgs -PassThru -Wait -WindowStyle Hidden
+          if ($setupProc.ExitCode -ne 0) {
+            if (Test-Path -LiteralPath $preserveLog) { Get-Content -LiteralPath $preserveLog | Out-Host }
+            throw "existing-pointer P1B setup failed rc=$($setupProc.ExitCode)"
+          }
           $afterInstall = (Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash
           if ($afterInstall -ne $before) { throw 'P1B install modified existing runtime-source.json' }
 
           $uninstaller = Get-ChildItem -LiteralPath $preserveRoot -Filter 'unins*.exe' -File | Select-Object -First 1
           if (-not $uninstaller) { throw 'P1B uninstaller missing' }
-          & $uninstaller.FullName '/VERYSILENT' '/SUPPRESSMSGBOXES' '/NORESTART'
-          if ($LASTEXITCODE -ne 0) { throw "P1B uninstall failed rc=$LASTEXITCODE" }
+          $unProc = Start-Process -FilePath $uninstaller.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -PassThru -Wait -WindowStyle Hidden
+          if ($unProc.ExitCode -ne 0) { throw "P1B uninstall failed rc=$($unProc.ExitCode)" }
           if (-not (Test-Path -LiteralPath $pointer)) { throw 'P1B uninstall removed pre-existing runtime-source.json' }
           $afterUninstall = (Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash
           if ($afterUninstall -ne $before) { throw 'P1B uninstall modified existing runtime-source.json' }
@@ -305,8 +318,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $uninstaller = Get-ChildItem -LiteralPath $env:P1B_FRESH_ROOT -Filter 'unins*.exe' -File | Select-Object -First 1
           if (-not $uninstaller) { throw 'fresh P1B uninstaller missing' }
-          & $uninstaller.FullName '/VERYSILENT' '/SUPPRESSMSGBOXES' '/NORESTART'
-          if ($LASTEXITCODE -ne 0) { throw "fresh P1B uninstall failed rc=$LASTEXITCODE" }
+          $unProc = Start-Process -FilePath $uninstaller.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -PassThru -Wait -WindowStyle Hidden
+          if ($unProc.ExitCode -ne 0) { throw "fresh P1B uninstall failed rc=$($unProc.ExitCode)" }
           if (Get-ScheduledTask -TaskName 'SovereignTwin-UI' -ErrorAction SilentlyContinue) { throw 'SovereignTwin-UI task remained after fresh uninstall' }
           if ((Get-FileHash -LiteralPath $env:P1B_MEMORY_SENTINEL -Algorithm SHA256).Hash -ne $env:P1B_MEMORY_HASH) {
             throw 'fresh uninstall mutated .continuityos memory sentinel'
@@ -347,7 +360,7 @@ jobs:
             if (Test-Path -LiteralPath $root) {
               $uninstaller = Get-ChildItem -LiteralPath $root -Filter 'unins*.exe' -File | Select-Object -First 1
               if ($uninstaller) {
-                & $uninstaller.FullName '/VERYSILENT' '/SUPPRESSMSGBOXES' '/NORESTART' *> $null
+                $cleanupProc = Start-Process -FilePath $uninstaller.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -PassThru -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
                 $global:LASTEXITCODE = 0
               }
               Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
