@@ -25,7 +25,7 @@ jobs:
   validate:
     name: win-x64 / Control Center product entry
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
 
     steps:
       - name: Check out exact PR source
@@ -128,6 +128,154 @@ jobs:
           $runtimes = @(Get-ChildItem -LiteralPath $out -Directory | Where-Object { $_.Name -notlike '.p1a-prep-*' })
           if ($runtimes.Count -ne 1) { throw "expected exactly one runtime output, found $($runtimes.Count)" }
           "P2_RUNTIME=$($runtimes[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P2_RUNTIME_BUILD_ID=$($runtimes[0].Name)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Acquire exact Inno Setup 7.1.0 compiler
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $download = Join-Path $env:RUNNER_TEMP 'p2-inno-download'
+          $innoRoot = Join-Path $env:RUNNER_TEMP 'p2-inno-7.1.0-x64-portable'
+          $innoLog = Join-Path $env:RUNNER_TEMP 'p2-inno-7.1.0-portable-install.log'
+          New-Item -ItemType Directory -Path $download -Force | Out-Null
+
+          gh release download is-7_1_0 --repo jrsoftware/issrc --pattern 'innosetup-7.1.0-x64.exe' --dir $download
+          if ($LASTEXITCODE -ne 0) { throw 'failed to download exact Inno Setup 7.1.0 x64 release asset' }
+          $asset = Join-Path $download 'innosetup-7.1.0-x64.exe'
+          if (-not (Test-Path -LiteralPath $asset)) { throw 'Inno Setup release asset missing after download' }
+
+          Push-Location $download
+          try {
+            gh release verify-asset 'innosetup-7.1.0-x64.exe' --repo jrsoftware/issrc
+            if ($LASTEXITCODE -ne 0) { throw 'GitHub release attestation verification failed for Inno Setup' }
+          } finally {
+            Pop-Location
+          }
+
+          $sig = Get-AuthenticodeSignature -LiteralPath $asset
+          if ($sig.Status -ne 'Valid') { throw "Inno Setup Authenticode status is $($sig.Status), expected Valid" }
+          if ($null -eq $sig.SignerCertificate -or $sig.SignerCertificate.Subject -notmatch 'Pyrsys B\.V\.') {
+            throw "unexpected Inno Setup signer: $($sig.SignerCertificate.Subject)"
+          }
+
+          $installerArgs = @(
+            '/PORTABLE=1', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/CURRENTUSER',
+            ('/DIR="' + $innoRoot + '"'), ('/LOG="' + $innoLog + '"')
+          )
+          $proc = Start-Process -FilePath $asset -ArgumentList $installerArgs -PassThru -Wait -WindowStyle Hidden
+          if ($proc.ExitCode -ne 0) {
+            if (Test-Path -LiteralPath $innoLog) { Get-Content -LiteralPath $innoLog | Out-Host }
+            throw "Inno Setup portable compiler extraction failed rc=$($proc.ExitCode)"
+          }
+          $iscc = Get-ChildItem -LiteralPath $innoRoot -Filter 'ISCC.exe' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $iscc) { throw 'ISCC.exe not found after verified portable compiler extraction' }
+          $versionText = (& $iscc.FullName --version 2>&1 | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $versionText -notmatch '7\.1\.0') { throw "unexpected ISCC version: $versionText" }
+          "P2_ISCC=$($iscc.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Compile P2-enabled and P1 baseline same-app installers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = Join-Path $env:GITHUB_WORKSPACE 'packaging\windows\SovereignTwin.iss'
+
+          $candidateOut = Join-Path $env:RUNNER_TEMP 'p2-setup-candidate'
+          New-Item -ItemType Directory -Path $candidateOut -Force | Out-Null
+          & $env:P2_ISCC `
+            '--no-signing' `
+            "--define=RuntimeRoot=$env:P2_RUNTIME" `
+            "--define=RuntimeBuildId=$env:P2_RUNTIME_BUILD_ID" `
+            "--define=StableStarter=$env:P2_STARTER" `
+            '--define=ProductVersion=0.2.0-p2-r1' `
+            "--define=SourceSha=${{ github.event.pull_request.head.sha }}" `
+            "--define=OutputDir=$candidateOut" `
+            '--define=P2EnableControlCenterEntry=1' `
+            $script
+          if ($LASTEXITCODE -ne 0) { throw "P2-enabled Inno compile failed rc=$LASTEXITCODE" }
+          $candidate = @(Get-ChildItem -LiteralPath $candidateOut -Filter 'SovereignTwin-Setup-*-win-x64.exe' -File)
+          if ($candidate.Count -ne 1) { throw "expected one P2 setup, found $($candidate.Count)" }
+
+          $baselineRuntime = Join-Path $env:RUNNER_TEMP 'p2-baseline-runtime'
+          New-Item -ItemType Directory -Path $baselineRuntime -Force | Out-Null
+          'P1_BASELINE_RUNTIME' | Set-Content -LiteralPath (Join-Path $baselineRuntime 'baseline-runtime-sentinel.txt') -Encoding ascii
+          $baselineStarter = Join-Path $env:RUNNER_TEMP 'p2-baseline-starter.exe'
+          Copy-Item -LiteralPath "$env:SystemRoot\System32\cmd.exe" -Destination $baselineStarter -Force
+          $baselineOut = Join-Path $env:RUNNER_TEMP 'p2-setup-baseline'
+          New-Item -ItemType Directory -Path $baselineOut -Force | Out-Null
+          & $env:P2_ISCC `
+            '--no-signing' `
+            "--define=RuntimeRoot=$baselineRuntime" `
+            '--define=RuntimeBuildId=baseline-p1' `
+            "--define=StableStarter=$baselineStarter" `
+            '--define=ProductVersion=0.1.0-p1-baseline' `
+            '--define=SourceSha=0000000000000000000000000000000000000001' `
+            "--define=OutputDir=$baselineOut" `
+            $script
+          if ($LASTEXITCODE -ne 0) { throw "P1 baseline Inno compile failed rc=$LASTEXITCODE" }
+          $baseline = @(Get-ChildItem -LiteralPath $baselineOut -Filter 'SovereignTwin-Setup-*-win-x64.exe' -File)
+          if ($baseline.Count -ne 1) { throw "expected one P1 baseline setup, found $($baseline.Count)" }
+
+          "P2_SETUP=$($candidate[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P2_BASELINE_SETUP=$($baseline[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Prove P2 same-app upgrade updates starter and adds Control Center entry
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'p2 same app upgrade'
+          $baselineLog = Join-Path $env:RUNNER_TEMP 'p2-baseline-install.log'
+          $candidateLog = Join-Path $env:RUNNER_TEMP 'p2-candidate-install.log'
+          $startupShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\Sovereign Twin UI.lnk'
+          $menuShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Sovereign Twin\Sovereign Twin.lnk'
+          $ccShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Sovereign Twin\Sovereign Twin Control Center.lnk'
+          Remove-Item -LiteralPath $startupShortcut,$menuShortcut,$ccShortcut -Force -ErrorAction SilentlyContinue
+
+          $baseProc = Start-Process -FilePath $env:P2_BASELINE_SETUP -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',('/DIR="' + $root + '"'),('/LOG="' + $baselineLog + '"')) -PassThru -Wait -WindowStyle Hidden
+          if ($baseProc.ExitCode -ne 0) { throw "P1 baseline install failed rc=$($baseProc.ExitCode)" }
+
+          $pointer = Join-Path $root 'runtime-source.json'
+          $pointerBytes = '{"p2":"manual-existing-binding","execution_authority":"NONE","can_execute":false}'
+          [System.IO.File]::WriteAllText($pointer, $pointerBytes, [System.Text.UTF8Encoding]::new($false))
+          $pointerHash = (Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash
+          $starter = Join-Path $root 'SovereignTwin-Start.exe'
+          $baselineStarterHash = (Get-FileHash -LiteralPath $starter -Algorithm SHA256).Hash
+          $startupHash = (Get-FileHash -LiteralPath $startupShortcut -Algorithm SHA256).Hash
+          $menuHash = (Get-FileHash -LiteralPath $menuShortcut -Algorithm SHA256).Hash
+
+          $candidateProc = Start-Process -FilePath $env:P2_SETUP -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',('/DIR="' + $root + '"'),('/LOG="' + $candidateLog + '"')) -PassThru -Wait -WindowStyle Hidden
+          if ($candidateProc.ExitCode -ne 0) {
+            if (Test-Path -LiteralPath $candidateLog) { Get-Content -LiteralPath $candidateLog | Out-Host }
+            throw "P2 candidate install failed rc=$($candidateProc.ExitCode)"
+          }
+
+          $candidateStarterHash = (Get-FileHash -LiteralPath $starter -Algorithm SHA256).Hash
+          $expectedStarterHash = (Get-FileHash -LiteralPath $env:P2_STARTER -Algorithm SHA256).Hash
+          if ($candidateStarterHash -eq $baselineStarterHash) { throw 'P2 upgrade preserved obsolete starter' }
+          if ($candidateStarterHash -ne $expectedStarterHash) { throw 'P2 upgrade did not install exact P2 starter' }
+          if ((Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash -ne $pointerHash) { throw 'P2 upgrade mutated existing pointer' }
+          if ((Get-FileHash -LiteralPath $startupShortcut -Algorithm SHA256).Hash -ne $startupHash) { throw 'P2 upgrade replaced existing Startup shortcut' }
+          if ((Get-FileHash -LiteralPath $menuShortcut -Algorithm SHA256).Hash -ne $menuHash) { throw 'P2 upgrade replaced existing main Start Menu shortcut' }
+          if (-not (Test-Path -LiteralPath $ccShortcut)) { throw 'P2 Control Center shortcut missing after upgrade' }
+
+          $shell = New-Object -ComObject WScript.Shell
+          $ccLink = $shell.CreateShortcut($ccShortcut)
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$ccLink.TargetPath, $starter)) { throw 'P2 Control Center shortcut target mismatch' }
+          if ([string]$ccLink.Arguments -ne '--control-center') { throw 'P2 Control Center shortcut arguments mismatch' }
+          if ([string]$ccLink.WorkingDirectory -ne $root) { throw 'P2 Control Center shortcut working directory mismatch' }
+          if (Test-Path -LiteralPath (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\Sovereign Twin Control Center.lnk')) { throw 'P2 unexpectedly created Control Center autostart' }
+
+          $arpRoot = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+          $arp = @(Get-ChildItem -LiteralPath $arpRoot | ForEach-Object { $p = Get-ItemProperty -LiteralPath $_.PSPath; if ([string]$p.DisplayName -eq 'Sovereign Twin') { $p } })
+          if ($arp.Count -ne 1) { throw "P2 upgrade expected one ARP entry, found $($arp.Count)" }
+          $uninstall = [string]$arp[0].UninstallString
+          if ($uninstall -match '^\s*"([^"]+)"') { $uninstaller = $Matches[1] } elseif ($uninstall -match '^\s*(.+?\.exe)(?:\s|$)') { $uninstaller = $Matches[1].Trim('"') } else { throw 'unable to parse P2 uninstall command' }
+          $unProc = Start-Process -FilePath $uninstaller -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -PassThru -Wait -WindowStyle Hidden
+          if ($unProc.ExitCode -ne 0) { throw "P2 uninstall failed rc=$($unProc.ExitCode)" }
+          if (-not (Test-Path -LiteralPath $pointer)) { throw 'P2 uninstall removed manual pointer' }
+          if ((Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash -ne $pointerHash) { throw 'P2 uninstall mutated manual pointer' }
+          if (Test-Path -LiteralPath $ccShortcut) { throw 'P2 uninstall left installer-owned Control Center shortcut' }
 
       - name: Prove stable starter launches read-only Control Center without state mutation
         shell: pwsh
@@ -171,11 +319,7 @@ jobs:
             memory_embedding_dimension = 768
           }
           $pointerPath = Join-Path $product 'runtime-source.json'
-          [System.IO.File]::WriteAllText(
-            $pointerPath,
-            ($pointer | ConvertTo-Json -Depth 8),
-            [System.Text.UTF8Encoding]::new($false)
-          )
+          [System.IO.File]::WriteAllText($pointerPath, ($pointer | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
 
           $pointerHash = (Get-FileHash -LiteralPath $pointerPath -Algorithm SHA256).Hash
           $dbHash = (Get-FileHash -LiteralPath $db -Algorithm SHA256).Hash
@@ -194,7 +338,6 @@ jobs:
             $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8766/health' -Method Get -TimeoutSec 5
             if (-not $health.ok -or -not $health.read_only) { throw 'Control Center health mismatch' }
             if ($health.execution_authority -ne 'NONE' -or [bool]$health.can_execute) { throw 'Control Center health authority mismatch' }
-
             $post = Invoke-WebRequest -Uri 'http://127.0.0.1:8766/api/status' -Method Post -Body '{}' -ContentType 'application/json' -SkipHttpErrorCheck -TimeoutSec 5
             if ([int]$post.StatusCode -ne 405) { throw "Control Center POST expected 405, got $($post.StatusCode)" }
 
