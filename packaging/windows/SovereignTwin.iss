@@ -53,10 +53,10 @@ RestartApplications=no
 
 [Files]
 Source: "{#RuntimeRoot}\*"; DestDir: "{app}\runtimes\{#RuntimeBuildId}"; Excludes: "runtime-source.json"; Flags: ignoreversion recursesubdirs createallsubdirs
-#if P2EnableControlCenterEntry == "1"
-Source: "{#StableStarter}"; DestDir: "{app}"; DestName: "SovereignTwin-Start.exe"; Flags: ignoreversion
-#else
+#if P2EnableControlCenterEntry == "0"
 Source: "{#StableStarter}"; DestDir: "{app}"; DestName: "SovereignTwin-Start.exe"; Flags: ignoreversion onlyifdoesntexist
+#else
+Source: "{#StableStarter}"; DestDir: "{app}"; DestName: "SovereignTwin-Start.exe"; Flags: ignoreversion
 #endif
 
 [Icons]
