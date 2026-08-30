@@ -132,6 +132,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $download = Join-Path $env:RUNNER_TEMP 'inno-download'
+          $innoRoot = Join-Path $env:RUNNER_TEMP 'inno-7.1.0-x64-portable'
+          $innoLog = Join-Path $env:RUNNER_TEMP 'inno-7.1.0-portable-install.log'
           New-Item -ItemType Directory -Path $download -Force | Out-Null
 
           gh release download is-7_1_0 --repo jrsoftware/issrc --pattern 'innosetup-7.1.0-x64.exe' --dir $download
@@ -153,27 +155,20 @@ jobs:
             throw "unexpected Inno Setup signer: $($sig.SignerCertificate.Subject)"
           }
 
-          & $asset '/VERYSILENT' '/SUPPRESSMSGBOXES' '/NORESTART' '/SP-' '/CURRENTUSER'
-          if ($LASTEXITCODE -ne 0) { throw "Inno Setup compiler install failed rc=$LASTEXITCODE" }
+          & $asset '/PORTABLE=1' '/VERYSILENT' '/SUPPRESSMSGBOXES' '/NORESTART' '/SP-' '/CURRENTUSER' "/DIR=$innoRoot" "/LOG=$innoLog"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup portable compiler extraction failed rc=$LASTEXITCODE" }
 
-          $candidatePaths = @(
-            (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 7\ISCC.exe'),
-            (Join-Path $env:LOCALAPPDATA 'Inno Setup 7\ISCC.exe'),
-            (Join-Path $env:ProgramFiles 'Inno Setup 7\ISCC.exe'),
-            (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 7\ISCC.exe')
-          )
-          $isccPath = $candidatePaths | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
-          if (-not $isccPath) {
-            $fallback = Get-ChildItem -LiteralPath $env:LOCALAPPDATA -Filter 'ISCC.exe' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($fallback) { $isccPath = $fallback.FullName }
+          $iscc = Get-ChildItem -LiteralPath $innoRoot -Filter 'ISCC.exe' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $iscc) {
+            if (Test-Path -LiteralPath $innoLog) { Get-Content -LiteralPath $innoLog | Out-Host }
+            throw 'ISCC.exe not found after verified portable compiler extraction'
           }
-          if (-not $isccPath) { throw 'ISCC.exe not found after verified current-user compiler install' }
 
-          $versionText = (& $isccPath --version 2>&1 | Out-String).Trim()
+          $versionText = (& $iscc.FullName --version 2>&1 | Out-String).Trim()
           if ($LASTEXITCODE -ne 0 -or $versionText -notmatch '7\.1\.0') {
             throw "unexpected ISCC version: $versionText"
           }
-          "P1B_ISCC=$isccPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P1B_ISCC=$($iscc.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Compile unsigned P1B setup from immutable inputs
         shell: pwsh
