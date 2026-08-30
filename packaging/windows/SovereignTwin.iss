@@ -74,6 +74,29 @@ begin
 end;
 
 #if P1CEnableExistingBindingActivation == "1"
+const
+  P1CActivationFailureExitCode = 90;
+
+var
+  P1CActivationFailed: Boolean;
+
+procedure MarkP1CActivationFailure(const MessageText: String);
+begin
+  P1CActivationFailed := True;
+  Log(MessageText);
+end;
+
+function GetCustomSetupExitCode: Integer;
+begin
+  if P1CActivationFailed then
+  begin
+    Result := P1CActivationFailureExitCode;
+    Log('P1C fail-closed custom setup exit code=' + IntToStr(Result));
+  end
+  else
+    Result := 0;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   PythonExe: String;
@@ -102,10 +125,27 @@ begin
     ' --starter "' + StarterPath + '"';
 
   Log('P1C delegating existing-binding activation to staged packaged Python');
-  if not Exec(PythonExe, Params, ExpandConstant('{app}'), SW_HIDE,
-    ewWaitUntilTerminated, ResultCode) then
-    RaiseException('P1C activation helper could not be started');
+  try
+    if not ExecAndLogOutput(PythonExe, Params, ExpandConstant('{app}'), SW_HIDE,
+      ewWaitUntilTerminated, ResultCode, nil) then
+    begin
+      MarkP1CActivationFailure(
+        'P1C activation helper could not be started: ' + SysErrorMessage(ResultCode));
+      Exit;
+    end;
+  except
+    MarkP1CActivationFailure(
+      'P1C activation helper output capture failed: ' + GetExceptionMessage);
+    Exit;
+  end;
+
   if ResultCode <> 0 then
-    RaiseException('P1C activation helper failed rc=' + IntToStr(ResultCode));
+  begin
+    MarkP1CActivationFailure(
+      'P1C activation helper failed rc=' + IntToStr(ResultCode));
+    Exit;
+  end;
+
+  Log('P1C existing-binding activation helper completed successfully');
 end;
 #endif
