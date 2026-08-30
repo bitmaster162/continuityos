@@ -62,7 +62,7 @@ var
 begin
   Starter := ExpandConstant('{app}\SovereignTwin-Start.exe');
   Params := '/Create /F /SC ONLOGON /RL LIMITED /TN "' + ScheduledTaskName +
-    '" /TR "\"' + Starter + '\" --serve"';
+    '" /TR "' + Starter + ' --serve"';
 
   if not Exec(ExpandConstant('{sys}\schtasks.exe'), Params, '', SW_HIDE,
     ewWaitUntilTerminated, ResultCode) then
