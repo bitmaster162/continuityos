@@ -1,0 +1,332 @@
+name: windows-product-p1b
+
+on:
+  pull_request:
+    paths:
+      - "packaging/windows/SovereignTwin.iss"
+      - "tests/test_windows_inno_contract.py"
+      - ".github/workflows/windows-product-p1b.yml"
+      - "continuityos/windows_product_transaction.py"
+      - "tools/build_windows_runtime.py"
+      - "native/windows/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-product-p1b-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: win-x64 / Inno staging shell
+    runs-on: windows-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out exact PR source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up build Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install bounded test and build tooling
+        run: python -m pip install pytest==9.1.1 build==1.5.0
+
+      - name: Run P1B staging contract tests
+        env:
+          PYTHONUTF8: "1"
+        run: python -m pytest -q tests/test_windows_inno_contract.py
+
+      - name: Build exact ContinuityOS wheel
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $wheelhouse = Join-Path $env:RUNNER_TEMP 'p1b-wheelhouse'
+          New-Item -ItemType Directory -Path $wheelhouse -Force | Out-Null
+          python -m build --wheel --outdir $wheelhouse
+          if ($LASTEXITCODE -ne 0) { throw 'wheel build failed' }
+          $wheels = @(Get-ChildItem -LiteralPath $wheelhouse -Filter '*.whl')
+          if ($wheels.Count -ne 1) { throw "expected exactly one wheel, found $($wheels.Count)" }
+          "P1B_WHEEL=$($wheels[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Compile P1A native launcher and stable starter
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path -LiteralPath $vswhere)) { throw 'vswhere.exe not found' }
+          $vs = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
+          if (-not $vs) { throw 'Visual C++ toolchain not found' }
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          if (-not (Test-Path -LiteralPath $vcvars)) { throw 'vcvars64.bat not found' }
+
+          $nativeOut = Join-Path $env:RUNNER_TEMP 'p1b-native'
+          New-Item -ItemType Directory -Path $nativeOut -Force | Out-Null
+          $launcher = Join-Path $nativeOut 'sovereign-twin.exe'
+          $starter = Join-Path $nativeOut 'SovereignTwin-Start.exe'
+          $launcherSrc = Join-Path $env:GITHUB_WORKSPACE 'native\windows\sovereign_twin_launcher.c'
+          $starterSrc = Join-Path $env:GITHUB_WORKSPACE 'native\windows\sovereign_twin_start.c'
+          $bat = Join-Path $env:RUNNER_TEMP 'p1b-build-native.cmd'
+
+          @"
+          @echo off
+          call "$vcvars"
+          if errorlevel 1 exit /b %errorlevel%
+          cl.exe /nologo /W4 /WX /O2 /Fe:"$launcher" "$launcherSrc" shell32.lib
+          if errorlevel 1 exit /b %errorlevel%
+          cl.exe /nologo /W4 /WX /O2 /Fe:"$starter" "$starterSrc" shell32.lib
+          if errorlevel 1 exit /b %errorlevel%
+          "@ | Set-Content -LiteralPath $bat -Encoding ascii
+
+          & cmd.exe /d /c $bat
+          if ($LASTEXITCODE -ne 0) { throw "native compile failed rc=$LASTEXITCODE" }
+          if (-not (Test-Path -LiteralPath $launcher)) { throw 'launcher output missing' }
+          if (-not (Test-Path -LiteralPath $starter)) { throw 'stable starter output missing' }
+          "P1B_LAUNCHER=$launcher" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P1B_STARTER=$starter" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Download exact CPython 3.11.9 embeddable runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:RUNNER_TEMP 'python-3.11.9-embed-amd64.zip'
+          $pyroot = Join-Path $env:RUNNER_TEMP 'python-3.11.9-embed-amd64'
+          Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip' -OutFile $zip
+          New-Item -ItemType Directory -Path $pyroot -Force | Out-Null
+          Expand-Archive -LiteralPath $zip -DestinationPath $pyroot -Force
+          if (-not (Test-Path -LiteralPath (Join-Path $pyroot 'python.exe'))) { throw 'embedded python.exe missing' }
+          if (-not (Test-Path -LiteralPath (Join-Path $pyroot 'python311._pth'))) { throw 'embedded python311._pth missing' }
+          "P1B_PYROOT=$pyroot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build immutable P1A runtime payload for installer input
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:RUNNER_TEMP 'p1b-runtimes'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          python -m tools.build_windows_runtime `
+            --python-runtime $env:P1B_PYROOT `
+            --wheel $env:P1B_WHEEL `
+            --launcher $env:P1B_LAUNCHER `
+            --output-root $out `
+            --source-sha '${{ github.event.pull_request.head.sha }}' `
+            --architecture win-x64 `
+            --embedding-dimension 768
+          if ($LASTEXITCODE -ne 0) { throw 'runtime builder failed' }
+          $runtimes = @(Get-ChildItem -LiteralPath $out -Directory | Where-Object { $_.Name -notlike '.p1a-prep-*' })
+          if ($runtimes.Count -ne 1) { throw "expected exactly one runtime output, found $($runtimes.Count)" }
+          $runtime = $runtimes[0]
+          "P1B_RUNTIME=$($runtime.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P1B_RUNTIME_BUILD_ID=$($runtime.Name)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Acquire and verify exact Inno Setup 7.1.0 x64 compiler
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $download = Join-Path $env:RUNNER_TEMP 'inno-download'
+          $innoRoot = Join-Path $env:RUNNER_TEMP 'inno-7.1.0-x64'
+          New-Item -ItemType Directory -Path $download -Force | Out-Null
+
+          gh release download is-7_1_0 --repo jrsoftware/issrc --pattern 'innosetup-7.1.0-x64.exe' --dir $download
+          if ($LASTEXITCODE -ne 0) { throw 'failed to download exact Inno Setup 7.1.0 x64 release asset' }
+          $asset = Join-Path $download 'innosetup-7.1.0-x64.exe'
+          if (-not (Test-Path -LiteralPath $asset)) { throw 'Inno Setup release asset missing after download' }
+
+          Push-Location $download
+          try {
+            gh release verify-asset 'innosetup-7.1.0-x64.exe' --repo jrsoftware/issrc
+            if ($LASTEXITCODE -ne 0) { throw 'GitHub release attestation verification failed for Inno Setup' }
+          } finally {
+            Pop-Location
+          }
+
+          $sig = Get-AuthenticodeSignature -LiteralPath $asset
+          if ($sig.Status -ne 'Valid') { throw "Inno Setup Authenticode status is $($sig.Status), expected Valid" }
+          if ($null -eq $sig.SignerCertificate -or $sig.SignerCertificate.Subject -notmatch 'Pyrsys B\.V\.') {
+            throw "unexpected Inno Setup signer: $($sig.SignerCertificate.Subject)"
+          }
+
+          & $asset '/VERYSILENT' '/SUPPRESSMSGBOXES' '/NORESTART' '/SP-' '/CURRENTUSER' "/DIR=$innoRoot"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup compiler install failed rc=$LASTEXITCODE" }
+          $iscc = Get-ChildItem -LiteralPath $innoRoot -Filter 'ISCC.exe' -File -Recurse | Select-Object -First 1
+          if (-not $iscc) { throw 'ISCC.exe not found after verified compiler install' }
+          $versionText = (& $iscc.FullName --version 2>&1 | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $versionText -notmatch '7\.1\.0') {
+            throw "unexpected ISCC version: $versionText"
+          }
+          "P1B_ISCC=$($iscc.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Compile unsigned P1B setup from immutable inputs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setupOut = Join-Path $env:RUNNER_TEMP 'p1b-setup'
+          New-Item -ItemType Directory -Path $setupOut -Force | Out-Null
+          $script = Join-Path $env:GITHUB_WORKSPACE 'packaging\windows\SovereignTwin.iss'
+          $version = '0.1.0-p1b'
+
+          & $env:P1B_ISCC `
+            '--no-signing' `
+            "--define=RuntimeRoot=$env:P1B_RUNTIME" `
+            "--define=RuntimeBuildId=$env:P1B_RUNTIME_BUILD_ID" `
+            "--define=StableStarter=$env:P1B_STARTER" `
+            "--define=ProductVersion=$version" `
+            "--define=SourceSha=${{ github.event.pull_request.head.sha }}" `
+            "--define=OutputDir=$setupOut" `
+            $script
+          if ($LASTEXITCODE -ne 0) { throw "P1B Inno compile failed rc=$LASTEXITCODE" }
+
+          $setups = @(Get-ChildItem -LiteralPath $setupOut -Filter 'SovereignTwin-Setup-*-win-x64.exe' -File)
+          if ($setups.Count -ne 1) { throw "expected exactly one P1B setup executable, found $($setups.Count)" }
+          "P1B_SETUP=$($setups[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install fresh and prove staging-only product state
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $freshRoot = Join-Path $env:RUNNER_TEMP 'p1b-install-fresh'
+          $pointer = Join-Path $freshRoot 'runtime-source.json'
+          $memoryRoot = Join-Path $HOME '.continuityos'
+          $memorySentinel = Join-Path $memoryRoot 'p1b-installer-no-touch.txt'
+          New-Item -ItemType Directory -Path $memoryRoot -Force | Out-Null
+          'P1B_INSTALLER_MUST_NOT_TOUCH_MEMORY' | Set-Content -LiteralPath $memorySentinel -Encoding ascii
+          $memoryHashBefore = (Get-FileHash -LiteralPath $memorySentinel -Algorithm SHA256).Hash
+
+          & "$env:SystemRoot\System32\schtasks.exe" /Delete /F /TN 'SovereignTwin-UI' *> $null
+          $oldPath = $env:PATH
+          try {
+            $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+            & $env:P1B_SETUP '/VERYSILENT' '/SUPPRESSMSGBOXES' '/NORESTART' '/SP-' "/DIR=$freshRoot"
+            if ($LASTEXITCODE -ne 0) { throw "fresh P1B setup failed rc=$LASTEXITCODE" }
+          } finally {
+            $env:PATH = $oldPath
+          }
+
+          if (Test-Path -LiteralPath $pointer) { throw 'P1B fresh install created runtime-source.json; activation boundary violated' }
+          $installedRuntime = Join-Path (Join-Path $freshRoot 'runtimes') $env:P1B_RUNTIME_BUILD_ID
+          $installedPy = Join-Path $installedRuntime 'python.exe'
+          $installedStarter = Join-Path $freshRoot 'SovereignTwin-Start.exe'
+          if (-not (Test-Path -LiteralPath $installedPy)) { throw 'installed immutable runtime python.exe missing' }
+          if (-not (Test-Path -LiteralPath $installedStarter)) { throw 'installed stable starter missing' }
+          if ((Get-FileHash $installedStarter -Algorithm SHA256).Hash -ne (Get-FileHash $env:P1B_STARTER -Algorithm SHA256).Hash) {
+            throw 'installed stable starter hash differs from compiled input'
+          }
+
+          $stageOut = & $installedPy -B -I -m continuityos.windows_product_transaction stage-validate `
+            --runtime-root $installedRuntime --pointer $pointer 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "installed runtime stage validation failed: $stageOut" }
+          $stage = $stageOut | ConvertFrom-Json
+          if (-not $stage.ok -or $stage.live.present) { throw 'fresh installed runtime did not validate with absent live pointer' }
+          if ($stage.execution_authority -ne 'NONE' -or [bool]$stage.can_execute) { throw 'installed runtime authority boundary changed' }
+
+          $task = Get-ScheduledTask -TaskName 'SovereignTwin-UI' -ErrorAction Stop
+          if ($task.Actions.Count -ne 1) { throw 'SovereignTwin-UI must have exactly one action' }
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$task.Actions[0].Execute, $installedStarter)) {
+            throw "scheduled task executable mismatch: $($task.Actions[0].Execute)"
+          }
+          if ([string]$task.Actions[0].Arguments -ne '--serve') { throw "scheduled task arguments mismatch: $($task.Actions[0].Arguments)" }
+
+          $shortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Sovereign Twin\Sovereign Twin.lnk'
+          if (-not (Test-Path -LiteralPath $shortcut)) { throw "Start Menu shortcut missing: $shortcut" }
+          $shell = New-Object -ComObject WScript.Shell
+          $link = $shell.CreateShortcut($shortcut)
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$link.TargetPath, $installedStarter)) {
+            throw "shortcut target mismatch: $($link.TargetPath)"
+          }
+          if ([string]$link.Arguments -ne '--open') { throw "shortcut arguments mismatch: $($link.Arguments)" }
+
+          $memoryHashAfter = (Get-FileHash -LiteralPath $memorySentinel -Algorithm SHA256).Hash
+          if ($memoryHashAfter -ne $memoryHashBefore) { throw 'installer mutated .continuityos memory sentinel' }
+          "P1B_FRESH_ROOT=$freshRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P1B_MEMORY_SENTINEL=$memorySentinel" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P1B_MEMORY_HASH=$memoryHashBefore" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Prove existing pointer remains byte-exact through install and uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $preserveRoot = Join-Path $env:RUNNER_TEMP 'p1b-install-existing-pointer'
+          New-Item -ItemType Directory -Path $preserveRoot -Force | Out-Null
+          $pointer = Join-Path $preserveRoot 'runtime-source.json'
+          $sentinel = '{"p1b":"must-remain-byte-exact","execution_authority":"NONE","can_execute":false}'
+          [System.IO.File]::WriteAllText($pointer, $sentinel, [System.Text.UTF8Encoding]::new($false))
+          $before = (Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash
+
+          & $env:P1B_SETUP '/VERYSILENT' '/SUPPRESSMSGBOXES' '/NORESTART' '/SP-' "/DIR=$preserveRoot"
+          if ($LASTEXITCODE -ne 0) { throw "existing-pointer P1B setup failed rc=$LASTEXITCODE" }
+          $afterInstall = (Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash
+          if ($afterInstall -ne $before) { throw 'P1B install modified existing runtime-source.json' }
+
+          $uninstaller = Get-ChildItem -LiteralPath $preserveRoot -Filter 'unins*.exe' -File | Select-Object -First 1
+          if (-not $uninstaller) { throw 'P1B uninstaller missing' }
+          & $uninstaller.FullName '/VERYSILENT' '/SUPPRESSMSGBOXES' '/NORESTART'
+          if ($LASTEXITCODE -ne 0) { throw "P1B uninstall failed rc=$LASTEXITCODE" }
+          if (-not (Test-Path -LiteralPath $pointer)) { throw 'P1B uninstall removed pre-existing runtime-source.json' }
+          $afterUninstall = (Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash
+          if ($afterUninstall -ne $before) { throw 'P1B uninstall modified existing runtime-source.json' }
+          if (Get-ScheduledTask -TaskName 'SovereignTwin-UI' -ErrorAction SilentlyContinue) { throw 'SovereignTwin-UI task remained after uninstall' }
+
+          $memoryHash = (Get-FileHash -LiteralPath $env:P1B_MEMORY_SENTINEL -Algorithm SHA256).Hash
+          if ($memoryHash -ne $env:P1B_MEMORY_HASH) { throw 'P1B existing-pointer flow mutated .continuityos memory sentinel' }
+          "P1B_PRESERVE_ROOT=$preserveRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Uninstall fresh staging and emit bounded validation summary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $uninstaller = Get-ChildItem -LiteralPath $env:P1B_FRESH_ROOT -Filter 'unins*.exe' -File | Select-Object -First 1
+          if (-not $uninstaller) { throw 'fresh P1B uninstaller missing' }
+          & $uninstaller.FullName '/VERYSILENT' '/SUPPRESSMSGBOXES' '/NORESTART'
+          if ($LASTEXITCODE -ne 0) { throw "fresh P1B uninstall failed rc=$LASTEXITCODE" }
+          if (Get-ScheduledTask -TaskName 'SovereignTwin-UI' -ErrorAction SilentlyContinue) { throw 'SovereignTwin-UI task remained after fresh uninstall' }
+          if ((Get-FileHash -LiteralPath $env:P1B_MEMORY_SENTINEL -Algorithm SHA256).Hash -ne $env:P1B_MEMORY_HASH) {
+            throw 'fresh uninstall mutated .continuityos memory sentinel'
+          }
+
+          @"
+          {
+            "schema": "sovereign-twin.p1b-windows-ci-validation/v1",
+            "os": "windows-latest",
+            "architecture": "win-x64",
+            "inno_setup": "7.1.0-x64",
+            "inno_release_attestation": "PASS",
+            "inno_authenticode": "PASS_PYRSYS_BV",
+            "installer_compile": "PASS_UNSIGNED_TEST_BUILD",
+            "system_python_required_by_installer": false,
+            "immutable_runtime_stage": "PASS",
+            "fresh_runtime_source_present": false,
+            "existing_runtime_source_preserved": true,
+            "scheduled_task_target": "SovereignTwin-Start.exe --serve",
+            "shortcut_target": "SovereignTwin-Start.exe --open",
+            "memory_mutated_by_installer": false,
+            "pointer_switch_performed": false,
+            "activation_performed": false,
+            "execution_authority": "NONE",
+            "can_execute": false
+          }
+          "@ | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+
+      - name: Cleanup bounded CI state
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'SilentlyContinue'
+          & "$env:SystemRoot\System32\schtasks.exe" /Delete /F /TN 'SovereignTwin-UI' *> $null
+          foreach ($rootName in @('p1b-install-fresh', 'p1b-install-existing-pointer')) {
+            $root = Join-Path $env:RUNNER_TEMP $rootName
+            if (Test-Path -LiteralPath $root) {
+              $uninstaller = Get-ChildItem -LiteralPath $root -Filter 'unins*.exe' -File | Select-Object -First 1
+              if ($uninstaller) { & $uninstaller.FullName '/VERYSILENT' '/SUPPRESSMSGBOXES' '/NORESTART' *> $null }
+              Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+            }
+          }
+          if ($env:P1B_MEMORY_SENTINEL -and (Test-Path -LiteralPath $env:P1B_MEMORY_SENTINEL)) {
+            Remove-Item -LiteralPath $env:P1B_MEMORY_SENTINEL -Force -ErrorAction SilentlyContinue
+          }
