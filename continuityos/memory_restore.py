@@ -13,7 +13,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import sqlite3
 import stat
 from typing import Any, Mapping, Sequence
 import uuid
@@ -26,7 +25,6 @@ from .memory_backup import (
     MANIFEST_MEMBER,
     MEMORY_MEMBER,
     REQUIRED_ITEMS_COLUMNS,
-    SCHEMA as P5A_BACKUP_SCHEMA,
     _backup_root,
     _governance,
     _hash_file,
@@ -36,6 +34,7 @@ from .windows_product_transaction import _replace_file_atomic
 
 SCHEMA = "continuityos.memory_restore/v1"
 MODE = "QUIESCENT_ATOMIC_RESTORE"
+P5A_BACKUP_SCHEMA = "continuityos.memory_backup/v1"
 P5A_COMPATIBILITY_SCHEMA = "continuityos.memory_restore.p5a_v1_compatibility/v1"
 SIDE_SUFFIXES = ("-wal", "-shm", "-journal")
 
@@ -348,7 +347,35 @@ def restore_quiescent_backup(
         if _target_state(target) != initial or _hash_file(candidate) != candidate_sha:
             raise RestoreHold("TARGET_OR_CANDIDATE_DRIFT", "target or candidate changed before atomic replace")
 
-        _replace_file_atomic(candidate, target)
+        try:
+            _replace_file_atomic(candidate, target)
+        except Exception as exc:
+            if target.is_file() and _hash_file(target) == candidate_sha:
+                switched = True
+                assert preimage is not None
+                rollback = _rollback(target, preimage, candidate_sha, expected_current)
+                try:
+                    _write_json(
+                        txn / "result.json",
+                        {
+                            "schema": SCHEMA,
+                            "terminal": "COS_RESTORE_HOLD",
+                            "mode": MODE,
+                            "reason": "ATOMIC_REPLACE_FAILED_AFTER_SWITCH",
+                            "error": f"{type(exc).__name__}: {exc}",
+                            "rollback": rollback,
+                            "restore_performed": True,
+                            "rollback_performed": True,
+                            "governance": _governance(),
+                        },
+                    )
+                except OSError:
+                    pass
+                raise RestoreHold(
+                    "ATOMIC_REPLACE_FAILED_ROLLED_BACK",
+                    "atomic replace reported failure after switch; byte-exact pre-image was restored",
+                ) from exc
+            raise
         switched = True
         try:
             if _hash_file(target) != candidate_sha:
@@ -447,6 +474,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     try:
         resolved = resolve_memory_db(args.db)
+    except Exception as exc:
+        _emit(_receipt("COS_RESTORE_HOLD", "MEMORY_DB_RESOLUTION_FAILED", f"{type(exc).__name__}: {exc}"), args.as_json)
+        return 2
+    try:
         result = restore_quiescent_backup(
             args.backup,
             resolved["path"],
@@ -460,9 +491,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     except RestoreRollbackError as exc:
         _emit(_receipt("COS_RESTORE_REVISE", exc.reason, exc.detail), args.as_json)
         return 4
-    except Exception as exc:
-        _emit(_receipt("COS_RESTORE_HOLD", "MEMORY_DB_RESOLUTION_FAILED", f"{type(exc).__name__}: {exc}"), args.as_json)
-        return 2
     _emit(result, args.as_json)
     return 0
 
