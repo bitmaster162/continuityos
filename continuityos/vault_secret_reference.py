@@ -1,14 +1,17 @@
 """Secret-reference metadata contract for the ContinuityOS vault roadmap.
 
-This module is deliberately metadata-only. It does not read, accept, store, resolve,
-or verify secret values or concrete secret bindings, and it does not access environment
+This module is deliberately metadata-only. It accepts bounded public metadata fields,
+but it accepts no dedicated secret-value fields or concrete secret-binding fields and
+does not read, store, resolve, or verify secrets. It also does not access environment
 variables, .env files, OS keyrings, DPAPI, network services, runtime state, or the
 filesystem.
 
-A secret reference is only a bounded declaration that a future vault implementation
-may bind under a separate authorization gate. Provider values in this v1 contract are
-provider *classes* only; no environment variable name, keyring entry, external secret
-ID, token-like locator, or other concrete binding identifier is accepted or returned.
+``reference_id`` and ``purpose_id`` are public caller-provided identifiers. They are
+returned in the public receipt and MUST contain only non-sensitive metadata; callers
+are responsible for never placing secret material in those identifier fields. Provider
+values in this v1 contract are provider *classes* only; no environment variable name,
+keyring entry, external secret ID, token-like locator, or other concrete binding
+identifier is accepted or returned.
 """
 from __future__ import annotations
 
@@ -19,6 +22,7 @@ from typing import Any, Mapping
 
 SCHEMA = "continuityos.vault_secret_reference/v1"
 MODE = "METADATA_ONLY"
+PUBLIC_IDENTIFIER_POLICY = "PUBLIC_NON_SENSITIVE_CALLER_RESPONSIBILITY"
 
 SUPPORTED_PROVIDERS = ("unbound", "environment", "os-keyring", "external")
 SUPPORTED_SECRET_KINDS = (
@@ -90,7 +94,7 @@ def _identifier(value: Any, field: str) -> str:
 
 def _effects() -> dict[str, Any]:
     return {
-        "secret_value_accepted": False,
+        "secret_value_field_accepted": False,
         "secret_value_read": False,
         "secret_value_stored": False,
         "secret_binding_accepted": False,
@@ -129,8 +133,10 @@ def build_secret_reference(
 ) -> dict[str, Any]:
     """Build one bounded metadata-only secret reference.
 
-    ``provider`` is only a provider class describing a possible future binding lane.
-    This function accepts no concrete binding locator and performs no provider access.
+    ``reference_id`` and ``purpose_id`` are public caller-provided identifiers that are
+    echoed in the receipt and must be non-sensitive. ``provider`` is only a provider
+    class describing a possible future binding lane. This function accepts no dedicated
+    secret-value field or concrete binding locator and performs no provider access.
     """
     ref_id = _identifier(reference_id, "reference_id")
     purpose = _identifier(purpose_id, "purpose_id")
@@ -155,13 +161,17 @@ def build_secret_reference(
         "secret_kind": secret_kind,
         "purpose_id": purpose,
         "required": required,
+        "identifier_policy": {
+            "reference_id": PUBLIC_IDENTIFIER_POLICY,
+            "purpose_id": PUBLIC_IDENTIFIER_POLICY,
+        },
         "readiness": readiness,
         "binding_present": False,
         "binding_authorized": False,
-        "secret_value_present": False,
+        "dedicated_secret_value_present": False,
         "live_secret_access_available": False,
         "redaction": {
-            "secret_values": "NEVER_ACCEPTED_OR_INCLUDED",
+            "secret_values": "NO_SECRET_VALUE_FIELDS_ACCEPTED",
             "binding_locators": "NOT_ACCEPTED_IN_METADATA_ONLY_V1",
         },
         "effects": _effects(),
@@ -172,9 +182,12 @@ def build_secret_reference(
 def validate_secret_reference(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Validate an input declaration and return the canonical public receipt.
 
-    The accepted input shape intentionally excludes all secret-bearing value fields,
-    concrete secret-binding fields, and receipt/status fields. Binding identifiers are
-    a separate future lane and cannot be smuggled into this metadata-only v1 object.
+    The accepted input shape intentionally excludes all dedicated secret-bearing value
+    fields, concrete secret-binding fields, and receipt/status fields. The public
+    ``reference_id`` and ``purpose_id`` fields are caller-responsible non-sensitive
+    metadata and are returned verbatim after bounded identifier-shape validation.
+    Binding identifiers are a separate future lane and cannot be smuggled into this
+    metadata-only v1 object.
     """
     if not isinstance(payload, Mapping):
         raise SecretReferenceError("PAYLOAD_INVALID")
