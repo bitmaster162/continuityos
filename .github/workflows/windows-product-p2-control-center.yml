@@ -226,3 +226,4 @@ jobs:
           } finally {
             Stop-Process -Id $foreign.Id -Force -ErrorAction SilentlyContinue
           }
+          exit 0
