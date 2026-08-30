@@ -10,6 +10,7 @@ on:
       - "tests/test_windows_control_center_entry.py"
       - "tests/test_windows_relative_launcher_contract.py"
       - "tests/test_windows_inno_contract.py"
+      - "continuityos/windows_product_transaction.py"
       - "tools/build_windows_runtime.py"
       - "pyproject.toml"
       - ".github/workflows/windows-product-p2-control-center.yml"
@@ -25,7 +26,7 @@ jobs:
   validate:
     name: win-x64 / Control Center product entry
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
 
     steps:
       - name: Check out exact PR source
@@ -51,6 +52,7 @@ jobs:
           tests/test_windows_control_center_entry.py
           tests/test_windows_relative_launcher_contract.py
           tests/test_windows_inno_contract.py
+          tests/test_windows_product_transaction.py
 
       - name: Build exact ContinuityOS wheel
         shell: pwsh
@@ -110,12 +112,24 @@ jobs:
           if (-not (Test-Path -LiteralPath (Join-Path $pyroot 'python.exe'))) { throw 'embedded python.exe missing' }
           "P2_PYROOT=$pyroot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Build immutable runtime payload
+      - name: Build baseline and candidate immutable runtime payloads
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $out = Join-Path $env:RUNNER_TEMP 'p2-runtimes'
           New-Item -ItemType Directory -Path $out -Force | Out-Null
+          $baselineSha = '0000000000000000000000000000000000000001'
+
+          python -m tools.build_windows_runtime `
+            --python-runtime $env:P2_PYROOT `
+            --wheel $env:P2_WHEEL `
+            --launcher $env:P2_LAUNCHER `
+            --output-root $out `
+            --source-sha $baselineSha `
+            --architecture win-x64 `
+            --embedding-dimension 768
+          if ($LASTEXITCODE -ne 0) { throw 'baseline runtime builder failed' }
+
           python -m tools.build_windows_runtime `
             --python-runtime $env:P2_PYROOT `
             --wheel $env:P2_WHEEL `
@@ -124,11 +138,22 @@ jobs:
             --source-sha '${{ github.event.pull_request.head.sha }}' `
             --architecture win-x64 `
             --embedding-dimension 768
-          if ($LASTEXITCODE -ne 0) { throw 'runtime builder failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'candidate runtime builder failed' }
+
           $runtimes = @(Get-ChildItem -LiteralPath $out -Directory | Where-Object { $_.Name -notlike '.p1a-prep-*' })
-          if ($runtimes.Count -ne 1) { throw "expected exactly one runtime output, found $($runtimes.Count)" }
-          "P2_RUNTIME=$($runtimes[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "P2_RUNTIME_BUILD_ID=$($runtimes[0].Name)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          if ($runtimes.Count -ne 2) { throw "expected two runtime outputs, found $($runtimes.Count)" }
+          $baseline = $null
+          $candidate = $null
+          foreach ($runtime in $runtimes) {
+            $pkg = Get-Content -LiteralPath (Join-Path $runtime.FullName 'runtime-package.json') -Raw -Encoding utf8 | ConvertFrom-Json
+            if ([string]$pkg.source_sha -eq $baselineSha) { $baseline = $runtime }
+            if ([string]$pkg.source_sha -eq '${{ github.event.pull_request.head.sha }}') { $candidate = $runtime }
+          }
+          if (-not $baseline -or -not $candidate) { throw 'failed to resolve baseline/candidate runtime identities' }
+          "P2_BASELINE_RUNTIME=$($baseline.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P2_BASELINE_BUILD_ID=$($baseline.Name)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P2_RUNTIME=$($candidate.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P2_RUNTIME_BUILD_ID=$($candidate.Name)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Acquire exact Inno Setup 7.1.0 compiler
         shell: pwsh
@@ -140,42 +165,28 @@ jobs:
           $innoRoot = Join-Path $env:RUNNER_TEMP 'p2-inno-7.1.0-x64-portable'
           $innoLog = Join-Path $env:RUNNER_TEMP 'p2-inno-7.1.0-portable-install.log'
           New-Item -ItemType Directory -Path $download -Force | Out-Null
-
           gh release download is-7_1_0 --repo jrsoftware/issrc --pattern 'innosetup-7.1.0-x64.exe' --dir $download
           if ($LASTEXITCODE -ne 0) { throw 'failed to download exact Inno Setup 7.1.0 x64 release asset' }
           $asset = Join-Path $download 'innosetup-7.1.0-x64.exe'
           if (-not (Test-Path -LiteralPath $asset)) { throw 'Inno Setup release asset missing after download' }
-
           Push-Location $download
           try {
             gh release verify-asset 'innosetup-7.1.0-x64.exe' --repo jrsoftware/issrc
             if ($LASTEXITCODE -ne 0) { throw 'GitHub release attestation verification failed for Inno Setup' }
-          } finally {
-            Pop-Location
-          }
-
+          } finally { Pop-Location }
           $sig = Get-AuthenticodeSignature -LiteralPath $asset
           if ($sig.Status -ne 'Valid') { throw "Inno Setup Authenticode status is $($sig.Status), expected Valid" }
-          if ($null -eq $sig.SignerCertificate -or $sig.SignerCertificate.Subject -notmatch 'Pyrsys B\.V\.') {
-            throw "unexpected Inno Setup signer: $($sig.SignerCertificate.Subject)"
-          }
-
-          $installerArgs = @(
-            '/PORTABLE=1', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/CURRENTUSER',
-            ('/DIR="' + $innoRoot + '"'), ('/LOG="' + $innoLog + '"')
-          )
+          if ($null -eq $sig.SignerCertificate -or $sig.SignerCertificate.Subject -notmatch 'Pyrsys B\.V\.') { throw "unexpected Inno Setup signer: $($sig.SignerCertificate.Subject)" }
+          $installerArgs = @('/PORTABLE=1','/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/CURRENTUSER',('/DIR="' + $innoRoot + '"'),('/LOG="' + $innoLog + '"'))
           $proc = Start-Process -FilePath $asset -ArgumentList $installerArgs -PassThru -Wait -WindowStyle Hidden
-          if ($proc.ExitCode -ne 0) {
-            if (Test-Path -LiteralPath $innoLog) { Get-Content -LiteralPath $innoLog | Out-Host }
-            throw "Inno Setup portable compiler extraction failed rc=$($proc.ExitCode)"
-          }
+          if ($proc.ExitCode -ne 0) { throw "Inno Setup portable compiler extraction failed rc=$($proc.ExitCode)" }
           $iscc = Get-ChildItem -LiteralPath $innoRoot -Filter 'ISCC.exe' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $iscc) { throw 'ISCC.exe not found after verified portable compiler extraction' }
           $versionText = (& $iscc.FullName --version 2>&1 | Out-String).Trim()
           if ($LASTEXITCODE -ne 0 -or $versionText -notmatch '7\.1\.0') { throw "unexpected ISCC version: $versionText" }
           "P2_ISCC=$($iscc.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Compile P2-enabled and P1 baseline same-app installers
+      - name: Compile P2-only, combined P1C plus P2, and P1 baseline installers
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -183,41 +194,32 @@ jobs:
 
           $candidateOut = Join-Path $env:RUNNER_TEMP 'p2-setup-candidate'
           New-Item -ItemType Directory -Path $candidateOut -Force | Out-Null
-          & $env:P2_ISCC `
-            '--no-signing' `
-            "--define=RuntimeRoot=$env:P2_RUNTIME" `
-            "--define=RuntimeBuildId=$env:P2_RUNTIME_BUILD_ID" `
-            "--define=StableStarter=$env:P2_STARTER" `
-            '--define=ProductVersion=0.2.0-p2-r1' `
-            "--define=SourceSha=${{ github.event.pull_request.head.sha }}" `
-            "--define=OutputDir=$candidateOut" `
-            '--define=P2EnableControlCenterEntry=1' `
-            $script
+          & $env:P2_ISCC '--no-signing' "--define=RuntimeRoot=$env:P2_RUNTIME" "--define=RuntimeBuildId=$env:P2_RUNTIME_BUILD_ID" "--define=StableStarter=$env:P2_STARTER" '--define=ProductVersion=0.2.0-p2-r1' "--define=SourceSha=${{ github.event.pull_request.head.sha }}" "--define=OutputDir=$candidateOut" '--define=P2EnableControlCenterEntry=1' $script
           if ($LASTEXITCODE -ne 0) { throw "P2-enabled Inno compile failed rc=$LASTEXITCODE" }
           $candidate = @(Get-ChildItem -LiteralPath $candidateOut -Filter 'SovereignTwin-Setup-*-win-x64.exe' -File)
           if ($candidate.Count -ne 1) { throw "expected one P2 setup, found $($candidate.Count)" }
 
-          $baselineRuntime = Join-Path $env:RUNNER_TEMP 'p2-baseline-runtime'
+          $combinedOut = Join-Path $env:RUNNER_TEMP 'p2-combined-setup'
+          New-Item -ItemType Directory -Path $combinedOut -Force | Out-Null
+          & $env:P2_ISCC '--no-signing' "--define=RuntimeRoot=$env:P2_RUNTIME" "--define=RuntimeBuildId=$env:P2_RUNTIME_BUILD_ID" "--define=StableStarter=$env:P2_STARTER" '--define=ProductVersion=0.2.0-p2-p1c-r1' "--define=SourceSha=${{ github.event.pull_request.head.sha }}" "--define=OutputDir=$combinedOut" '--define=P2EnableControlCenterEntry=1' '--define=P1CEnableExistingBindingActivation=1' $script
+          if ($LASTEXITCODE -ne 0) { throw "combined P1C+P2 Inno compile failed rc=$LASTEXITCODE" }
+          $combined = @(Get-ChildItem -LiteralPath $combinedOut -Filter 'SovereignTwin-Setup-*-win-x64.exe' -File)
+          if ($combined.Count -ne 1) { throw "expected one combined setup, found $($combined.Count)" }
+
+          $baselineRuntime = Join-Path $env:RUNNER_TEMP 'p2-baseline-installer-runtime'
           New-Item -ItemType Directory -Path $baselineRuntime -Force | Out-Null
           'P1_BASELINE_RUNTIME' | Set-Content -LiteralPath (Join-Path $baselineRuntime 'baseline-runtime-sentinel.txt') -Encoding ascii
           $baselineStarter = Join-Path $env:RUNNER_TEMP 'p2-baseline-starter.exe'
           Copy-Item -LiteralPath "$env:SystemRoot\System32\cmd.exe" -Destination $baselineStarter -Force
           $baselineOut = Join-Path $env:RUNNER_TEMP 'p2-setup-baseline'
           New-Item -ItemType Directory -Path $baselineOut -Force | Out-Null
-          & $env:P2_ISCC `
-            '--no-signing' `
-            "--define=RuntimeRoot=$baselineRuntime" `
-            '--define=RuntimeBuildId=baseline-p1' `
-            "--define=StableStarter=$baselineStarter" `
-            '--define=ProductVersion=0.1.0-p1-baseline' `
-            '--define=SourceSha=0000000000000000000000000000000000000001' `
-            "--define=OutputDir=$baselineOut" `
-            $script
+          & $env:P2_ISCC '--no-signing' "--define=RuntimeRoot=$baselineRuntime" '--define=RuntimeBuildId=baseline-p1' "--define=StableStarter=$baselineStarter" '--define=ProductVersion=0.1.0-p1-baseline' '--define=SourceSha=0000000000000000000000000000000000000001' "--define=OutputDir=$baselineOut" $script
           if ($LASTEXITCODE -ne 0) { throw "P1 baseline Inno compile failed rc=$LASTEXITCODE" }
           $baseline = @(Get-ChildItem -LiteralPath $baselineOut -Filter 'SovereignTwin-Setup-*-win-x64.exe' -File)
           if ($baseline.Count -ne 1) { throw "expected one P1 baseline setup, found $($baseline.Count)" }
 
           "P2_SETUP=$($candidate[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P2_COMBINED_SETUP=$($combined[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "P2_BASELINE_SETUP=$($baseline[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Prove P2 same-app upgrade updates starter and adds Control Center entry
@@ -231,10 +233,8 @@ jobs:
           $menuShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Sovereign Twin\Sovereign Twin.lnk'
           $ccShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Sovereign Twin\Sovereign Twin Control Center.lnk'
           Remove-Item -LiteralPath $startupShortcut,$menuShortcut,$ccShortcut -Force -ErrorAction SilentlyContinue
-
           $baseProc = Start-Process -FilePath $env:P2_BASELINE_SETUP -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',('/DIR="' + $root + '"'),('/LOG="' + $baselineLog + '"')) -PassThru -Wait -WindowStyle Hidden
           if ($baseProc.ExitCode -ne 0) { throw "P1 baseline install failed rc=$($baseProc.ExitCode)" }
-
           $pointer = Join-Path $root 'runtime-source.json'
           $pointerBytes = '{"p2":"manual-existing-binding","execution_authority":"NONE","can_execute":false}'
           [System.IO.File]::WriteAllText($pointer, $pointerBytes, [System.Text.UTF8Encoding]::new($false))
@@ -243,13 +243,8 @@ jobs:
           $baselineStarterHash = (Get-FileHash -LiteralPath $starter -Algorithm SHA256).Hash
           $startupHash = (Get-FileHash -LiteralPath $startupShortcut -Algorithm SHA256).Hash
           $menuHash = (Get-FileHash -LiteralPath $menuShortcut -Algorithm SHA256).Hash
-
           $candidateProc = Start-Process -FilePath $env:P2_SETUP -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',('/DIR="' + $root + '"'),('/LOG="' + $candidateLog + '"')) -PassThru -Wait -WindowStyle Hidden
-          if ($candidateProc.ExitCode -ne 0) {
-            if (Test-Path -LiteralPath $candidateLog) { Get-Content -LiteralPath $candidateLog | Out-Host }
-            throw "P2 candidate install failed rc=$($candidateProc.ExitCode)"
-          }
-
+          if ($candidateProc.ExitCode -ne 0) { throw "P2 candidate install failed rc=$($candidateProc.ExitCode)" }
           $candidateStarterHash = (Get-FileHash -LiteralPath $starter -Algorithm SHA256).Hash
           $expectedStarterHash = (Get-FileHash -LiteralPath $env:P2_STARTER -Algorithm SHA256).Hash
           if ($candidateStarterHash -eq $baselineStarterHash) { throw 'P2 upgrade preserved obsolete starter' }
@@ -258,14 +253,12 @@ jobs:
           if ((Get-FileHash -LiteralPath $startupShortcut -Algorithm SHA256).Hash -ne $startupHash) { throw 'P2 upgrade replaced existing Startup shortcut' }
           if ((Get-FileHash -LiteralPath $menuShortcut -Algorithm SHA256).Hash -ne $menuHash) { throw 'P2 upgrade replaced existing main Start Menu shortcut' }
           if (-not (Test-Path -LiteralPath $ccShortcut)) { throw 'P2 Control Center shortcut missing after upgrade' }
-
           $shell = New-Object -ComObject WScript.Shell
           $ccLink = $shell.CreateShortcut($ccShortcut)
           if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$ccLink.TargetPath, $starter)) { throw 'P2 Control Center shortcut target mismatch' }
           if ([string]$ccLink.Arguments -ne '--control-center') { throw 'P2 Control Center shortcut arguments mismatch' }
           if ([string]$ccLink.WorkingDirectory -ne $root) { throw 'P2 Control Center shortcut working directory mismatch' }
           if (Test-Path -LiteralPath (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\Sovereign Twin Control Center.lnk')) { throw 'P2 unexpectedly created Control Center autostart' }
-
           $arpRoot = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall'
           $arp = @(Get-ChildItem -LiteralPath $arpRoot | ForEach-Object { $p = Get-ItemProperty -LiteralPath $_.PSPath; if ([string]$p.DisplayName -eq 'Sovereign Twin') { $p } })
           if ($arp.Count -ne 1) { throw "P2 upgrade expected one ARP entry, found $($arp.Count)" }
@@ -277,6 +270,78 @@ jobs:
           if ((Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash -ne $pointerHash) { throw 'P2 uninstall mutated manual pointer' }
           if (Test-Path -LiteralPath $ccShortcut) { throw 'P2 uninstall left installer-owned Control Center shortcut' }
 
+      - name: Prove combined P1C binding cutover launches Control Center from candidate runtime
+        shell: pwsh
+        env:
+          SOVEREIGN_TWIN_CONTROL_CENTER_SUPPRESS_BROWSER: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'p2 combined binding cutover'
+          New-Item -ItemType Directory -Path (Join-Path $root 'runtimes') -Force | Out-Null
+          $baselineRuntime = Join-Path (Join-Path $root 'runtimes') $env:P2_BASELINE_BUILD_ID
+          New-Item -ItemType Directory -Path $baselineRuntime -Force | Out-Null
+          Get-ChildItem -LiteralPath $env:P2_BASELINE_RUNTIME -Force | Copy-Item -Destination $baselineRuntime -Recurse -Force
+          $starter = Join-Path $root 'SovereignTwin-Start.exe'
+          Copy-Item -LiteralPath $env:P2_STARTER -Destination $starter -Force
+
+          $baselineTwin = Join-Path $baselineRuntime 'Scripts\sovereign-twin.exe'
+          $baselinePy = Join-Path $baselineRuntime 'python.exe'
+          $memoryDir = Join-Path $root 'memory'
+          New-Item -ItemType Directory -Path $memoryDir -Force | Out-Null
+          $db = Join-Path $memoryDir 'twin.db'
+          & $baselineTwin --db $db init | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'combined baseline memory init failed' }
+          $memoryManifest = Join-Path $memoryDir 'twin-memory-manifest.json'
+          $memoryManifestObj = [ordered]@{ schema='sovereign-twin.memory-manifest/v1'; db=[System.IO.Path]::GetFullPath($db); embedding_model='text-embedding-nomic-embed-text-v1.5'; embedding_dimension=768; embedding_contract=[ordered]@{document_task_prefix='search_document';query_task_prefix='search_query'}; execution_authority='NONE'; can_execute=$false }
+          [System.IO.File]::WriteAllText($memoryManifest, ($memoryManifestObj | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
+          $now = [DateTime]::UtcNow.ToString('o')
+          $pointerObj = [ordered]@{ schema='sovereign-twin.windows-runtime-source/v3'; repository='bitmaster162/continuityos'; source_sha='0000000000000000000000000000000000000001'; installed_at_utc=$now; python=[System.IO.Path]::GetFullPath($baselinePy); twin_executable=[System.IO.Path]::GetFullPath($baselineTwin); memory_db=[System.IO.Path]::GetFullPath($db); admission_queue=[System.IO.Path]::GetFullPath((Join-Path $memoryDir 'admissions.jsonl')); llm_server='http://127.0.0.1:1234'; ui='http://127.0.0.1:8765'; fast_model='qwen3.5-4b'; deep_model='qwen3.6-35b-a3b'; embedding_model='text-embedding-nomic-embed-text-v1.5'; execution_authority='NONE'; can_execute=$false; memory_activated_at_utc=$now; memory_manifest=[System.IO.Path]::GetFullPath($memoryManifest); memory_embedding_dimension=768 }
+          $pointer = Join-Path $root 'runtime-source.json'
+          [System.IO.File]::WriteAllText($pointer, ($pointerObj | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
+          $dbHash = (Get-FileHash -LiteralPath $db -Algorithm SHA256).Hash
+          $manifestHash = (Get-FileHash -LiteralPath $memoryManifest -Algorithm SHA256).Hash
+          $status = & $starter --status 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0 -or $status -notmatch '"ok"\s*:\s*true') { throw "combined baseline starter status failed: $status" }
+
+          $installLog = Join-Path $env:RUNNER_TEMP 'p2-combined-install.log'
+          $proc = Start-Process -FilePath $env:P2_COMBINED_SETUP -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',('/DIR="' + $root + '"'),('/LOG="' + $installLog + '"')) -PassThru -Wait -WindowStyle Hidden
+          if ($proc.ExitCode -ne 0) { if (Test-Path -LiteralPath $installLog) { Get-Content -LiteralPath $installLog | Out-Host }; throw "combined P1C+P2 setup failed rc=$($proc.ExitCode)" }
+
+          $bound = Get-Content -LiteralPath $pointer -Raw -Encoding utf8 | ConvertFrom-Json
+          if ([string]$bound.source_sha -ne '${{ github.event.pull_request.head.sha }}') { throw 'combined pointer source_sha did not switch to P2 candidate' }
+          $candidateRoot = Join-Path (Join-Path $root 'runtimes') $env:P2_RUNTIME_BUILD_ID
+          $expectedPy = [System.IO.Path]::GetFullPath((Join-Path $candidateRoot 'python.exe'))
+          $expectedTwin = [System.IO.Path]::GetFullPath((Join-Path $candidateRoot 'Scripts\sovereign-twin.exe'))
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$bound.python, $expectedPy)) { throw 'combined pointer python is not candidate runtime' }
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$bound.twin_executable, $expectedTwin)) { throw 'combined pointer twin is not candidate runtime' }
+          if ([string]$bound.execution_authority -ne 'NONE' -or [bool]$bound.can_execute) { throw 'combined cutover authority changed' }
+          if ((Get-FileHash -LiteralPath $db -Algorithm SHA256).Hash -ne $dbHash) { throw 'combined cutover mutated memory DB' }
+          if ((Get-FileHash -LiteralPath $memoryManifest -Algorithm SHA256).Hash -ne $manifestHash) { throw 'combined cutover mutated memory manifest' }
+          if ((Get-FileHash -LiteralPath $starter -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $env:P2_STARTER -Algorithm SHA256).Hash) { throw 'combined install did not retain exact P2 starter' }
+
+          $serverPid = $null
+          try {
+            $entryOut = & $starter --control-center 2>&1 | Out-String
+            $entryRc = $LASTEXITCODE
+            if ($entryRc -ne 0) { throw "combined Control Center launch failed rc=$entryRc output=$entryOut" }
+            $entry = $entryOut | ConvertFrom-Json
+            if (-not $entry.ok -or -not $entry.read_only -or $entry.execution_authority -ne 'NONE' -or [bool]$entry.can_execute) { throw "combined entry contract mismatch: $entryOut" }
+            $serverPid = [int]$entry.pid
+            $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8766/health' -Method Get -TimeoutSec 5
+            if (-not $health.ok -or -not $health.read_only -or $health.execution_authority -ne 'NONE' -or [bool]$health.can_execute) { throw 'combined Control Center health mismatch' }
+            if ((Get-FileHash -LiteralPath $db -Algorithm SHA256).Hash -ne $dbHash) { throw 'combined Control Center mutated memory DB' }
+            if ((Get-FileHash -LiteralPath $memoryManifest -Algorithm SHA256).Hash -ne $manifestHash) { throw 'combined Control Center mutated memory manifest' }
+          } finally { if ($serverPid) { Stop-Process -Id $serverPid -Force -ErrorAction SilentlyContinue } }
+
+          $txns = @(Get-ChildItem -LiteralPath (Join-Path $root 'transactions') -Directory)
+          if ($txns.Count -ne 1) { throw "combined cutover expected one P1C transaction receipt, found $($txns.Count)" }
+          $result = Get-Content -LiteralPath (Join-Path $txns[0].FullName 'result.json') -Raw -Encoding utf8 | ConvertFrom-Json
+          if (-not [bool]$result.ok -or [bool]$result.rollback_performed) { throw 'combined cutover transaction receipt invalid' }
+          if ([string]$result.execution_authority -ne 'NONE' -or [bool]$result.can_execute) { throw 'combined cutover receipt authority changed' }
+
+          $uninstaller = Get-ChildItem -LiteralPath (Join-Path $root 'uninstall') -Filter 'unins*.exe' -File | Select-Object -First 1
+          if ($uninstaller) { $unProc = Start-Process -FilePath $uninstaller.FullName -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -PassThru -Wait -WindowStyle Hidden; if ($unProc.ExitCode -ne 0) { throw "combined uninstall failed rc=$($unProc.ExitCode)" } }
+
       - name: Prove stable starter launches read-only Control Center without state mutation
         shell: pwsh
         env:
@@ -286,7 +351,6 @@ jobs:
           $product = Join-Path $env:RUNNER_TEMP 'p2 product root with spaces'
           New-Item -ItemType Directory -Path $product -Force | Out-Null
           Copy-Item -LiteralPath $env:P2_STARTER -Destination (Join-Path $product 'SovereignTwin-Start.exe') -Force
-
           $runtime = $env:P2_RUNTIME
           $python = Join-Path $runtime 'python.exe'
           $twin = Join-Path $runtime 'Scripts\sovereign-twin.exe'
@@ -296,31 +360,10 @@ jobs:
           '{}' | Set-Content -LiteralPath $memoryManifest -Encoding utf8
           & $twin --db $db init | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'temp memory init failed' }
-
           $activationUtc = [DateTime]::UtcNow.ToString('o')
-          $pointer = [ordered]@{
-            schema = 'sovereign-twin.windows-runtime-source/v3'
-            repository = 'bitmaster162/continuityos'
-            source_sha = '${{ github.event.pull_request.head.sha }}'
-            installed_at_utc = $activationUtc
-            python = $python
-            twin_executable = $twin
-            memory_db = $db
-            admission_queue = $queue
-            llm_server = 'http://127.0.0.1:1234'
-            ui = 'http://127.0.0.1:8765'
-            fast_model = 'qwen3.5-4b'
-            deep_model = 'qwen3.6-35b-a3b'
-            embedding_model = 'text-embedding-nomic-embed-text-v1.5'
-            execution_authority = 'NONE'
-            can_execute = $false
-            memory_activated_at_utc = $activationUtc
-            memory_manifest = $memoryManifest
-            memory_embedding_dimension = 768
-          }
+          $pointer = [ordered]@{ schema='sovereign-twin.windows-runtime-source/v3'; repository='bitmaster162/continuityos'; source_sha='${{ github.event.pull_request.head.sha }}'; installed_at_utc=$activationUtc; python=$python; twin_executable=$twin; memory_db=$db; admission_queue=$queue; llm_server='http://127.0.0.1:1234'; ui='http://127.0.0.1:8765'; fast_model='qwen3.5-4b'; deep_model='qwen3.6-35b-a3b'; embedding_model='text-embedding-nomic-embed-text-v1.5'; execution_authority='NONE'; can_execute=$false; memory_activated_at_utc=$activationUtc; memory_manifest=$memoryManifest; memory_embedding_dimension=768 }
           $pointerPath = Join-Path $product 'runtime-source.json'
           [System.IO.File]::WriteAllText($pointerPath, ($pointer | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
-
           $pointerHash = (Get-FileHash -LiteralPath $pointerPath -Algorithm SHA256).Hash
           $dbHash = (Get-FileHash -LiteralPath $db -Algorithm SHA256).Hash
           $manifestHash = (Get-FileHash -LiteralPath $memoryManifest -Algorithm SHA256).Hash
@@ -334,20 +377,16 @@ jobs:
             if (-not $entry.ok -or -not $entry.read_only) { throw "entry contract mismatch: $output" }
             if ($entry.execution_authority -ne 'NONE' -or [bool]$entry.can_execute) { throw "entry authority mismatch: $output" }
             $serverPid = [int]$entry.pid
-
             $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8766/health' -Method Get -TimeoutSec 5
             if (-not $health.ok -or -not $health.read_only) { throw 'Control Center health mismatch' }
             if ($health.execution_authority -ne 'NONE' -or [bool]$health.can_execute) { throw 'Control Center health authority mismatch' }
             $post = Invoke-WebRequest -Uri 'http://127.0.0.1:8766/api/status' -Method Post -Body '{}' -ContentType 'application/json' -SkipHttpErrorCheck -TimeoutSec 5
             if ([int]$post.StatusCode -ne 405) { throw "Control Center POST expected 405, got $($post.StatusCode)" }
-
             if ((Get-FileHash -LiteralPath $pointerPath -Algorithm SHA256).Hash -ne $pointerHash) { throw 'Control Center mutated runtime pointer' }
             if ((Get-FileHash -LiteralPath $db -Algorithm SHA256).Hash -ne $dbHash) { throw 'Control Center mutated memory DB' }
             if ((Get-FileHash -LiteralPath $memoryManifest -Algorithm SHA256).Hash -ne $manifestHash) { throw 'Control Center mutated memory manifest' }
             if (Test-Path -LiteralPath $queue) { throw 'Control Center created admission queue' }
-          } finally {
-            if ($serverPid) { Stop-Process -Id $serverPid -Force -ErrorAction SilentlyContinue }
-          }
+          } finally { if ($serverPid) { Stop-Process -Id $serverPid -Force -ErrorAction SilentlyContinue } }
 
       - name: Prove occupied Control Center port fails closed
         shell: pwsh
@@ -366,7 +405,5 @@ jobs:
             $entry = $output | ConvertFrom-Json
             if ($entry.ok -ne $false) { throw "occupied-port result did not fail closed: $output" }
             if ($entry.execution_authority -ne 'NONE' -or [bool]$entry.can_execute) { throw "occupied-port authority mismatch: $output" }
-          } finally {
-            Stop-Process -Id $foreign.Id -Force -ErrorAction SilentlyContinue
-          }
+          } finally { Stop-Process -Id $foreign.Id -Force -ErrorAction SilentlyContinue }
           exit 0
