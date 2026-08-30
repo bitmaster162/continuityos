@@ -15,6 +15,12 @@ from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 from ._version import __version__
+from .connector_preview import (
+    ConnectorPreviewError,
+    build_connector_preview,
+    build_connector_status,
+    error_payload as connector_error_payload,
+)
 from .memory_explorer import (
     MemoryExplorerError,
     browse_memory,
@@ -200,12 +206,34 @@ def _resolve_explorer_memory_path(config: ControlCenterConfig) -> Path:
     return Path(value).expanduser()
 
 
+def _resolve_connector_memory_path(config: ControlCenterConfig) -> str:
+    """Resolve connector target from the local runtime manifest only."""
+    manifest_path = config.runtime_root / "runtime-source.json"
+    try:
+        manifest = _read_json_file(manifest_path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise ConnectorPreviewError(503, "canonical memory path is unavailable") from exc
+    value = _first_text(manifest, "memory_db", "db", "database")
+    if value is None:
+        raise ConnectorPreviewError(503, "canonical memory path is unavailable")
+    return str(Path(value).expanduser())
+
+
 def _single_query_value(params: Mapping[str, list[str]], key: str) -> str | None:
     values = params.get(key)
     if values is None:
         return None
     if len(values) != 1:
         raise MemoryExplorerError(400, f"{key} must be provided once")
+    return values[0]
+
+
+def _single_connector_value(params: Mapping[str, list[str]], key: str) -> str | None:
+    values = params.get(key)
+    if values is None:
+        return None
+    if len(values) != 1:
+        raise ConnectorPreviewError(400, f"{key} must be provided once")
     return values[0]
 
 
@@ -368,9 +396,9 @@ h1{margin:0;font-size:30px}.sub{color:var(--muted);margin-top:6px}.badge{border:
 .card.wide{grid-column:span 2}.card.full{grid-column:1/-1}h2{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 12px}.big{font-size:25px;font-weight:800;margin:3px 0}
 .row{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-top:1px solid #1b2633}.row:first-of-type{border-top:0}.row span{color:var(--muted)}.row b{overflow-wrap:anywhere;text-align:right}
 .ok{color:var(--green)}.warn{color:var(--amber)}.bad{color:var(--red)}code{color:#bfeaff;font:12px ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}
-button,input,select{border:1px solid var(--line);border-radius:9px;background:#141d28;color:var(--text);padding:9px 12px;font:inherit}button{font-weight:700;cursor:pointer}button:hover{border-color:#3a4c64}.memory-controls{display:grid;grid-template-columns:minmax(180px,1fr) minmax(150px,240px) auto;gap:8px;margin-bottom:10px}.memory-results{display:grid;gap:6px;margin-top:10px}.memory-result{text-align:left;width:100%;font-weight:500}.memory-detail{white-space:pre-wrap;overflow-wrap:anywhere;margin:12px 0 0;padding:12px;border:1px solid var(--line);border-radius:9px;background:#0b1118;color:#d7e5f2;min-height:48px}
+button,input,select{border:1px solid var(--line);border-radius:9px;background:#141d28;color:var(--text);padding:9px 12px;font:inherit}button{font-weight:700;cursor:pointer}button:hover{border-color:#3a4c64}.memory-controls{display:grid;grid-template-columns:minmax(180px,1fr) minmax(150px,240px) auto;gap:8px;margin-bottom:10px}.memory-results{display:grid;gap:6px;margin-top:10px}.memory-result{text-align:left;width:100%;font-weight:500}.memory-detail{white-space:pre-wrap;overflow-wrap:anywhere;margin:12px 0 0;padding:12px;border:1px solid var(--line);border-radius:9px;background:#0b1118;color:#d7e5f2;min-height:48px}.connector-controls{display:grid;grid-template-columns:minmax(180px,280px) auto;gap:8px;margin-bottom:10px}.connector-results{display:grid;gap:6px}.connector-result{padding:7px 0;border-top:1px solid #1b2633}.connector-result:first-child{border-top:0}
 footer{color:var(--muted);font-size:12px;margin-top:18px}.error{color:var(--red)}
-@media(max-width:850px){.grid{grid-template-columns:1fr 1fr}.card.wide{grid-column:span 2}}@media(max-width:570px){.grid{grid-template-columns:1fr}.card.wide{grid-column:span 1}.memory-controls{grid-template-columns:1fr}}
+@media(max-width:850px){.grid{grid-template-columns:1fr 1fr}.card.wide{grid-column:span 2}}@media(max-width:570px){.grid{grid-template-columns:1fr}.card.wide{grid-column:span 1}.memory-controls,.connector-controls{grid-template-columns:1fr}}
 </style>
 </head>
 <body><div class="wrap">
@@ -382,6 +410,7 @@ footer{color:var(--muted);font-size:12px;margin-top:18px}.error{color:var(--red)
 <section class="card"><h2>Governance</h2><div class="row"><span>Execution</span><b id="govExec">—</b></div><div class="row"><span>Trading</span><b id="trade">—</b></div><div class="row"><span>Capital</span><b id="capital">—</b></div></section>
 <section class="card wide"><h2>Canonical memory</h2><div class="row"><span>Path</span><b><code id="dbPath">—</code></b></div><div class="row"><span>SHA256</span><b><code id="dbSha">—</code></b></div><div class="row"><span>Size</span><b id="dbSize">—</b></div><div class="row"><span>Admissions</span><b id="admissions">—</b></div></section>
 <section class="card"><h2>Runtime source</h2><div class="row"><span>ContinuityOS</span><b id="version">—</b></div><div class="row"><span>Baseline</span><b id="baseline">—</b></div><div class="row"><span>Source SHA</span><b><code id="sourceSha">—</code></b></div><div class="row"><span>Old venv</span><b id="oldVenv">—</b></div><div class="row"><span>Rollback backups</span><b id="backups">—</b></div></section>
+<section class="card full"><h2>Connectors</h2><div class="connector-controls"><select id="connectorClient"><option value="">Loading clients…</option></select><button id="connectorPreview" type="button">Preview</button></div><div id="connectorResults" class="connector-results"></div><pre id="connectorDetail" class="memory-detail">Preview only. No client config writes, OAuth, API keys, imports, rollback, or external calls.</pre></section>
 <section class="card full"><h2>Memory Explorer</h2><div class="memory-controls"><input id="memoryQuery" type="search" maxlength="500" placeholder="Lexical search or browse recent"><select id="memoryNamespace"><option value="">All namespaces</option></select><button id="memorySearch" type="button">Search</button></div><div class="row"><span>Items</span><b id="memoryCount">—</b></div><div id="memoryResults" class="memory-results"></div><pre id="memoryDetail" class="memory-detail">Select an item to inspect it. Read-only; vectors are not exposed.</pre></section>
 </div>
 <footer id="stamp">No state loaded. This surface has no mutation routes and does not grant execution authority.</footer>
@@ -418,6 +447,29 @@ async function loadMemory(){
   for(const item of data.items){const button=document.createElement('button');button.type='button';button.className='memory-result';button.textContent=memoryLabel(item);button.addEventListener('click',()=>loadMemoryItem(item.id).catch(error=>{byId('memoryDetail').textContent='Memory read failed: '+error.message}));results.appendChild(button)}
   if(data.items.length===0){const empty=document.createElement('div');empty.textContent='No matching memory items.';results.appendChild(empty)}
 }
+async function loadConnectors(){
+  const response=await fetch('/api/connectors',{cache:'no-store'});
+  const data=await response.json();
+  if(!response.ok||data.ok!==true)throw new Error(data.error||('HTTP '+response.status));
+  const select=byId('connectorClient');const selected=select.value;select.replaceChildren();
+  const results=byId('connectorResults');results.replaceChildren();
+  for(const item of data.clients){
+    const option=document.createElement('option');option.value=item.client;option.textContent=item.client;select.appendChild(option);
+    const row=document.createElement('div');row.className='connector-result';
+    const status=item.connected?'CONNECTED':item.drift?'DRIFT':item.configured?'CONFIGURED':'NOT CONNECTED';
+    row.textContent=item.client+' · '+(item.managed?'managed':'manual')+' · '+status;
+    results.appendChild(row);
+  }
+  if(selected&&data.clients.some((item)=>item.client===selected))select.value=selected;
+}
+async function previewConnector(){
+  const client=byId('connectorClient').value;
+  if(!client)return;
+  const response=await fetch('/api/connectors/preview?client='+encodeURIComponent(client),{cache:'no-store'});
+  const data=await response.json();
+  if(!response.ok||data.ok!==true)throw new Error(data.error||('HTTP '+response.status));
+  byId('connectorDetail').textContent=JSON.stringify(data,null,2);
+}
 async function refresh(){
   byId('error').textContent='';
   try{
@@ -439,12 +491,14 @@ async function refresh(){
     set('sourceSha',data.runtime_source.source_sha);
     set('oldVenv',data.rollback.old_venv_exists);set('backups',data.rollback.backup_count);
     await loadMemory();
-    set('stamp','Updated '+new Date().toLocaleTimeString()+'. READ ONLY · no mutation routes · no execution authority granted.');
+    await loadConnectors();
+    set('stamp','Updated '+new Date().toLocaleTimeString()+'. READ ONLY · connector preview only · no mutation routes · no execution authority granted.');
   }catch(error){byId('error').textContent='Status read failed: '+error.message}
 }
 byId('refresh').addEventListener('click',refresh);
 byId('memorySearch').addEventListener('click',()=>loadMemory().catch(error=>{byId('memoryDetail').textContent='Memory read failed: '+error.message}));
 byId('memoryQuery').addEventListener('keydown',(event)=>{if(event.key==='Enter')byId('memorySearch').click()});
+byId('connectorPreview').addEventListener('click',()=>previewConnector().catch(error=>{byId('connectorDetail').textContent='Connector preview failed: '+error.message}));
 refresh();
 </script>
 </body></html>"""
@@ -486,6 +540,9 @@ def _make_handler(config: ControlCenterConfig):
         def _send_memory_error(self, error: MemoryExplorerError) -> None:
             self._send_json(error.status, _memory_error_payload(error))
 
+        def _send_connector_error(self, error: ConnectorPreviewError) -> None:
+            self._send_json(error.status, connector_error_payload(error))
+
         def do_GET(self) -> None:  # noqa: N802 - stdlib handler contract
             parsed = urlparse(self.path)
             path = parsed.path
@@ -509,6 +566,27 @@ def _make_handler(config: ControlCenterConfig):
                 return
             if path == "/api/status":
                 self._send_json(200, build_status(config))
+                return
+            if path == "/api/connectors":
+                try:
+                    params = parse_qs(parsed.query, keep_blank_values=True)
+                    if params:
+                        raise ConnectorPreviewError(400, "unsupported connector status parameter")
+                    db_path = _resolve_connector_memory_path(config)
+                    self._send_json(200, build_connector_status(db_path))
+                except ConnectorPreviewError as exc:
+                    self._send_connector_error(exc)
+                return
+            if path == "/api/connectors/preview":
+                try:
+                    params = parse_qs(parsed.query, keep_blank_values=True)
+                    if set(params) - {"client"}:
+                        raise ConnectorPreviewError(400, "unsupported connector preview parameter")
+                    client = _single_connector_value(params, "client")
+                    db_path = _resolve_connector_memory_path(config)
+                    self._send_json(200, build_connector_preview(client, db_path))
+                except ConnectorPreviewError as exc:
+                    self._send_connector_error(exc)
                 return
             if path == "/api/memory":
                 try:
