@@ -1,9 +1,10 @@
-"""Read-only Windows product transaction preflight primitives for Sovereign Twin P1A.
+"""Windows product transaction primitives for Sovereign Twin P1.
 
-P1A intentionally implements *no activation writes*. It validates an immutable,
-side-by-side runtime package against the existing runtime-source pointer and memory
-container. Atomic pointer replacement, rollback, repair and uninstall are later P1
-slices and must not be smuggled into this foundation module.
+P1A/P1B expose read-only staging and immutable payload validation. P1C adds one
+bounded write path for an *existing* valid runtime-source/v3 binding: atomically
+switch that pointer to a staged runtime, prove the new binding from a fresh
+packaged process, and restore the previous pointer byte-for-byte on any
+post-switch failure. Memory is never mutated by this module.
 """
 from __future__ import annotations
 
@@ -14,6 +15,9 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import subprocess
+import time
+import uuid
 from typing import Any, Iterable
 
 RUNTIME_PACKAGE_SCHEMA = "sovereign-twin.runtime-package/v1"
@@ -24,6 +28,9 @@ PACKAGE_MANIFEST = "runtime-package.json"
 SUMS_FILE = "SHA256SUMS"
 TREE_EXCLUDES = frozenset({PACKAGE_MANIFEST, SUMS_FILE})
 SQLITE_AUX_SUFFIXES = ("-wal", "-shm", "-journal")
+TRANSACTION_SCHEMA = "sovereign-twin.windows-product-transaction/v1"
+POSTBIND_SCHEMA = "sovereign-twin.windows-product-postbind/v1"
+ROLLBACK_SCHEMA = "sovereign-twin.windows-product-rollback/v1"
 
 RUNTIME_SOURCE_FIELDS = (
     "schema",
@@ -154,11 +161,10 @@ def iter_payload_files(root: str | os.PathLike[str]) -> Iterable[Path]:
 
 def canonical_tree_lines(root: str | os.PathLike[str]) -> list[str]:
     base = Path(root).resolve()
-    lines: list[str] = []
-    for path in iter_payload_files(base):
-        rel = _norm_rel(path.relative_to(base))
-        lines.append(f"{sha256_file(path)}  {path.stat().st_size}  {rel}")
-    return lines
+    return [
+        f"{sha256_file(path)}  {path.stat().st_size}  {_norm_rel(path.relative_to(base))}"
+        for path in iter_payload_files(base)
+    ]
 
 
 def canonical_tree_sha256(root: str | os.PathLike[str]) -> str:
@@ -224,13 +230,13 @@ def _require_exact_runtime_source_shape(pointer: dict[str, Any]) -> None:
             detail.append("missing=" + ",".join(missing))
         if unexpected:
             detail.append("unexpected=" + ",".join(unexpected))
-        raise ValueError("live runtime-source must contain exactly 18 v3 fields: " + " ".join(detail))
-
+        raise ValueError(
+            "live runtime-source must contain exactly 18 v3 fields: " + " ".join(detail)
+        )
     for field in RUNTIME_SOURCE_STRING_FIELDS:
         value = pointer[field]
         if not isinstance(value, str) or not value:
             raise ValueError(f"live runtime-source {field} must be a non-empty JSON string")
-
     if pointer["can_execute"] is not False:
         raise ValueError("live runtime-source can_execute must be false")
     dimension = pointer["memory_embedding_dimension"]
@@ -241,7 +247,9 @@ def _require_exact_runtime_source_shape(pointer: dict[str, Any]) -> None:
 def _require_loopback_url(value: str, field: str) -> int:
     match = _LOOPBACK_RE.fullmatch(value)
     if match is None:
-        raise ValueError(f"live runtime-source {field} must be exact loopback http(s) URL with port")
+        raise ValueError(
+            f"live runtime-source {field} must be exact loopback http(s) URL with port"
+        )
     port = int(match.group(1))
     if port <= 0 or port > 65535:
         raise ValueError(f"live runtime-source {field} port invalid")
@@ -249,7 +257,6 @@ def _require_loopback_url(value: str, field: str) -> int:
 
 
 def _same_runtime_root(python_exe: Path, twin_exe: Path) -> bool:
-    """Mirror native starter layout: <root>/python.exe + <root>/*/sovereign-twin.exe."""
     python_root = python_exe.parent
     twin_root = twin_exe.parent.parent
     return str(python_root).casefold() == str(twin_root).casefold()
@@ -275,7 +282,6 @@ def _sqlite_physical_fingerprints(path: Path) -> dict[str, dict[str, Any]]:
 
 
 def sqlite_physical_fingerprints(path: str | os.PathLike[str]) -> dict[str, dict[str, Any]]:
-    """Public read-only helper used by CI/installer custody checks."""
     return _sqlite_physical_fingerprints(Path(path).resolve())
 
 
@@ -290,7 +296,6 @@ def _reject_pending_sqlite_state(before: dict[str, dict[str, Any]], path: Path) 
 
 
 def _sqlite_memory_audit_zero_write(path: Path, dimension: int) -> dict[str, Any]:
-    """Verify quick_check and exact physical vector width without modifying SQLite files."""
     before = _sqlite_physical_fingerprints(path)
     _reject_pending_sqlite_state(before, path)
 
@@ -302,13 +307,11 @@ def _sqlite_memory_audit_zero_write(path: Path, dimension: int) -> dict[str, Any
         quick = str(row[0]) if row else ""
         if quick.lower() != "ok":
             raise ValueError(f"live memory quick_check failed: {quick}")
-
         items = con.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='items'"
         ).fetchone()
         if items is None:
             raise ValueError("live memory items table missing")
-
         expected_bytes = dimension * 4
         row = con.execute(
             """
@@ -363,7 +366,6 @@ def _validate_memory_manifest(
     dimension: int,
 ) -> dict[str, Any]:
     manifest = _load_json(manifest_path)
-
     manifest_db = _full_path(manifest.get("db"), "memory manifest db")
     if manifest_db != memory_db:
         raise ValueError("memory manifest db path does not bind live memory_db")
@@ -375,10 +377,13 @@ def _validate_memory_manifest(
         or isinstance(manifest_dimension, bool)
         or manifest_dimension != dimension
     ):
-        raise ValueError("memory manifest embedding_dimension does not bind live memory_embedding_dimension")
+        raise ValueError(
+            "memory manifest embedding_dimension does not bind live memory_embedding_dimension"
+        )
     if manifest.get("embedding_contract") != EXPECTED_EMBEDDING_CONTRACT:
-        raise ValueError("memory manifest embedding_contract does not bind Nomic task-prefix contract")
-
+        raise ValueError(
+            "memory manifest embedding_contract does not bind Nomic task-prefix contract"
+        )
     return {
         "path": str(manifest_path),
         "sha256": sha256_file(manifest_path),
@@ -422,7 +427,6 @@ def validate_runtime_package(runtime_root: str | os.PathLike[str]) -> dict[str, 
     supported = package.get("runtime_source_schema_supported")
     if not isinstance(supported, list) or RUNTIME_SOURCE_SCHEMA not in supported:
         raise ValueError("runtime package does not support runtime-source/v3")
-
     dims = package.get("memory_embedding_dimensions_supported")
     if not isinstance(dims, list) or not dims or not all(
         isinstance(x, int) and not isinstance(x, bool) and x > 0 for x in dims
@@ -441,7 +445,11 @@ def validate_runtime_package(runtime_root: str | os.PathLike[str]) -> dict[str, 
 
     path_config = package.get("python_path_config")
     if path_config is not None:
-        if not isinstance(path_config, str) or not path_config or Path(path_config).name != path_config:
+        if (
+            not isinstance(path_config, str)
+            or not path_config
+            or Path(path_config).name != path_config
+        ):
             raise ValueError("runtime package python_path_config invalid")
         pth = root / path_config
         if not pth.is_file():
@@ -451,14 +459,18 @@ def validate_runtime_package(runtime_root: str | os.PathLike[str]) -> dict[str, 
             for line in pth.read_text(encoding="utf-8-sig").splitlines()
         }
         if "lib\\site-packages" not in pth_lines or "import site" not in pth_lines:
-            raise ValueError("runtime package python_path_config does not enable bundled site-packages")
+            raise ValueError(
+                "runtime package python_path_config does not enable bundled site-packages"
+            )
 
     launcher_sha = sha256_file(launcher)
     module_sha = sha256_file(runtime_module)
     tree_sha = canonical_tree_sha256(root)
     if launcher_sha != _require_sha256(package.get("launcher_sha256"), "launcher_sha256"):
         raise ValueError("runtime package launcher SHA mismatch")
-    if module_sha != _require_sha256(package.get("runtime_module_sha256"), "runtime_module_sha256"):
+    if module_sha != _require_sha256(
+        package.get("runtime_module_sha256"), "runtime_module_sha256"
+    ):
         raise ValueError("runtime package module SHA mismatch")
     if tree_sha != _require_sha256(package.get("runtime_tree_sha256"), "runtime_tree_sha256"):
         raise ValueError("runtime package tree SHA mismatch")
@@ -507,7 +519,6 @@ def validate_live_pointer(pointer_path: str | os.PathLike[str]) -> dict[str, Any
     twin_exe = _full_path(pointer["twin_executable"], "twin_executable")
     memory_db = _full_path(pointer["memory_db"], "memory_db")
     memory_manifest = _full_path(pointer["memory_manifest"], "memory_manifest")
-
     for field, required_path in (
         ("python", python_exe),
         ("twin_executable", twin_exe),
@@ -515,14 +526,20 @@ def validate_live_pointer(pointer_path: str | os.PathLike[str]) -> dict[str, Any
         ("memory_manifest", memory_manifest),
     ):
         if not required_path.is_file():
-            raise ValueError(f"live runtime-source {field} missing on disk: {required_path}")
+            raise ValueError(
+                f"live runtime-source {field} missing on disk: {required_path}"
+            )
 
     if python_exe.name.casefold() != "python.exe":
         raise ValueError("live runtime-source python basename must be python.exe")
     if twin_exe.name.casefold() != "sovereign-twin.exe":
-        raise ValueError("live runtime-source twin_executable basename must be sovereign-twin.exe")
+        raise ValueError(
+            "live runtime-source twin_executable basename must be sovereign-twin.exe"
+        )
     if not _same_runtime_root(python_exe, twin_exe):
-        raise ValueError("live runtime-source python and twin_executable must bind the same runtime root")
+        raise ValueError(
+            "live runtime-source python and twin_executable must bind the same runtime root"
+        )
 
     dimension = pointer["memory_embedding_dimension"]
     memory_audit = _sqlite_memory_audit_zero_write(memory_db, dimension)
@@ -532,7 +549,6 @@ def validate_live_pointer(pointer_path: str | os.PathLike[str]) -> dict[str, Any
         pointer["embedding_model"],
         dimension,
     )
-
     return {
         "present": True,
         "path": str(path),
@@ -558,7 +574,6 @@ def stage_validate(
 ) -> dict[str, Any]:
     package = validate_runtime_package(runtime_root)
     live = validate_live_pointer(pointer_path)
-
     if live.get("present"):
         active_twin = Path(str(live["twin_executable"])).resolve()
         staged_root = Path(runtime_root).resolve()
@@ -568,13 +583,11 @@ def stage_validate(
             pass
         else:
             raise ValueError("staged runtime is already referenced by the active pointer")
-
         dim = live["memory_embedding_dimension"]
         if dim not in package["memory_embedding_dimensions_supported"]:
             raise ValueError(
                 "staged runtime does not declare support for active memory embedding dimension"
             )
-
     return {
         "schema": "sovereign-twin.windows-product-stage-validation/v1",
         "ok": True,
@@ -589,13 +602,447 @@ def stage_validate(
     }
 
 
+def _pointer_bytes(obj: dict[str, Any]) -> bytes:
+    _require_exact_runtime_source_shape(obj)
+    _require_none_false(obj, "candidate runtime-source")
+    return (
+        json.dumps(
+            {field: obj[field] for field in RUNTIME_SOURCE_FIELDS},
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _candidate_pointer(
+    live_pointer: dict[str, Any],
+    package: dict[str, Any],
+    runtime_root: Path,
+) -> dict[str, Any]:
+    candidate = dict(live_pointer)
+    candidate["source_sha"] = package["source_sha"]
+    candidate["installed_at_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    candidate["python"] = str((runtime_root / "python.exe").resolve())
+    candidate["twin_executable"] = str((runtime_root / LAUNCHER_REL).resolve())
+    candidate["execution_authority"] = "NONE"
+    candidate["can_execute"] = False
+    _require_exact_runtime_source_shape(candidate)
+    return candidate
+
+
+def _write_exclusive_fsync(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "xb") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def _write_temp_fsync(target: Path, data: bytes) -> Path:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.parent / f".{target.name}.p1c-{uuid.uuid4().hex}.tmp"
+    with open(temp, "xb") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+    return temp
+
+
+def _replace_file_atomic(temp: Path, target: Path) -> None:
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        MOVEFILE_REPLACE_EXISTING = 0x1
+        MOVEFILE_WRITE_THROUGH = 0x8
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        move = kernel32.MoveFileExW
+        move.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD)
+        move.restype = wintypes.BOOL
+        ok = move(
+            str(temp),
+            str(target),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+        if not ok:
+            err = ctypes.get_last_error()
+            raise OSError(err, f"MoveFileExW atomic pointer replace failed: {target}")
+    else:
+        os.replace(temp, target)
+        try:
+            fd = os.open(str(target.parent), os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def _atomic_write_bytes(target: Path, data: bytes) -> None:
+    temp = _write_temp_fsync(target, data)
+    try:
+        _replace_file_atomic(temp, target)
+    finally:
+        if temp.exists():
+            temp.unlink()
+
+
+def _memory_state_from_live(live: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "memory_db": live["memory_db"],
+        "memory_db_sha256": live["memory_db_sha256"],
+        "sqlite_physical_fingerprints": live["sqlite_physical_fingerprints"],
+        "memory_manifest": live["memory_manifest"],
+        "memory_manifest_sha256": live["memory_manifest_binding"]["sha256"],
+    }
+
+
+def _assert_memory_state_unchanged(before: dict[str, Any], after: dict[str, Any]) -> None:
+    if _memory_state_from_live(after) != before:
+        raise ValueError("memory physical state changed during runtime pointer transaction")
+
+
+def _run_starter_status(starter: Path, *, timeout: float = 30.0) -> dict[str, Any]:
+    if not starter.is_file():
+        raise ValueError(f"stable starter missing: {starter}")
+    proc = subprocess.run(
+        [str(starter), "--status"],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+    stdout = proc.stdout.strip()
+    stderr = proc.stderr.strip()
+    if proc.returncode != 0:
+        raise ValueError(
+            f"stable starter --status failed rc={proc.returncode} stdout={stdout!r} stderr={stderr!r}"
+        )
+    try:
+        status = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"stable starter --status returned non-JSON output: {stdout!r}") from exc
+    if not isinstance(status, dict) or status.get("ok") is not True:
+        raise ValueError(f"stable starter --status did not report ok=true: {status!r}")
+    if status.get("execution_authority") != "NONE" or status.get("can_execute") is not False:
+        raise ValueError("stable starter --status authority boundary changed")
+    return status
+
+
+def postbind(
+    runtime_root: str | os.PathLike[str],
+    pointer_path: str | os.PathLike[str],
+    starter_path: str | os.PathLike[str],
+) -> dict[str, Any]:
+    package = validate_runtime_package(runtime_root)
+    live = validate_live_pointer(pointer_path)
+    if not live.get("present"):
+        raise ValueError("postbind requires an existing runtime-source pointer")
+    runtime = Path(runtime_root).resolve()
+    if Path(live["python"]).resolve() != (runtime / "python.exe").resolve():
+        raise ValueError("postbind pointer python does not bind staged runtime")
+    if Path(live["twin_executable"]).resolve() != (runtime / LAUNCHER_REL).resolve():
+        raise ValueError("postbind pointer twin_executable does not bind staged runtime")
+    if live["source_sha"].lower() != str(package["source_sha"]).lower():
+        raise ValueError("postbind pointer source_sha does not bind staged runtime")
+    status = _run_starter_status(Path(starter_path).resolve())
+    return {
+        "schema": POSTBIND_SCHEMA,
+        "ok": True,
+        "effect": "READ_ONLY_POSTBIND",
+        "runtime_root": str(runtime),
+        "pointer_sha256": live["sha256"],
+        "source_sha": live["source_sha"],
+        "starter_status": status,
+        "memory": _memory_state_from_live(live),
+        "execution_authority": "NONE",
+        "can_execute": False,
+    }
+
+
+def _fresh_postbind(
+    package: dict[str, Any],
+    runtime_root: Path,
+    pointer: Path,
+    starter: Path,
+    timeout: float,
+) -> dict[str, Any]:
+    cmd = [
+        package["python"],
+        "-B",
+        "-I",
+        "-m",
+        "continuityos.windows_product_transaction",
+        "postbind",
+        "--runtime-root",
+        str(runtime_root),
+        "--pointer",
+        str(pointer),
+        "--starter",
+        str(starter),
+    ]
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise ValueError(
+            "fresh-process postbind failed "
+            f"rc={proc.returncode} stdout={proc.stdout.strip()!r} stderr={proc.stderr.strip()!r}"
+        )
+    try:
+        receipt = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError("fresh-process postbind returned invalid JSON") from exc
+    if not isinstance(receipt, dict) or receipt.get("ok") is not True:
+        raise ValueError(f"fresh-process postbind did not report ok=true: {receipt!r}")
+    return receipt
+
+
+def _rollback_bytes(
+    pointer: Path,
+    backup_bytes: bytes,
+    expected_current_sha256: str,
+    starter: Path | None,
+) -> dict[str, Any]:
+    if sha256_file(pointer) != expected_current_sha256.lower():
+        raise ValueError("rollback refuses pointer drift from expected current SHA-256")
+    _atomic_write_bytes(pointer, backup_bytes)
+    restored_sha = hashlib.sha256(backup_bytes).hexdigest()
+    if sha256_file(pointer) != restored_sha:
+        raise ValueError("rollback pointer readback SHA-256 mismatch")
+    live = validate_live_pointer(pointer)
+    status = _run_starter_status(starter) if starter is not None else None
+    return {
+        "schema": ROLLBACK_SCHEMA,
+        "ok": True,
+        "pointer_sha256": restored_sha,
+        "live_source_sha": live["source_sha"],
+        "starter_status": status,
+        "memory": _memory_state_from_live(live),
+        "execution_authority": "NONE",
+        "can_execute": False,
+    }
+
+
+def rollback(
+    pointer_path: str | os.PathLike[str],
+    backup_path: str | os.PathLike[str],
+    expected_current_sha256: str,
+    starter_path: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    pointer = Path(pointer_path).resolve()
+    backup = Path(backup_path).resolve()
+    if not pointer.is_file():
+        raise ValueError("rollback requires current pointer file")
+    if not backup.is_file():
+        raise ValueError("rollback backup missing")
+    _require_sha256(expected_current_sha256, "expected_current_sha256")
+    backup_bytes = backup.read_bytes()
+
+    probe = pointer.parent / f".runtime-source.rollback-probe-{uuid.uuid4().hex}.json"
+    _write_exclusive_fsync(probe, backup_bytes)
+    try:
+        previous = validate_live_pointer(probe)
+        if not previous.get("present"):
+            raise ValueError("rollback backup does not contain valid runtime-source")
+    finally:
+        probe.unlink(missing_ok=True)
+
+    starter = Path(starter_path).resolve() if starter_path else None
+    return _rollback_bytes(
+        pointer,
+        backup_bytes,
+        expected_current_sha256.lower(),
+        starter,
+    )
+
+
+def activate(
+    runtime_root: str | os.PathLike[str],
+    pointer_path: str | os.PathLike[str],
+    starter_path: str | os.PathLike[str],
+    *,
+    postbind_timeout: float = 45.0,
+) -> dict[str, Any]:
+    runtime = Path(runtime_root).resolve()
+    pointer = Path(pointer_path).resolve()
+    starter = Path(starter_path).resolve()
+
+    staged = stage_validate(runtime, pointer)
+    if not staged["live"].get("present"):
+        raise ValueError("P1C activation requires an existing valid runtime-source pointer")
+    if not starter.is_file():
+        raise ValueError(f"stable starter missing: {starter}")
+
+    package = staged["runtime_package"]
+    old_live = staged["live"]
+    old_bytes = pointer.read_bytes()
+    old_sha = hashlib.sha256(old_bytes).hexdigest()
+    memory_before = _memory_state_from_live(old_live)
+    live_obj = _load_json(pointer)
+    candidate_obj = _candidate_pointer(live_obj, package, runtime)
+    candidate_bytes = _pointer_bytes(candidate_obj)
+    candidate_sha = hashlib.sha256(candidate_bytes).hexdigest()
+
+    txn_root = pointer.parent / "transactions"
+    txn_id = f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{uuid.uuid4().hex}"
+    txn_dir = txn_root / txn_id
+    txn_dir.mkdir(parents=True, exist_ok=False)
+    backup = txn_dir / "before.runtime-source.json"
+    candidate_receipt = txn_dir / "candidate.runtime-source.json"
+    result_path = txn_dir / "result.json"
+    _write_exclusive_fsync(backup, old_bytes)
+    _write_exclusive_fsync(candidate_receipt, candidate_bytes)
+
+    switched = False
+    rollback_receipt = None
+    try:
+        package_now = validate_runtime_package(runtime)
+        live_now = validate_live_pointer(pointer)
+        if live_now.get("sha256") != old_sha or pointer.read_bytes() != old_bytes:
+            raise ValueError("activation refuses live pointer drift since preflight")
+        if package_now["runtime_tree_sha256"] != package["runtime_tree_sha256"]:
+            raise ValueError("activation refuses staged runtime drift since preflight")
+        _assert_memory_state_unchanged(memory_before, live_now)
+
+        candidate_probe = txn_dir / "candidate.validate.json"
+        _write_exclusive_fsync(candidate_probe, candidate_bytes)
+        try:
+            candidate_live = validate_live_pointer(candidate_probe)
+            _assert_memory_state_unchanged(memory_before, candidate_live)
+        finally:
+            candidate_probe.unlink(missing_ok=True)
+
+        _atomic_write_bytes(pointer, candidate_bytes)
+        switched = True
+        if sha256_file(pointer) != candidate_sha:
+            raise ValueError("candidate pointer readback SHA-256 mismatch")
+
+        post = _fresh_postbind(
+            package,
+            runtime,
+            pointer,
+            starter,
+            postbind_timeout,
+        )
+        live_after = validate_live_pointer(pointer)
+        if live_after["sha256"] != candidate_sha:
+            raise ValueError("postbind pointer drift detected")
+        _assert_memory_state_unchanged(memory_before, live_after)
+
+        result = {
+            "schema": TRANSACTION_SCHEMA,
+            "ok": True,
+            "effect": "ATOMIC_EXISTING_BINDING_UPDATE",
+            "transaction_id": txn_id,
+            "transaction_dir": str(txn_dir),
+            "backup_path": str(backup),
+            "candidate_receipt_path": str(candidate_receipt),
+            "old_pointer_sha256": old_sha,
+            "new_pointer_sha256": candidate_sha,
+            "old_source_sha": old_live["source_sha"],
+            "new_source_sha": package["source_sha"],
+            "postbind": post,
+            "rollback_performed": False,
+            "memory_mutated": False,
+            "execution_authority": "NONE",
+            "can_execute": False,
+        }
+        _write_exclusive_fsync(
+            result_path,
+            (json.dumps(result, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"),
+        )
+        return result
+    except Exception as exc:
+        rollback_error = None
+        if switched:
+            try:
+                rollback_receipt = _rollback_bytes(
+                    pointer,
+                    old_bytes,
+                    candidate_sha,
+                    starter,
+                )
+                live_rolled_back = validate_live_pointer(pointer)
+                _assert_memory_state_unchanged(memory_before, live_rolled_back)
+            except Exception as rb_exc:
+                rollback_error = f"{type(rb_exc).__name__}: {rb_exc}"
+
+        failure = {
+            "schema": TRANSACTION_SCHEMA,
+            "ok": False,
+            "effect": "ATOMIC_EXISTING_BINDING_UPDATE",
+            "transaction_id": txn_id,
+            "transaction_dir": str(txn_dir),
+            "backup_path": str(backup),
+            "candidate_receipt_path": str(candidate_receipt),
+            "old_pointer_sha256": old_sha,
+            "candidate_pointer_sha256": candidate_sha,
+            "error_class": type(exc).__name__,
+            "error": str(exc),
+            "pointer_switch_performed": switched,
+            "rollback_performed": rollback_receipt is not None,
+            "rollback": rollback_receipt,
+            "rollback_error": rollback_error,
+            "memory_mutated": False,
+            "execution_authority": "NONE",
+            "can_execute": False,
+        }
+        _write_exclusive_fsync(
+            result_path,
+            (json.dumps(failure, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"),
+        )
+        if rollback_error:
+            raise RuntimeError(
+                f"activation failed and rollback verification also failed: {failure}"
+            ) from exc
+        raise ValueError(
+            "activation failed after bounded transaction; "
+            f"rollback_performed={failure['rollback_performed']}: {exc}"
+        ) from exc
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m continuityos.windows_product_transaction")
     sub = p.add_subparsers(dest="cmd", required=True)
+
     stage = sub.add_parser("stage-validate", help="read-only staged runtime validation")
     stage.add_argument("--runtime-root", required=True)
     stage.add_argument("--pointer", required=True)
+
+    act = sub.add_parser("activate", help="atomically update an existing runtime binding")
+    act.add_argument("--runtime-root", required=True)
+    act.add_argument("--pointer", required=True)
+    act.add_argument("--starter", required=True)
+    act.add_argument("--postbind-timeout", type=float, default=45.0)
+
+    post = sub.add_parser("postbind", help="read-only fresh-process binding verification")
+    post.add_argument("--runtime-root", required=True)
+    post.add_argument("--pointer", required=True)
+    post.add_argument("--starter", required=True)
+
+    rb = sub.add_parser("rollback", help="restore a byte-exact validated pointer backup")
+    rb.add_argument("--pointer", required=True)
+    rb.add_argument("--backup", required=True)
+    rb.add_argument("--expected-current-sha256", required=True)
+    rb.add_argument("--starter")
     return p
+
+
+def _failure_schema(cmd: str) -> tuple[str, str]:
+    if cmd == "postbind":
+        return POSTBIND_SCHEMA, "READ_ONLY_POSTBIND"
+    if cmd == "rollback":
+        return ROLLBACK_SCHEMA, "ATOMIC_POINTER_ROLLBACK"
+    if cmd == "activate":
+        return TRANSACTION_SCHEMA, "ATOMIC_EXISTING_BINDING_UPDATE"
+    return "sovereign-twin.windows-product-stage-validation/v1", "READ_ONLY_ZERO_EXTERNAL_EFFECTS"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -603,21 +1050,43 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.cmd == "stage-validate":
             result = stage_validate(args.runtime_root, args.pointer)
-        else:  # pragma: no cover - argparse prevents this
+        elif args.cmd == "activate":
+            result = activate(
+                args.runtime_root,
+                args.pointer,
+                args.starter,
+                postbind_timeout=args.postbind_timeout,
+            )
+        elif args.cmd == "postbind":
+            result = postbind(args.runtime_root, args.pointer, args.starter)
+        elif args.cmd == "rollback":
+            result = rollback(
+                args.pointer,
+                args.backup,
+                args.expected_current_sha256,
+                args.starter,
+            )
+        else:
             raise ValueError(f"unsupported command: {args.cmd}")
         print(json.dumps(result, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
         return 0
-    except (OSError, ValueError, sqlite3.DatabaseError, json.JSONDecodeError) as exc:
+    except (
+        OSError,
+        ValueError,
+        RuntimeError,
+        sqlite3.DatabaseError,
+        json.JSONDecodeError,
+        subprocess.SubprocessError,
+    ) as exc:
+        schema, effect = _failure_schema(args.cmd)
         print(
             json.dumps(
                 {
-                    "schema": "sovereign-twin.windows-product-stage-validation/v1",
+                    "schema": schema,
                     "ok": False,
-                    "effect": "READ_ONLY_ZERO_EXTERNAL_EFFECTS",
+                    "effect": effect,
                     "error_class": type(exc).__name__,
                     "error": str(exc),
-                    "activation_performed": False,
-                    "pointer_switch_performed": False,
                     "memory_mutated": False,
                     "execution_authority": "NONE",
                     "can_execute": False,
