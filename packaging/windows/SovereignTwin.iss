@@ -19,6 +19,9 @@
 #ifndef P1CEnableExistingBindingActivation
   #define P1CEnableExistingBindingActivation "0"
 #endif
+#ifndef P2EnableControlCenterEntry
+  #define P2EnableControlCenterEntry "0"
+#endif
 
 [Setup]
 AppId=SovereignTwin.Windows
@@ -50,12 +53,18 @@ RestartApplications=no
 
 [Files]
 Source: "{#RuntimeRoot}\*"; DestDir: "{app}\runtimes\{#RuntimeBuildId}"; Excludes: "runtime-source.json"; Flags: ignoreversion recursesubdirs createallsubdirs
+#if P2EnableControlCenterEntry == "1"
+Source: "{#StableStarter}"; DestDir: "{app}"; DestName: "SovereignTwin-Start.exe"; Flags: ignoreversion
+#else
 Source: "{#StableStarter}"; DestDir: "{app}"; DestName: "SovereignTwin-Start.exe"; Flags: ignoreversion onlyifdoesntexist
+#endif
 
 [Icons]
 Name: "{userstartup}\Sovereign Twin UI"; Filename: "{app}\SovereignTwin-Start.exe"; Parameters: "--serve"; WorkingDir: "{app}"; Check: ShouldCreateAutostartShortcut
 Name: "{group}\Sovereign Twin"; Filename: "{app}\SovereignTwin-Start.exe"; Parameters: "--open"; WorkingDir: "{app}"; Check: ShouldCreateStartMenuShortcut
+#if P2EnableControlCenterEntry == "1"
 Name: "{group}\Sovereign Twin Control Center"; Filename: "{app}\SovereignTwin-Start.exe"; Parameters: "--control-center"; WorkingDir: "{app}"; Check: ShouldCreateControlCenterShortcut
+#endif
 
 [Code]
 function ShouldCreateAutostartShortcut: Boolean;
@@ -74,6 +83,7 @@ begin
       ExpandConstant('{group}\Sovereign Twin.lnk'));
 end;
 
+#if P2EnableControlCenterEntry == "1"
 function ShouldCreateControlCenterShortcut: Boolean;
 begin
   Result := not FileExists(ExpandConstant('{group}\Sovereign Twin Control Center.lnk'));
@@ -81,6 +91,7 @@ begin
     Log('Preserving pre-existing Control Center shortcut: ' +
       ExpandConstant('{group}\Sovereign Twin Control Center.lnk'));
 end;
+#endif
 
 #if P1CEnableExistingBindingActivation == "1"
 const
