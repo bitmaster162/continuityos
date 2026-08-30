@@ -456,7 +456,7 @@ jobs:
               CloseHandle(h);
               buf[got] = '\0';
               if (strstr(buf, "${{ github.event.pull_request.head.sha }}") != NULL) return 42;
-              printf("{\"ok\":true,\"execution_authority\":\"NONE\",\"can_execute\":false}\\n");
+              printf("{\"ok\":true,\"execution_authority\":\"NONE\",\"can_execute\":false}\n");
               return 0;
           }
           '@ | Set-Content -LiteralPath $src -Encoding ascii
