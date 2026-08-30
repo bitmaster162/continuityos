@@ -17,7 +17,7 @@
   #error OutputDir define is required
 #endif
 #ifndef P1CEnableExistingBindingActivation
-  #define P1CEnableExistingBindingActivation 0
+  #define P1CEnableExistingBindingActivation "0"
 #endif
 
 [Setup]
@@ -73,7 +73,7 @@ begin
       ExpandConstant('{group}\Sovereign Twin.lnk'));
 end;
 
-#if P1CEnableExistingBindingActivation == 1
+#if P1CEnableExistingBindingActivation == "1"
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   PythonExe: String;
