@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from continuityos.windows_product_transaction import _assert_memory_state_unchanged
+
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "packaging" / "windows" / "SovereignTwin.iss"
@@ -15,6 +17,32 @@ def _installer_text() -> str:
             f"repo-only Windows installer source is not packaged in wheel: {INSTALLER.name}"
         )
     return INSTALLER.read_text(encoding="utf-8")
+
+
+def _transaction_memory_states(memory_db: Path) -> tuple[dict, dict]:
+    db = str(memory_db)
+    manifest = str(memory_db.with_name("twin-memory-manifest.json"))
+    physical = {
+        db: {"present": True, "size": 36864, "mtime_ns": 1, "sha256": "a" * 64},
+        db + "-wal": {"present": False},
+        db + "-shm": {"present": False},
+        db + "-journal": {"present": False},
+    }
+    before = {
+        "memory_db": db,
+        "memory_db_sha256": "a" * 64,
+        "sqlite_physical_fingerprints": {key: dict(value) for key, value in physical.items()},
+        "memory_manifest": manifest,
+        "memory_manifest_sha256": "b" * 64,
+    }
+    after = {
+        "memory_db": db,
+        "memory_db_sha256": "a" * 64,
+        "sqlite_physical_fingerprints": {key: dict(value) for key, value in physical.items()},
+        "memory_manifest": manifest,
+        "memory_manifest_binding": {"sha256": "b" * 64},
+    }
+    return before, after
 
 
 def test_p1b_requires_explicit_prebuilt_runtime_inputs():
@@ -170,6 +198,52 @@ def test_p1c_helper_failure_is_logged_and_forces_nonzero_setup_exit():
     assert "P1C activation helper output capture failed:" in text
     assert "GetExceptionMessage" in text
     assert "P1C activation helper failed rc=" in text
+
+
+def test_p1c_transaction_compare_tolerates_only_shm_coordination_drift(tmp_path: Path):
+    before, after = _transaction_memory_states(tmp_path / "twin.db")
+    shm = str(tmp_path / "twin.db-shm")
+    after["sqlite_physical_fingerprints"][shm] = {
+        "present": True,
+        "size": 32768,
+        "mtime_ns": 2,
+        "sha256": "c" * 64,
+    }
+
+    _assert_memory_state_unchanged(before, after)
+
+    # Receipts still retain the physical -shm fingerprint; only the transaction-wide
+    # cross-process equality comparison normalizes this volatile coordination state.
+    assert after["sqlite_physical_fingerprints"][shm]["present"] is True
+
+
+@pytest.mark.parametrize("suffix", ("", "-wal", "-journal"))
+def test_p1c_transaction_compare_rejects_db_wal_and_journal_drift(
+    tmp_path: Path, suffix: str
+):
+    before, after = _transaction_memory_states(tmp_path / "twin.db")
+    key = str(tmp_path / "twin.db") + suffix
+    after["sqlite_physical_fingerprints"][key] = {
+        "present": True,
+        "size": 1,
+        "mtime_ns": 2,
+        "sha256": "d" * 64,
+    }
+
+    with pytest.raises(ValueError, match="memory physical state changed"):
+        _assert_memory_state_unchanged(before, after)
+
+
+def test_p1c_transaction_compare_rejects_db_and_manifest_content_drift(tmp_path: Path):
+    before, after = _transaction_memory_states(tmp_path / "twin.db")
+    after["memory_db_sha256"] = "e" * 64
+    with pytest.raises(ValueError, match="memory physical state changed"):
+        _assert_memory_state_unchanged(before, after)
+
+    before, after = _transaction_memory_states(tmp_path / "twin.db")
+    after["memory_manifest_binding"]["sha256"] = "f" * 64
+    with pytest.raises(ValueError, match="memory physical state changed"):
+        _assert_memory_state_unchanged(before, after)
 
 
 def test_p1c_default_build_remains_p1b_stage_only_without_activation_define():

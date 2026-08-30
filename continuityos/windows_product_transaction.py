@@ -700,8 +700,23 @@ def _memory_state_from_live(live: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _transaction_memory_state_for_compare(state: dict[str, Any]) -> dict[str, Any]:
+    """Normalize only SQLite's volatile WAL shared-memory state for cross-process compare."""
+    comparable = dict(state)
+    physical = dict(comparable["sqlite_physical_fingerprints"])
+    shm_path = str(Path(str(comparable["memory_db"]) + "-shm"))
+    physical.pop(shm_path, None)
+    comparable["sqlite_physical_fingerprints"] = physical
+    return comparable
+
+
 def _assert_memory_state_unchanged(before: dict[str, Any], after: dict[str, Any]) -> None:
-    if _memory_state_from_live(after) != before:
+    # A read-only SQLite process may create/update -shm WAL coordination state.
+    # Keep -shm in receipts and each zero-write open audit, but do not treat that
+    # cross-process coordination churn as logical memory mutation. DB, WAL,
+    # journal, manifest and their content fingerprints remain exact invariants.
+    after_state = _memory_state_from_live(after)
+    if _transaction_memory_state_for_compare(after_state) != _transaction_memory_state_for_compare(before):
         raise ValueError("memory physical state changed during runtime pointer transaction")
 
 
