@@ -1,0 +1,228 @@
+name: windows-product-p2-control-center
+
+on:
+  pull_request:
+    paths:
+      - "continuityos/windows_control_center_entry.py"
+      - "continuityos/control_center.py"
+      - "native/windows/sovereign_twin_start.c"
+      - "packaging/windows/SovereignTwin.iss"
+      - "tests/test_windows_control_center_entry.py"
+      - "tests/test_windows_relative_launcher_contract.py"
+      - "tests/test_windows_inno_contract.py"
+      - "tools/build_windows_runtime.py"
+      - "pyproject.toml"
+      - ".github/workflows/windows-product-p2-control-center.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-product-p2-control-center-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: win-x64 / Control Center product entry
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out exact PR source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up build Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install bounded test and build tooling
+        run: python -m pip install pytest==9.1.1 build==1.5.0
+
+      - name: Run bounded P2 contract tests
+        env:
+          PYTHONUTF8: "1"
+        run: >-
+          python -m pytest -q
+          tests/test_control_center.py
+          tests/test_windows_control_center_entry.py
+          tests/test_windows_relative_launcher_contract.py
+          tests/test_windows_inno_contract.py
+
+      - name: Build exact ContinuityOS wheel
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $wheelhouse = Join-Path $env:RUNNER_TEMP 'p2-wheelhouse'
+          New-Item -ItemType Directory -Path $wheelhouse -Force | Out-Null
+          python -m build --wheel --outdir $wheelhouse
+          if ($LASTEXITCODE -ne 0) { throw 'wheel build failed' }
+          $wheels = @(Get-ChildItem -LiteralPath $wheelhouse -Filter '*.whl')
+          if ($wheels.Count -ne 1) { throw "expected exactly one wheel, found $($wheels.Count)" }
+          "P2_WHEEL=$($wheels[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Compile native launcher and stable starter
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path -LiteralPath $vswhere)) { throw 'vswhere.exe not found' }
+          $vs = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
+          if (-not $vs) { throw 'Visual C++ toolchain not found' }
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          if (-not (Test-Path -LiteralPath $vcvars)) { throw 'vcvars64.bat not found' }
+
+          $nativeOut = Join-Path $env:RUNNER_TEMP 'p2-native'
+          New-Item -ItemType Directory -Path $nativeOut -Force | Out-Null
+          $launcher = Join-Path $nativeOut 'sovereign-twin.exe'
+          $starter = Join-Path $nativeOut 'SovereignTwin-Start.exe'
+          $launcherSrc = Join-Path $env:GITHUB_WORKSPACE 'native\windows\sovereign_twin_launcher.c'
+          $starterSrc = Join-Path $env:GITHUB_WORKSPACE 'native\windows\sovereign_twin_start.c'
+          $bat = Join-Path $env:RUNNER_TEMP 'p2-build-native.cmd'
+
+          @"
+          @echo off
+          call "$vcvars"
+          if errorlevel 1 exit /b %errorlevel%
+          cl.exe /nologo /W4 /WX /O2 /Fe:"$launcher" "$launcherSrc" shell32.lib
+          if errorlevel 1 exit /b %errorlevel%
+          cl.exe /nologo /W4 /WX /O2 /Fe:"$starter" "$starterSrc" shell32.lib
+          if errorlevel 1 exit /b %errorlevel%
+          "@ | Set-Content -LiteralPath $bat -Encoding ascii
+
+          & cmd.exe /d /c $bat
+          if ($LASTEXITCODE -ne 0) { throw "native compile failed rc=$LASTEXITCODE" }
+          "P2_LAUNCHER=$launcher" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P2_STARTER=$starter" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Download exact CPython 3.11.9 embeddable runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:RUNNER_TEMP 'python-3.11.9-embed-amd64.zip'
+          $pyroot = Join-Path $env:RUNNER_TEMP 'python-3.11.9-embed-amd64'
+          Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip' -OutFile $zip
+          New-Item -ItemType Directory -Path $pyroot -Force | Out-Null
+          Expand-Archive -LiteralPath $zip -DestinationPath $pyroot -Force
+          if (-not (Test-Path -LiteralPath (Join-Path $pyroot 'python.exe'))) { throw 'embedded python.exe missing' }
+          "P2_PYROOT=$pyroot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build immutable runtime payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:RUNNER_TEMP 'p2-runtimes'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          python -m tools.build_windows_runtime `
+            --python-runtime $env:P2_PYROOT `
+            --wheel $env:P2_WHEEL `
+            --launcher $env:P2_LAUNCHER `
+            --output-root $out `
+            --source-sha '${{ github.event.pull_request.head.sha }}' `
+            --architecture win-x64 `
+            --embedding-dimension 768
+          if ($LASTEXITCODE -ne 0) { throw 'runtime builder failed' }
+          $runtimes = @(Get-ChildItem -LiteralPath $out -Directory | Where-Object { $_.Name -notlike '.p1a-prep-*' })
+          if ($runtimes.Count -ne 1) { throw "expected exactly one runtime output, found $($runtimes.Count)" }
+          "P2_RUNTIME=$($runtimes[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Prove stable starter launches read-only Control Center without state mutation
+        shell: pwsh
+        env:
+          SOVEREIGN_TWIN_CONTROL_CENTER_SUPPRESS_BROWSER: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $product = Join-Path $env:RUNNER_TEMP 'p2 product root with spaces'
+          New-Item -ItemType Directory -Path $product -Force | Out-Null
+          Copy-Item -LiteralPath $env:P2_STARTER -Destination (Join-Path $product 'SovereignTwin-Start.exe') -Force
+
+          $runtime = $env:P2_RUNTIME
+          $python = Join-Path $runtime 'python.exe'
+          $twin = Join-Path $runtime 'Scripts\sovereign-twin.exe'
+          $db = Join-Path $env:RUNNER_TEMP 'p2-control-center-memory.db'
+          $queue = Join-Path $env:RUNNER_TEMP 'p2-control-center-admissions.jsonl'
+          $memoryManifest = Join-Path $env:RUNNER_TEMP 'p2-control-center-memory-manifest.json'
+          '{}' | Set-Content -LiteralPath $memoryManifest -Encoding utf8
+          & $twin --db $db init | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'temp memory init failed' }
+
+          $activationUtc = [DateTime]::UtcNow.ToString('o')
+          $pointer = [ordered]@{
+            schema = 'sovereign-twin.windows-runtime-source/v3'
+            repository = 'bitmaster162/continuityos'
+            source_sha = '${{ github.event.pull_request.head.sha }}'
+            installed_at_utc = $activationUtc
+            python = $python
+            twin_executable = $twin
+            memory_db = $db
+            admission_queue = $queue
+            llm_server = 'http://127.0.0.1:1234'
+            ui = 'http://127.0.0.1:8765'
+            fast_model = 'qwen3.5-4b'
+            deep_model = 'qwen3.6-35b-a3b'
+            embedding_model = 'text-embedding-nomic-embed-text-v1.5'
+            execution_authority = 'NONE'
+            can_execute = $false
+            memory_activated_at_utc = $activationUtc
+            memory_manifest = $memoryManifest
+            memory_embedding_dimension = 768
+          }
+          $pointerPath = Join-Path $product 'runtime-source.json'
+          [System.IO.File]::WriteAllText(
+            $pointerPath,
+            ($pointer | ConvertTo-Json -Depth 8),
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
+          $pointerHash = (Get-FileHash -LiteralPath $pointerPath -Algorithm SHA256).Hash
+          $dbHash = (Get-FileHash -LiteralPath $db -Algorithm SHA256).Hash
+          $manifestHash = (Get-FileHash -LiteralPath $memoryManifest -Algorithm SHA256).Hash
+          $starter = Join-Path $product 'SovereignTwin-Start.exe'
+          $serverPid = $null
+          try {
+            $output = & $starter --control-center 2>&1 | Out-String
+            $rc = $LASTEXITCODE
+            if ($rc -ne 0) { throw "Control Center starter failed rc=$rc output=$output" }
+            $entry = $output | ConvertFrom-Json
+            if (-not $entry.ok -or -not $entry.read_only) { throw "entry contract mismatch: $output" }
+            if ($entry.execution_authority -ne 'NONE' -or [bool]$entry.can_execute) { throw "entry authority mismatch: $output" }
+            $serverPid = [int]$entry.pid
+
+            $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8766/health' -Method Get -TimeoutSec 5
+            if (-not $health.ok -or -not $health.read_only) { throw 'Control Center health mismatch' }
+            if ($health.execution_authority -ne 'NONE' -or [bool]$health.can_execute) { throw 'Control Center health authority mismatch' }
+
+            $post = Invoke-WebRequest -Uri 'http://127.0.0.1:8766/api/status' -Method Post -Body '{}' -ContentType 'application/json' -SkipHttpErrorCheck -TimeoutSec 5
+            if ([int]$post.StatusCode -ne 405) { throw "Control Center POST expected 405, got $($post.StatusCode)" }
+
+            if ((Get-FileHash -LiteralPath $pointerPath -Algorithm SHA256).Hash -ne $pointerHash) { throw 'Control Center mutated runtime pointer' }
+            if ((Get-FileHash -LiteralPath $db -Algorithm SHA256).Hash -ne $dbHash) { throw 'Control Center mutated memory DB' }
+            if ((Get-FileHash -LiteralPath $memoryManifest -Algorithm SHA256).Hash -ne $manifestHash) { throw 'Control Center mutated memory manifest' }
+            if (Test-Path -LiteralPath $queue) { throw 'Control Center created admission queue' }
+          } finally {
+            if ($serverPid) { Stop-Process -Id $serverPid -Force -ErrorAction SilentlyContinue }
+          }
+
+      - name: Prove occupied Control Center port fails closed
+        shell: pwsh
+        env:
+          SOVEREIGN_TWIN_CONTROL_CENTER_SUPPRESS_BROWSER: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $product = Join-Path $env:RUNNER_TEMP 'p2 product root with spaces'
+          $starter = Join-Path $product 'SovereignTwin-Start.exe'
+          $foreign = Start-Process -FilePath (Get-Command python).Source -ArgumentList @('-m','http.server','8766','--bind','127.0.0.1') -PassThru -WindowStyle Hidden
+          try {
+            Start-Sleep -Milliseconds 500
+            $output = & $starter --control-center 2>&1 | Out-String
+            $rc = $LASTEXITCODE
+            if ($rc -eq 0) { throw "occupied-port launch unexpectedly succeeded: $output" }
+            $entry = $output | ConvertFrom-Json
+            if ($entry.ok -ne $false) { throw "occupied-port result did not fail closed: $output" }
+            if ($entry.execution_authority -ne 'NONE' -or [bool]$entry.can_execute) { throw "occupied-port authority mismatch: $output" }
+          } finally {
+            Stop-Process -Id $foreign.Id -Force -ErrorAction SilentlyContinue
+          }
