@@ -130,8 +130,8 @@ def test_p1c_activation_is_opt_in_and_delegated_to_packaged_python():
     lower = text.lower()
 
     assert "#ifndef P1CEnableExistingBindingActivation" in text
-    assert "#define P1CEnableExistingBindingActivation 0" in text
-    assert "#if P1CEnableExistingBindingActivation == 1" in text
+    assert '#define P1CEnableExistingBindingActivation "0"' in text
+    assert '#if P1CEnableExistingBindingActivation == "1"' in text
     assert "procedure CurStepChanged(CurStep: TSetupStep);" in text
     assert "if CurStep <> ssPostInstall then" in text
     assert "FileExists(PointerPath)" in text
@@ -161,7 +161,7 @@ def test_p1c_default_build_remains_p1b_stage_only_without_activation_define():
     define_line = next(
         line for line in text.splitlines() if "#define P1CEnableExistingBindingActivation" in line
     )
-    assert define_line.strip().endswith("0")
+    assert define_line.strip().endswith('"0"')
     assert 'Excludes: "runtime-source.json"' in text
     assert "P1C activation skipped: no existing runtime-source.json binding" in text
 
