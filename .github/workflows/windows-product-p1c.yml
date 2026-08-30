@@ -1,0 +1,578 @@
+name: windows-product-p1c
+
+on:
+  pull_request:
+    paths:
+      - "continuityos/windows_product_transaction.py"
+      - "packaging/windows/SovereignTwin.iss"
+      - "tests/test_windows_product_transaction.py"
+      - "tests/test_windows_inno_contract.py"
+      - ".github/workflows/windows-product-p1c.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-product-p1c-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: win-x64 / atomic binding update
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out exact PR source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up build Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install bounded test and build tooling
+        run: python -m pip install pytest==9.1.1 build==1.5.0
+
+      - name: Run transaction and Inno contract tests
+        env:
+          PYTHONUTF8: "1"
+          CONTINUITYOS_SILENCE_EMBED_WARN: "1"
+        run: >-
+          python -m pytest -q
+          tests/test_windows_product_transaction.py
+          tests/test_windows_inno_contract.py
+
+      - name: Prove default transaction CLI remains read-only
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $help = python -m continuityos.windows_product_transaction --help 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "default transaction --help failed: $help" }
+          if ($help -notmatch 'stage-validate') { throw 'stage-validate missing from default transaction CLI' }
+          if ($help -match '(?m)^\s*(activate|postbind|rollback|repair|uninstall)\s') {
+            throw "write-capable command leaked into default transaction CLI: $help"
+          }
+
+          $p1cHelp = python -m continuityos.windows_product_transaction --p1c-write --help 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "P1C capability help failed: $p1cHelp" }
+          foreach ($cmd in @('activate', 'postbind', 'rollback')) {
+            if ($p1cHelp -notmatch $cmd) { throw "P1C capability missing command: $cmd" }
+          }
+
+      - name: Build exact ContinuityOS wheel
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $wheelhouse = Join-Path $env:RUNNER_TEMP 'p1c-wheelhouse'
+          New-Item -ItemType Directory -Path $wheelhouse -Force | Out-Null
+          python -m build --wheel --outdir $wheelhouse
+          if ($LASTEXITCODE -ne 0) { throw 'wheel build failed' }
+          $wheels = @(Get-ChildItem -LiteralPath $wheelhouse -Filter '*.whl')
+          if ($wheels.Count -ne 1) { throw "expected exactly one wheel, found $($wheels.Count)" }
+          "P1C_WHEEL=$($wheels[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Compile P1A native launcher and stable starter
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path -LiteralPath $vswhere)) { throw 'vswhere.exe not found' }
+          $vs = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
+          if (-not $vs) { throw 'Visual C++ toolchain not found' }
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          if (-not (Test-Path -LiteralPath $vcvars)) { throw 'vcvars64.bat not found' }
+
+          $nativeOut = Join-Path $env:RUNNER_TEMP 'p1c-native'
+          New-Item -ItemType Directory -Path $nativeOut -Force | Out-Null
+          $launcher = Join-Path $nativeOut 'sovereign-twin.exe'
+          $starter = Join-Path $nativeOut 'SovereignTwin-Start.exe'
+          $launcherSrc = Join-Path $env:GITHUB_WORKSPACE 'native\windows\sovereign_twin_launcher.c'
+          $starterSrc = Join-Path $env:GITHUB_WORKSPACE 'native\windows\sovereign_twin_start.c'
+          $bat = Join-Path $env:RUNNER_TEMP 'p1c-build-native.cmd'
+
+          @"
+          @echo off
+          call "$vcvars"
+          if errorlevel 1 exit /b %errorlevel%
+          cl.exe /nologo /W4 /WX /O2 /Fe:"$launcher" "$launcherSrc" shell32.lib
+          if errorlevel 1 exit /b %errorlevel%
+          cl.exe /nologo /W4 /WX /O2 /Fe:"$starter" "$starterSrc" shell32.lib
+          if errorlevel 1 exit /b %errorlevel%
+          "@ | Set-Content -LiteralPath $bat -Encoding ascii
+
+          & cmd.exe /d /c $bat
+          if ($LASTEXITCODE -ne 0) { throw "native compile failed rc=$LASTEXITCODE" }
+          if (-not (Test-Path -LiteralPath $launcher)) { throw 'launcher output missing' }
+          if (-not (Test-Path -LiteralPath $starter)) { throw 'stable starter output missing' }
+          "P1C_LAUNCHER=$launcher" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P1C_STARTER=$starter" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P1C_VCVARS=$vcvars" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Download exact CPython 3.11.9 embeddable runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:RUNNER_TEMP 'python-3.11.9-embed-amd64.zip'
+          $pyroot = Join-Path $env:RUNNER_TEMP 'python-3.11.9-embed-amd64'
+          Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip' -OutFile $zip
+          New-Item -ItemType Directory -Path $pyroot -Force | Out-Null
+          Expand-Archive -LiteralPath $zip -DestinationPath $pyroot -Force
+          if (-not (Test-Path -LiteralPath (Join-Path $pyroot 'python.exe'))) { throw 'embedded python.exe missing' }
+          if (-not (Test-Path -LiteralPath (Join-Path $pyroot 'python311._pth'))) { throw 'embedded python311._pth missing' }
+          "P1C_PYROOT=$pyroot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build baseline and candidate immutable runtimes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:RUNNER_TEMP 'p1c-runtimes'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          $baselineSha = '0000000000000000000000000000000000000001'
+
+          python -m tools.build_windows_runtime `
+            --python-runtime $env:P1C_PYROOT `
+            --wheel $env:P1C_WHEEL `
+            --launcher $env:P1C_LAUNCHER `
+            --output-root $out `
+            --source-sha $baselineSha `
+            --architecture win-x64 `
+            --embedding-dimension 768
+          if ($LASTEXITCODE -ne 0) { throw 'baseline runtime builder failed' }
+
+          python -m tools.build_windows_runtime `
+            --python-runtime $env:P1C_PYROOT `
+            --wheel $env:P1C_WHEEL `
+            --launcher $env:P1C_LAUNCHER `
+            --output-root $out `
+            --source-sha '${{ github.event.pull_request.head.sha }}' `
+            --architecture win-x64 `
+            --embedding-dimension 768
+          if ($LASTEXITCODE -ne 0) { throw 'candidate runtime builder failed' }
+
+          $runtimes = @(Get-ChildItem -LiteralPath $out -Directory | Where-Object { $_.Name -notlike '.p1a-prep-*' })
+          if ($runtimes.Count -ne 2) { throw "expected two runtime outputs, found $($runtimes.Count)" }
+
+          $baseline = $null
+          $candidate = $null
+          foreach ($runtime in $runtimes) {
+            $pkg = Get-Content -LiteralPath (Join-Path $runtime.FullName 'runtime-package.json') -Raw -Encoding utf8 | ConvertFrom-Json
+            if ([string]$pkg.source_sha -eq $baselineSha) { $baseline = $runtime }
+            if ([string]$pkg.source_sha -eq '${{ github.event.pull_request.head.sha }}') { $candidate = $runtime }
+          }
+          if (-not $baseline -or -not $candidate) { throw 'failed to resolve baseline/candidate runtime identities' }
+
+          "P1C_BASELINE_RUNTIME=$($baseline.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P1C_BASELINE_BUILD_ID=$($baseline.Name)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P1C_CANDIDATE_RUNTIME=$($candidate.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "P1C_CANDIDATE_BUILD_ID=$($candidate.Name)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Acquire and verify exact Inno Setup 7.1.0 x64 compiler
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $download = Join-Path $env:RUNNER_TEMP 'inno-download'
+          $innoRoot = Join-Path $env:RUNNER_TEMP 'inno-7.1.0-x64-portable'
+          $innoLog = Join-Path $env:RUNNER_TEMP 'inno-7.1.0-portable-install.log'
+          New-Item -ItemType Directory -Path $download -Force | Out-Null
+
+          gh release download is-7_1_0 --repo jrsoftware/issrc --pattern 'innosetup-7.1.0-x64.exe' --dir $download
+          if ($LASTEXITCODE -ne 0) { throw 'failed to download exact Inno Setup 7.1.0 x64 release asset' }
+          $asset = Join-Path $download 'innosetup-7.1.0-x64.exe'
+          if (-not (Test-Path -LiteralPath $asset)) { throw 'Inno Setup release asset missing after download' }
+
+          Push-Location $download
+          try {
+            gh release verify-asset 'innosetup-7.1.0-x64.exe' --repo jrsoftware/issrc
+            if ($LASTEXITCODE -ne 0) { throw 'GitHub release attestation verification failed for Inno Setup' }
+          } finally {
+            Pop-Location
+          }
+
+          $sig = Get-AuthenticodeSignature -LiteralPath $asset
+          if ($sig.Status -ne 'Valid') { throw "Inno Setup Authenticode status is $($sig.Status), expected Valid" }
+          if ($null -eq $sig.SignerCertificate -or $sig.SignerCertificate.Subject -notmatch 'Pyrsys B\.V\.') {
+            throw "unexpected Inno Setup signer: $($sig.SignerCertificate.Subject)"
+          }
+
+          $installerArgs = @(
+            '/PORTABLE=1',
+            '/VERYSILENT',
+            '/SUPPRESSMSGBOXES',
+            '/NORESTART',
+            '/SP-',
+            '/CURRENTUSER',
+            ('/DIR="' + $innoRoot + '"'),
+            ('/LOG="' + $innoLog + '"')
+          )
+          $proc = Start-Process -FilePath $asset -ArgumentList $installerArgs -PassThru -Wait -WindowStyle Hidden
+          if ($proc.ExitCode -ne 0) {
+            if (Test-Path -LiteralPath $innoLog) { Get-Content -LiteralPath $innoLog | Out-Host }
+            throw "Inno Setup portable compiler extraction failed rc=$($proc.ExitCode)"
+          }
+
+          $iscc = Get-ChildItem -LiteralPath $innoRoot -Filter 'ISCC.exe' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $iscc) { throw 'ISCC.exe not found after verified portable compiler extraction' }
+          $versionText = (& $iscc.FullName --version 2>&1 | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $versionText -notmatch '7\.1\.0') {
+            throw "unexpected ISCC version: $versionText"
+          }
+          "P1C_ISCC=$($iscc.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Compile P1C-enabled unsigned candidate setup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = Join-Path $env:GITHUB_WORKSPACE 'packaging\windows\SovereignTwin.iss'
+          $out = Join-Path $env:RUNNER_TEMP 'p1c-setup'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+
+          & $env:P1C_ISCC `
+            '--no-signing' `
+            "--define=RuntimeRoot=$env:P1C_CANDIDATE_RUNTIME" `
+            "--define=RuntimeBuildId=$env:P1C_CANDIDATE_BUILD_ID" `
+            "--define=StableStarter=$env:P1C_STARTER" `
+            '--define=ProductVersion=0.2.0-p1c-r1' `
+            "--define=SourceSha=${{ github.event.pull_request.head.sha }}" `
+            "--define=OutputDir=$out" `
+            '--define=P1CEnableExistingBindingActivation=1' `
+            $script
+          if ($LASTEXITCODE -ne 0) { throw "P1C Inno compile failed rc=$LASTEXITCODE" }
+          $setups = @(Get-ChildItem -LiteralPath $out -Filter 'SovereignTwin-Setup-*-win-x64.exe' -File)
+          if ($setups.Count -ne 1) { throw "expected one P1C setup, found $($setups.Count)" }
+          "P1C_SETUP=$($setups[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Create baseline existing binding helper
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $helper = Join-Path $env:RUNNER_TEMP 'p1c-create-baseline.ps1'
+          @'
+          param(
+            [Parameter(Mandatory=$true)][string]$Root,
+            [Parameter(Mandatory=$true)][string]$RuntimeSource,
+            [Parameter(Mandatory=$true)][string]$RuntimeBuildId,
+            [Parameter(Mandatory=$true)][string]$StarterSource,
+            [Parameter(Mandatory=$true)][string]$SourceSha
+          )
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path $Root -Force | Out-Null
+          $runtimes = Join-Path $Root 'runtimes'
+          New-Item -ItemType Directory -Path $runtimes -Force | Out-Null
+          $runtime = Join-Path $runtimes $RuntimeBuildId
+          New-Item -ItemType Directory -Path $runtime -Force | Out-Null
+          Get-ChildItem -LiteralPath $RuntimeSource -Force | Copy-Item -Destination $runtime -Recurse -Force
+          $starter = Join-Path $Root 'SovereignTwin-Start.exe'
+          Copy-Item -LiteralPath $StarterSource -Destination $starter -Force
+
+          $py = Join-Path $runtime 'python.exe'
+          $twin = Join-Path $runtime 'Scripts\sovereign-twin.exe'
+          $memoryDir = Join-Path $Root 'memory'
+          New-Item -ItemType Directory -Path $memoryDir -Force | Out-Null
+          $db = Join-Path $memoryDir 'twin.db'
+          & $twin --db $db init | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'baseline memory init failed' }
+
+          foreach ($suffix in @('-wal','-journal')) {
+            $sidecar = $db + $suffix
+            if ((Test-Path -LiteralPath $sidecar) -and (Get-Item -LiteralPath $sidecar).Length -gt 0) {
+              throw "baseline memory has pending SQLite sidecar: $sidecar"
+            }
+          }
+
+          $manifest = Join-Path $memoryDir 'twin-memory-manifest.json'
+          $manifestObj = [ordered]@{
+            schema = 'sovereign-twin.memory-manifest/v1'
+            db = [System.IO.Path]::GetFullPath($db)
+            embedding_model = 'text-embedding-nomic-embed-text-v1.5'
+            embedding_dimension = 768
+            embedding_contract = [ordered]@{
+              document_task_prefix = 'search_document'
+              query_task_prefix = 'search_query'
+            }
+            execution_authority = 'NONE'
+            can_execute = $false
+          }
+          [System.IO.File]::WriteAllText(
+            $manifest,
+            ($manifestObj | ConvertTo-Json -Depth 8),
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
+          $now = [DateTime]::UtcNow.ToString('o')
+          $pointerObj = [ordered]@{
+            schema = 'sovereign-twin.windows-runtime-source/v3'
+            repository = 'bitmaster162/continuityos'
+            source_sha = $SourceSha
+            installed_at_utc = $now
+            python = [System.IO.Path]::GetFullPath($py)
+            twin_executable = [System.IO.Path]::GetFullPath($twin)
+            memory_db = [System.IO.Path]::GetFullPath($db)
+            admission_queue = [System.IO.Path]::GetFullPath((Join-Path $memoryDir 'admissions.jsonl'))
+            llm_server = 'http://127.0.0.1:1234'
+            ui = 'http://127.0.0.1:8765'
+            fast_model = 'qwen3.5-4b'
+            deep_model = 'qwen3.6-35b-a3b'
+            embedding_model = 'text-embedding-nomic-embed-text-v1.5'
+            execution_authority = 'NONE'
+            can_execute = $false
+            memory_activated_at_utc = $now
+            memory_manifest = [System.IO.Path]::GetFullPath($manifest)
+            memory_embedding_dimension = 768
+          }
+          $pointer = Join-Path $Root 'runtime-source.json'
+          [System.IO.File]::WriteAllText(
+            $pointer,
+            ($pointerObj | ConvertTo-Json -Depth 8),
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
+          $status = & $starter --status 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0 -or $status -notmatch '"ok"\s*:\s*true') {
+            throw "baseline stable starter status failed: $status"
+          }
+
+          [pscustomobject]@{
+            root = $Root
+            runtime = $runtime
+            pointer = $pointer
+            pointer_sha256 = (Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash.ToLowerInvariant()
+            pointer_b64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($pointer))
+            memory_db = $db
+            memory_sha256 = (Get-FileHash -LiteralPath $db -Algorithm SHA256).Hash.ToLowerInvariant()
+            manifest_sha256 = (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash.ToLowerInvariant()
+          } | ConvertTo-Json -Compress
+          '@ | Set-Content -LiteralPath $helper -Encoding utf8
+          "P1C_BASELINE_HELPER=$helper" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Existing binding update succeeds through P1C-enabled installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'p1c success product with spaces'
+          $baselineJson = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $env:P1C_BASELINE_HELPER `
+            -Root $root `
+            -RuntimeSource $env:P1C_BASELINE_RUNTIME `
+            -RuntimeBuildId $env:P1C_BASELINE_BUILD_ID `
+            -StarterSource $env:P1C_STARTER `
+            -SourceSha '0000000000000000000000000000000000000001'
+          if ($LASTEXITCODE -ne 0) { throw 'failed to create success baseline' }
+          $baseline = ($baselineJson | Select-Object -Last 1) | ConvertFrom-Json
+          $pointer = [string]$baseline.pointer
+
+          $installLog = Join-Path $env:RUNNER_TEMP 'p1c-success-install.log'
+          $args = @(
+            '/VERYSILENT',
+            '/SUPPRESSMSGBOXES',
+            '/NORESTART',
+            '/SP-',
+            ('/DIR="' + $root + '"'),
+            ('/LOG="' + $installLog + '"')
+          )
+          $proc = Start-Process -FilePath $env:P1C_SETUP -ArgumentList $args -PassThru -Wait -WindowStyle Hidden
+          if ($proc.ExitCode -ne 0) {
+            if (Test-Path -LiteralPath $installLog) { Get-Content -LiteralPath $installLog | Out-Host }
+            throw "P1C setup failed rc=$($proc.ExitCode)"
+          }
+
+          $obj = Get-Content -LiteralPath $pointer -Raw -Encoding utf8 | ConvertFrom-Json
+          if ([string]$obj.source_sha -ne '${{ github.event.pull_request.head.sha }}') {
+            if (Test-Path -LiteralPath $installLog) { Get-Content -LiteralPath $installLog | Out-Host }
+            throw 'pointer source_sha did not switch to candidate'
+          }
+          $candidateRoot = Join-Path (Join-Path $root 'runtimes') $env:P1C_CANDIDATE_BUILD_ID
+          $expectedPy = [System.IO.Path]::GetFullPath((Join-Path $candidateRoot 'python.exe'))
+          $expectedTwin = [System.IO.Path]::GetFullPath((Join-Path $candidateRoot 'Scripts\sovereign-twin.exe'))
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$obj.python, $expectedPy)) { throw 'pointer python does not bind candidate runtime' }
+          if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals([string]$obj.twin_executable, $expectedTwin)) { throw 'pointer twin does not bind candidate runtime' }
+          if ([string]$obj.execution_authority -ne 'NONE' -or [bool]$obj.can_execute) { throw 'authority boundary changed' }
+          if ((Get-FileHash -LiteralPath ([string]$obj.memory_db) -Algorithm SHA256).Hash.ToLowerInvariant() -ne [string]$baseline.memory_sha256) {
+            throw 'memory DB changed during successful activation'
+          }
+          if ((Get-FileHash -LiteralPath ([string]$obj.memory_manifest) -Algorithm SHA256).Hash.ToLowerInvariant() -ne [string]$baseline.manifest_sha256) {
+            throw 'memory manifest changed during successful activation'
+          }
+
+          $starter = Join-Path $root 'SovereignTwin-Start.exe'
+          $status = & $starter --status 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0 -or $status -notmatch '"ok"\s*:\s*true') { throw "post-install starter status failed: $status" }
+
+          $txns = @(Get-ChildItem -LiteralPath (Join-Path $root 'transactions') -Directory)
+          if ($txns.Count -ne 1) { throw "expected one P1C transaction receipt directory, found $($txns.Count)" }
+          $backup = Join-Path $txns[0].FullName 'before.runtime-source.json'
+          $candidateReceipt = Join-Path $txns[0].FullName 'candidate.runtime-source.json'
+          $resultPath = Join-Path $txns[0].FullName 'result.json'
+          foreach ($required in @($backup,$candidateReceipt,$resultPath)) {
+            if (-not (Test-Path -LiteralPath $required)) { throw "transaction receipt missing: $required" }
+          }
+          if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($backup)) -ne [string]$baseline.pointer_b64) {
+            throw 'transaction backup is not byte-exact old pointer'
+          }
+          if ((Get-FileHash -LiteralPath $candidateReceipt -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $pointer -Algorithm SHA256).Hash) {
+            throw 'candidate pointer receipt does not match live pointer'
+          }
+          $result = Get-Content -LiteralPath $resultPath -Raw -Encoding utf8 | ConvertFrom-Json
+          if (-not [bool]$result.ok -or [bool]$result.rollback_performed) { throw 'successful transaction result receipt invalid' }
+          if ([string]$result.execution_authority -ne 'NONE' -or [bool]$result.can_execute) { throw 'result receipt authority boundary changed' }
+
+          "P1C_SUCCESS_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Compile deterministic postbind-failure starter
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = Join-Path $env:RUNNER_TEMP 'p1c-fail-starter.c'
+          $exe = Join-Path $env:RUNNER_TEMP 'p1c-fail-starter.exe'
+          @'
+          #define UNICODE
+          #define _UNICODE
+          #include <windows.h>
+          #include <stdio.h>
+          #include <wchar.h>
+          #include <string.h>
+
+          int wmain(int argc, wchar_t **argv) {
+              (void)argc;
+              (void)argv;
+              wchar_t exe[MAX_PATH * 4];
+              DWORD n = GetModuleFileNameW(NULL, exe, (DWORD)(sizeof(exe)/sizeof(exe[0])));
+              if (!n || n >= sizeof(exe)/sizeof(exe[0])) return 21;
+              wchar_t *slash = wcsrchr(exe, L'\\');
+              if (!slash) return 22;
+              *slash = L'\0';
+              wchar_t pointer[MAX_PATH * 4];
+              if (swprintf_s(pointer, sizeof(pointer)/sizeof(pointer[0]), L"%ls\\runtime-source.json", exe) < 0) return 23;
+              HANDLE h = CreateFileW(pointer, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                     NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+              if (h == INVALID_HANDLE_VALUE) return 24;
+              char buf[65536];
+              DWORD got = 0;
+              if (!ReadFile(h, buf, sizeof(buf)-1, &got, NULL)) { CloseHandle(h); return 25; }
+              CloseHandle(h);
+              buf[got] = '\0';
+              if (strstr(buf, "${{ github.event.pull_request.head.sha }}") != NULL) return 42;
+              printf("{\"ok\":true,\"execution_authority\":\"NONE\",\"can_execute\":false}\n");
+              return 0;
+          }
+          '@ | Set-Content -LiteralPath $src -Encoding ascii
+
+          $bat = Join-Path $env:RUNNER_TEMP 'p1c-build-fail-starter.cmd'
+          @"
+          @echo off
+          call "$env:P1C_VCVARS"
+          if errorlevel 1 exit /b %errorlevel%
+          cl.exe /nologo /W4 /WX /O2 /Fe:"$exe" "$src"
+          "@ | Set-Content -LiteralPath $bat -Encoding ascii
+          & cmd.exe /d /c $bat
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $exe)) { throw 'failure starter compile failed' }
+          "P1C_FAIL_STARTER=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Forced postbind failure restores old pointer byte-exact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'p1c forced rollback product'
+          $baselineJson = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $env:P1C_BASELINE_HELPER `
+            -Root $root `
+            -RuntimeSource $env:P1C_BASELINE_RUNTIME `
+            -RuntimeBuildId $env:P1C_BASELINE_BUILD_ID `
+            -StarterSource $env:P1C_STARTER `
+            -SourceSha '0000000000000000000000000000000000000001'
+          if ($LASTEXITCODE -ne 0) { throw 'failed to create rollback baseline' }
+          $baseline = ($baselineJson | Select-Object -Last 1) | ConvertFrom-Json
+          $pointer = [string]$baseline.pointer
+
+          $candidateRoot = Join-Path (Join-Path $root 'runtimes') $env:P1C_CANDIDATE_BUILD_ID
+          New-Item -ItemType Directory -Path $candidateRoot -Force | Out-Null
+          Get-ChildItem -LiteralPath $env:P1C_CANDIDATE_RUNTIME -Force | Copy-Item -Destination $candidateRoot -Recurse -Force
+          $failStarter = Join-Path $root 'p1c-fail-starter.exe'
+          Copy-Item -LiteralPath $env:P1C_FAIL_STARTER -Destination $failStarter -Force
+
+          $candidatePy = Join-Path $candidateRoot 'python.exe'
+          $out = & $candidatePy -B -I -m continuityos.windows_product_transaction --p1c-write activate `
+            --runtime-root $candidateRoot `
+            --pointer $pointer `
+            --starter $failStarter 2>&1 | Out-String
+          $rc = $LASTEXITCODE
+          Write-Host "P1C forced rollback helper rc=$rc"
+          Write-Host 'P1C forced rollback helper output:'
+          $out | Write-Host
+          if ($rc -eq 0) { throw "forced postbind failure unexpectedly succeeded: $out" }
+
+          if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($pointer)) -ne [string]$baseline.pointer_b64) {
+            throw 'automatic rollback did not restore old pointer byte-exact'
+          }
+          $obj = Get-Content -LiteralPath $pointer -Raw -Encoding utf8 | ConvertFrom-Json
+          if ([string]$obj.source_sha -ne '0000000000000000000000000000000000000001') { throw 'rollback did not restore old source_sha' }
+          if ((Get-FileHash -LiteralPath ([string]$obj.memory_db) -Algorithm SHA256).Hash.ToLowerInvariant() -ne [string]$baseline.memory_sha256) {
+            throw 'memory DB changed during failed activation/rollback'
+          }
+          if ((Get-FileHash -LiteralPath ([string]$obj.memory_manifest) -Algorithm SHA256).Hash.ToLowerInvariant() -ne [string]$baseline.manifest_sha256) {
+            throw 'memory manifest changed during failed activation/rollback'
+          }
+          if (-not (Test-Path -LiteralPath $candidateRoot)) { throw 'failed staged candidate runtime was removed' }
+
+          $txns = @(Get-ChildItem -LiteralPath (Join-Path $root 'transactions') -Directory)
+          if ($txns.Count -ne 1) { throw "expected one rollback transaction receipt, found $($txns.Count)" }
+          $resultPath = Join-Path $txns[0].FullName 'result.json'
+          $backup = Join-Path $txns[0].FullName 'before.runtime-source.json'
+          Write-Host "P1C forced rollback result.json: $resultPath"
+          Get-Content -LiteralPath $resultPath -Raw -Encoding utf8 | Write-Host
+          $result = Get-Content -LiteralPath $resultPath -Raw -Encoding utf8 | ConvertFrom-Json
+          if ([bool]$result.ok) { throw 'failure receipt unexpectedly reports ok=true' }
+          if (-not [bool]$result.pointer_switch_performed) { throw 'failure case did not reach pointer switch' }
+          if (-not [bool]$result.rollback_performed) { throw 'automatic rollback was not recorded' }
+          if ($null -ne $result.rollback_error) { throw "rollback verification failed: $($result.rollback_error)" }
+          if ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($backup)) -ne [string]$baseline.pointer_b64) {
+            throw 'rollback receipt backup is not byte-exact old pointer'
+          }
+          exit 0
+
+      - name: Emit bounded P1C validation summary
+        shell: pwsh
+        run: |
+          @"
+          {
+            "schema": "sovereign-twin.p1c-windows-ci-validation/v1",
+            "head_sha": "${{ github.event.pull_request.head.sha }}",
+            "os": "windows-latest",
+            "architecture": "win-x64",
+            "inno_setup": "7.1.0-x64",
+            "default_cli_read_only": true,
+            "explicit_p1c_write_capability": true,
+            "existing_binding_only": true,
+            "atomic_pointer_switch": "MoveFileExW_REPLACE_EXISTING_WRITE_THROUGH",
+            "fresh_process_postbind": true,
+            "successful_installer_update": "PASS",
+            "forced_postbind_failure": "PASS",
+            "byte_exact_rollback": "PASS",
+            "failed_candidate_preserved": true,
+            "memory_mutated": false,
+            "execution_authority": "NONE",
+            "can_execute": false
+          }
+          "@ | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+
+      - name: Cleanup bounded CI state
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'SilentlyContinue'
+          foreach ($rootName in @('p1c success product with spaces', 'p1c forced rollback product')) {
+            $root = Join-Path $env:RUNNER_TEMP $rootName
+            if (Test-Path -LiteralPath $root) {
+              $uninstaller = Get-ChildItem -LiteralPath (Join-Path $root 'uninstall') -Filter 'unins*.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($uninstaller) {
+                Start-Process -FilePath $uninstaller.FullName -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
+              }
+              Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+            }
+          }
+          Remove-Item -LiteralPath (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\Sovereign Twin UI.lnk') -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Sovereign Twin\Sovereign Twin.lnk') -Force -ErrorAction SilentlyContinue
+          exit 0

@@ -16,6 +16,9 @@
 #ifndef OutputDir
   #error OutputDir define is required
 #endif
+#ifndef P1CEnableExistingBindingActivation
+  #define P1CEnableExistingBindingActivation "0"
+#endif
 
 [Setup]
 AppId=SovereignTwin.Windows
@@ -69,3 +72,80 @@ begin
     Log('Preserving pre-existing Start Menu shortcut: ' +
       ExpandConstant('{group}\Sovereign Twin.lnk'));
 end;
+
+#if P1CEnableExistingBindingActivation == "1"
+const
+  P1CActivationFailureExitCode = 90;
+
+var
+  P1CActivationFailed: Boolean;
+
+procedure MarkP1CActivationFailure(const MessageText: String);
+begin
+  P1CActivationFailed := True;
+  Log(MessageText);
+end;
+
+function GetCustomSetupExitCode: Integer;
+begin
+  if P1CActivationFailed then
+  begin
+    Result := P1CActivationFailureExitCode;
+    Log('P1C fail-closed custom setup exit code=' + IntToStr(Result));
+  end
+  else
+    Result := 0;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  PythonExe: String;
+  RuntimeRootPath: String;
+  PointerPath: String;
+  StarterPath: String;
+  Params: String;
+  ResultCode: Integer;
+begin
+  if CurStep <> ssPostInstall then
+    Exit;
+
+  PointerPath := ExpandConstant('{app}\runtime-source.json');
+  if not FileExists(PointerPath) then
+  begin
+    Log('P1C activation skipped: no existing runtime-source.json binding');
+    Exit;
+  end;
+
+  RuntimeRootPath := ExpandConstant('{app}\runtimes\{#RuntimeBuildId}');
+  PythonExe := RuntimeRootPath + '\python.exe';
+  StarterPath := ExpandConstant('{app}\SovereignTwin-Start.exe');
+  Params := '-B -I -m continuityos.windows_product_transaction --p1c-write activate' +
+    ' --runtime-root "' + RuntimeRootPath + '"' +
+    ' --pointer "' + PointerPath + '"' +
+    ' --starter "' + StarterPath + '"';
+
+  Log('P1C delegating existing-binding activation to staged packaged Python');
+  try
+    if not ExecAndLogOutput(PythonExe, Params, ExpandConstant('{app}'), SW_HIDE,
+      ewWaitUntilTerminated, ResultCode, nil) then
+    begin
+      MarkP1CActivationFailure(
+        'P1C activation helper could not be started: ' + SysErrorMessage(ResultCode));
+      Exit;
+    end;
+  except
+    MarkP1CActivationFailure(
+      'P1C activation helper output capture failed: ' + GetExceptionMessage);
+    Exit;
+  end;
+
+  if ResultCode <> 0 then
+  begin
+    MarkP1CActivationFailure(
+      'P1C activation helper failed rc=' + IntToStr(ResultCode));
+    Exit;
+  end;
+
+  Log('P1C existing-binding activation helper completed successfully');
+end;
+#endif
