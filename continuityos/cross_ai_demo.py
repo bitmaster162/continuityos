@@ -3,7 +3,7 @@
 This module models a bounded handoff between two allowlisted AI client identities.
 It performs no live connection, provider/network/subprocess I/O, credential access,
 configuration write, runtime/pointer/memory mutation, deployment, trading, or capital
-effect. RUAP transport is intentionally out of scope for this pre-integration slice.
+effect. RUAP transport is intentionally out of scope for this synthetic-only slice.
 """
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ def build_cross_ai_demo_contract(*, source_client: str, target_client: str) -> d
         "target_client": target,
         "purpose_id": "cross_ai_demo",
         "context_transport": "NOT_IMPLEMENTED",
-        "ruap_integration": "OUT_OF_SCOPE_PRE_MERGE",
+        "ruap_integration": "OUT_OF_SCOPE_THIS_SLICE",
         "secret_reference": {
             "reference_id": reference["reference_id"],
             "reference_id_policy": reference["reference_id_policy"],
