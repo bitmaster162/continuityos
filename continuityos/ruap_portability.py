@@ -156,20 +156,25 @@ def validate_ruap_snapshot(snapshot_bytes: bytes | str) -> ValidationResult:
         if source_id is not None and source_id not in source_id_set:
             errors.append(f"{prefix}_unknown_source_id")
 
-    # Fail closed on common explicit effect-authority escalation fields if they
-    # appear at the snapshot root. RUAP context may describe historical effects
-    # inside claims, but the portable artifact itself cannot grant them.
-    prohibited_root_values = {
-        "execution_authority": {"ALLOW", "GRANTED", "EXECUTE"},
-        "capital_permission": {"ALLOW", "GRANTED"},
-        "deploy_permission": {"ALLOW", "GRANTED"},
+    # Optional root effect-authority fields are accepted only when they
+    # explicitly preserve the observe-only boundary. Missing fields remain
+    # valid for schema compatibility; present fields fail closed on wrong type
+    # or any value other than the exact safe value.
+    safe_root_effect_authority: dict[str, Any] = {
+        "execution_authority": "NONE",
+        "can_execute": False,
+        "can_trade": False,
+        "capital_permission": "DENY",
+        "deploy_permission": "DENY",
     }
-    for key, prohibited in prohibited_root_values.items():
-        value = snapshot.get(key)
-        if isinstance(value, str) and value.upper() in prohibited:
-            errors.append(f"root_effect_authority_escalation:{key}")
-    if snapshot.get("can_trade") is True:
-        errors.append("root_effect_authority_escalation:can_trade")
+    for key, safe_value in safe_root_effect_authority.items():
+        if key not in snapshot:
+            continue
+        value = snapshot[key]
+        if type(value) is not type(safe_value):
+            errors.append(f"root_effect_authority_invalid_type:{key}")
+        elif value != safe_value:
+            errors.append(f"root_effect_authority_not_safe:{key}")
 
     if errors:
         return ValidationResult(False, tuple(errors), None)

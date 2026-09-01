@@ -70,12 +70,66 @@ class RuapPortabilityTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("authority_ceiling_not_observe_only", result.errors)
 
+    def test_accepts_explicit_safe_root_effect_authority_values(self):
+        value = snapshot()
+        value.update(
+            {
+                "execution_authority": "NONE",
+                "can_execute": False,
+                "can_trade": False,
+                "capital_permission": "DENY",
+                "deploy_permission": "DENY",
+            }
+        )
+        result = validate_ruap_snapshot(json.dumps(value))
+        self.assertTrue(result.ok, result.errors)
+
+    def test_rejects_explicit_execute_authority(self):
+        value = snapshot()
+        value["can_execute"] = True
+        result = validate_ruap_snapshot(json.dumps(value))
+        self.assertFalse(result.ok)
+        self.assertIn("root_effect_authority_not_safe:can_execute", result.errors)
+
     def test_rejects_explicit_trade_authority(self):
         value = snapshot()
         value["can_trade"] = True
         result = validate_ruap_snapshot(json.dumps(value))
         self.assertFalse(result.ok)
-        self.assertIn("root_effect_authority_escalation:can_trade", result.errors)
+        self.assertIn("root_effect_authority_not_safe:can_trade", result.errors)
+
+    def test_rejects_unknown_or_escalating_root_effect_authority_values(self):
+        cases = (
+            ("execution_authority", "ALLOW"),
+            ("execution_authority", "UNKNOWN"),
+            ("capital_permission", "GRANTED"),
+            ("capital_permission", "UNKNOWN"),
+            ("deploy_permission", "ALLOW"),
+            ("deploy_permission", "UNKNOWN"),
+        )
+        for key, unsafe_value in cases:
+            with self.subTest(key=key, unsafe_value=unsafe_value):
+                value = snapshot()
+                value[key] = unsafe_value
+                result = validate_ruap_snapshot(json.dumps(value))
+                self.assertFalse(result.ok)
+                self.assertIn(f"root_effect_authority_not_safe:{key}", result.errors)
+
+    def test_rejects_wrong_types_for_root_effect_authority_values(self):
+        cases = (
+            ("execution_authority", False),
+            ("can_execute", "false"),
+            ("can_trade", 0),
+            ("capital_permission", None),
+            ("deploy_permission", True),
+        )
+        for key, wrong_type_value in cases:
+            with self.subTest(key=key, wrong_type_value=wrong_type_value):
+                value = snapshot()
+                value[key] = wrong_type_value
+                result = validate_ruap_snapshot(json.dumps(value))
+                self.assertFalse(result.ok)
+                self.assertIn(f"root_effect_authority_invalid_type:{key}", result.errors)
 
     def test_rejects_duplicate_source_ids(self):
         value = snapshot()
