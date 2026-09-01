@@ -22,7 +22,7 @@ def test_synthetic_cross_ai_demo_preserves_zero_effect_governance():
     assert receipt["target_client"] == "cursor"
     assert receipt["purpose_id"] == "cross_ai_demo"
     assert receipt["context_transport"] == "NOT_IMPLEMENTED"
-    assert receipt["ruap_integration"] == "OUT_OF_SCOPE_PRE_MERGE"
+    assert receipt["ruap_integration"] == "OUT_OF_SCOPE_THIS_SLICE"
     assert receipt["execution_authority"] == "NONE"
     assert receipt["can_execute"] is False
     assert receipt["can_trade"] is False
