@@ -587,7 +587,7 @@ def workflow_policy(args: argparse.Namespace) -> int:
         "bench.continuitybench",
         "governance-corpus-detail.json",
         "test_ci_linux_symlink_realpath.py",
-        "actions/upload-artifact@v4",
+        "actions/upload-artifact@v7",
     ]
     missing = [token for token in required if token not in text]
     always_steps = (
