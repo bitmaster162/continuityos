@@ -30,6 +30,7 @@ fast = ["fastembed>=0.3"]
 st = ["sentence-transformers>=2.2"]
 m2v = ["model2vec>=0.3"]
 embeddings = ["fastembed>=0.3", "sentence-transformers>=2.2", "model2vec>=0.3"]
+origin-crypto = ["cryptography>=50.0.1,<51"]
 
 # Backward-compatible aliases for older docs/users.
 fastembed = ["fastembed>=0.3"]
