@@ -323,8 +323,9 @@ def require_valid_cross_ai_ruap_receipt_authenticity_assertion_binding(
     accepted_receipt: Any,
     external_assertion: Any,
 ) -> dict[str, Any]:
+    binding_snapshot = _snapshot(binding_result)
     result = verify_cross_ai_ruap_receipt_authenticity_assertion_binding(
-        binding_result=binding_result,
+        binding_result=binding_snapshot,
         accepted_receipt=accepted_receipt,
         external_assertion=external_assertion,
     )
@@ -333,6 +334,5 @@ def require_valid_cross_ai_ruap_receipt_authenticity_assertion_binding(
             "invalid Cross-AI RUAP authenticity assertion binding: "
             + ",".join(result.errors)
         )
-    snapshot = _snapshot(binding_result)
-    assert type(snapshot) is dict
-    return snapshot
+    assert type(binding_snapshot) is dict
+    return binding_snapshot

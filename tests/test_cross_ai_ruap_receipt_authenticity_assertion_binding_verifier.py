@@ -115,6 +115,41 @@ def test_require_valid_returns_detached_binding_without_mutation() -> None:
     assert (accepted, assertion, binding) == before
 
 
+def test_require_valid_returns_preverification_snapshot_under_caller_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    accepted = accepted_receipt()
+    assertion = external_assertion()
+    binding = producer.bind_cross_ai_ruap_receipt_authenticity_assertion(
+        accepted_receipt=accepted, external_assertion=assertion
+    )
+    expected = copy.deepcopy(binding)
+    observed: dict[str, object] = {}
+
+    def fake_verify(*, binding_result, accepted_receipt, external_assertion):
+        observed["binding_result"] = binding_result
+        binding["source_client"] = "hermes"
+        binding["external_assertion"]["claims"]["provenance_claimed"] = True
+        return verifier.AssertionBindingVerification(True, ())
+
+    monkeypatch.setattr(
+        verifier,
+        "verify_cross_ai_ruap_receipt_authenticity_assertion_binding",
+        fake_verify,
+    )
+    returned = verifier.require_valid_cross_ai_ruap_receipt_authenticity_assertion_binding(
+        binding_result=binding,
+        accepted_receipt=accepted,
+        external_assertion=assertion,
+    )
+
+    assert returned == expected
+    assert returned is observed["binding_result"]
+    assert returned is not binding
+    assert returned["external_assertion"] is not binding["external_assertion"]
+    assert binding != expected
+
+
 @pytest.mark.parametrize(
     ("path", "replacement", "error"),
     [
