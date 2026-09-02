@@ -9,6 +9,7 @@ replaces the pin with a reviewed registry digest.
 
 The optional ``cryptography`` backend is imported lazily. Missing/unsupported
 backend support fails closed; there is no hash/HMAC/manual-attestation fallback.
+All caller input is copied through a bounded plain-data snapshot before validation.
 No provider, network, credential, environment-secret, filesystem, subprocess,
 runtime, pointer, memory, deploy, trading, or capital effect is performed.
 """
@@ -40,10 +41,16 @@ DOMAIN = b"continuityos.cross_ai_ruap_receipt_acceptance_origin/v1\0"
 # exact trust-anchor update gate.
 PINNED_REGISTRY_SHA256 = "c85454892cfd528852f1f084a75dd3ed13393a959c21dca72d19537e64bc3b1e"
 
+# Defensive verifier-envelope limits. These bound copying, canonicalization, error
+# construction, and base64 decoding. They are not claims about provider capacity.
 MAX_KEYS = 32
 MAX_IDENTIFIER_LEN = 96
+MAX_FIELD_NAME_LEN = 128
+MAX_STRING_LEN = 512
 MAX_CONTAINER_ITEMS = 64
 MAX_SNAPSHOT_DEPTH = 4
+MAX_SNAPSHOT_NODES = 512
+MAX_EVIDENCE_COUNT = 1_000_000
 
 _ACCEPTANCE_KEYS = frozenset({
     "schema", "mode", "acceptance_class", "transport_id", "source_client",
@@ -80,9 +87,20 @@ class AcceptanceOriginVerification:
     key_id: str | None = None
 
 
-def _snapshot(value: Any, *, depth: int = 0) -> Any:
+def _snapshot(
+    value: Any,
+    *,
+    depth: int = 0,
+    _budget: list[int] | None = None,
+) -> Any:
+    if _budget is None:
+        _budget = [MAX_SNAPSHOT_NODES]
+    _budget[0] -= 1
+    if _budget[0] < 0:
+        raise ValueError("snapshot_node_budget_exceeded")
     if depth >= MAX_SNAPSHOT_DEPTH:
         raise ValueError("nested_too_deep")
+
     if type(value) is dict:
         if len(value) > MAX_CONTAINER_ITEMS:
             raise ValueError("container_too_large")
@@ -90,18 +108,35 @@ def _snapshot(value: Any, *, depth: int = 0) -> Any:
         for key, item in value.items():
             if type(key) is not str:
                 raise ValueError("non_string_key")
-            out[key] = _snapshot(item, depth=depth + 1)
+            if len(key) > MAX_FIELD_NAME_LEN:
+                raise ValueError("field_name_too_long")
+            out[key] = _snapshot(item, depth=depth + 1, _budget=_budget)
         return out
+
     if type(value) is list:
         if len(value) > MAX_CONTAINER_ITEMS:
             raise ValueError("container_too_large")
-        return [_snapshot(item, depth=depth + 1) for item in value]
-    if type(value) in (str, bool, int):
+        return [
+            _snapshot(item, depth=depth + 1, _budget=_budget)
+            for item in value
+        ]
+
+    if type(value) is str:
+        if len(value) > MAX_STRING_LEN:
+            raise ValueError("string_too_long")
         return value
+
+    if type(value) in (bool, int):
+        return value
+
     raise ValueError("non_plain_value")
 
 
-def _require_keys(value: Any, expected: frozenset[str], label: str) -> dict[str, Any]:
+def _require_keys(
+    value: Any,
+    expected: frozenset[str],
+    label: str,
+) -> dict[str, Any]:
     if type(value) is not dict:
         raise ValueError(f"{label}_not_plain_object")
     actual = frozenset(value)
@@ -110,6 +145,8 @@ def _require_keys(value: Any, expected: frozenset[str], label: str) -> dict[str,
     if missing:
         raise ValueError(f"{label}_missing_key:{missing[0]}")
     if unknown:
+        # Field names have already passed MAX_FIELD_NAME_LEN in _snapshot, so this
+        # diagnostic remains bounded even when the field is caller-controlled.
         raise ValueError(f"{label}_unknown_key:{unknown[0]}")
     return value
 
@@ -154,8 +191,22 @@ def _is_identifier(value: Any) -> bool:
     )
 
 
-def _decode_canonical_b64u(value: Any, *, expected_len: int, label: str) -> bytes:
-    if type(value) is not str or "=" in value or not value:
+def _canonical_b64u_length(decoded_len: int) -> int:
+    return (decoded_len * 4 + 2) // 3
+
+
+def _decode_canonical_b64u(
+    value: Any,
+    *,
+    expected_len: int,
+    label: str,
+) -> bytes:
+    expected_encoded_len = _canonical_b64u_length(expected_len)
+    if (
+        type(value) is not str
+        or "=" in value
+        or len(value) != expected_encoded_len
+    ):
         raise ValueError(f"{label}_encoding_invalid")
     try:
         padding = "=" * ((4 - len(value) % 4) % 4)
@@ -196,14 +247,18 @@ def _require_safe_acceptance(value: Any) -> dict[str, Any]:
     ):
         raise ValueError("acceptance_authority_not_safe")
 
-    evidence = _require_keys(accepted["ruap_evidence"], _EVIDENCE_KEYS, "ruap_evidence")
+    evidence = _require_keys(
+        accepted["ruap_evidence"], _EVIDENCE_KEYS, "ruap_evidence"
+    )
+    source_count = evidence["source_count"]
+    observation_count = evidence["observation_count"]
     if (
         evidence["schema"] != RUAP_SCHEMA
         or not _is_sha256(evidence["snapshot_sha256"])
-        or type(evidence["source_count"]) is not int
-        or evidence["source_count"] < 0
-        or type(evidence["observation_count"]) is not int
-        or evidence["observation_count"] < 0
+        or type(source_count) is not int
+        or not 0 <= source_count <= MAX_EVIDENCE_COUNT
+        or type(observation_count) is not int
+        or not 0 <= observation_count <= MAX_EVIDENCE_COUNT
         or evidence["freshness_required"] is not True
         or evidence["authority_ceiling"] != "OBSERVE_ONLY"
         or evidence["authority_class"] != "EVIDENCE_ONLY"
@@ -227,9 +282,14 @@ def _require_safe_acceptance(value: Any) -> dict[str, Any]:
     return accepted
 
 
-def _require_registry(value: Any) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def _require_registry(
+    value: Any,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     registry = _require_keys(value, _REGISTRY_KEYS, "registry")
-    if registry["schema"] != REGISTRY_SCHEMA or registry["registry_id"] != REGISTRY_ID:
+    if (
+        registry["schema"] != REGISTRY_SCHEMA
+        or registry["registry_id"] != REGISTRY_ID
+    ):
         raise ValueError("registry_contract_invalid")
     keys = registry["keys"]
     if type(keys) is not list:
@@ -253,7 +313,9 @@ def _require_registry(value: Any) -> tuple[dict[str, Any], list[dict[str, Any]]]
         ):
             raise ValueError("registry_key_contract_invalid")
         _decode_canonical_b64u(
-            record["public_key_b64u"], expected_len=32, label="public_key"
+            record["public_key_b64u"],
+            expected_len=32,
+            label="public_key",
         )
         identity = (producer_id, key_id)
         if identity in seen:
@@ -275,7 +337,9 @@ def _require_signature(value: Any) -> dict[str, Any]:
     ):
         raise ValueError("signature_contract_invalid")
     _decode_canonical_b64u(
-        signature["signature_b64u"], expected_len=64, label="signature"
+        signature["signature_b64u"],
+        expected_len=64,
+        label="signature",
     )
     return signature
 
@@ -289,8 +353,15 @@ def _load_ed25519_backend():
     return Ed25519PublicKey, InvalidSignature, UnsupportedAlgorithm
 
 
-def _verify_ed25519(*, public_key: bytes, signature: bytes, message: bytes) -> None:
-    Ed25519PublicKey, InvalidSignature, UnsupportedAlgorithm = _load_ed25519_backend()
+def _verify_ed25519(
+    *,
+    public_key: bytes,
+    signature: bytes,
+    message: bytes,
+) -> None:
+    Ed25519PublicKey, InvalidSignature, UnsupportedAlgorithm = (
+        _load_ed25519_backend()
+    )
     try:
         verifier = Ed25519PublicKey.from_public_bytes(public_key)
         verifier.verify(signature, message)
@@ -344,14 +415,21 @@ def verify_cross_ai_ruap_receipt_acceptance_origin(
         record = matches[0]
         if record["state"] != "ACTIVE":
             raise ValueError("origin_key_not_active")
-        if record["algorithm"] != signature["algorithm"] or record["usage"] != signature["purpose"]:
+        if (
+            record["algorithm"] != signature["algorithm"]
+            or record["usage"] != signature["purpose"]
+        ):
             raise ValueError("origin_key_binding_mismatch")
 
         public_key = _decode_canonical_b64u(
-            record["public_key_b64u"], expected_len=32, label="public_key"
+            record["public_key_b64u"],
+            expected_len=32,
+            label="public_key",
         )
         raw_signature = _decode_canonical_b64u(
-            signature["signature_b64u"], expected_len=64, label="signature"
+            signature["signature_b64u"],
+            expected_len=64,
+            label="signature",
         )
         _verify_ed25519(
             public_key=public_key,

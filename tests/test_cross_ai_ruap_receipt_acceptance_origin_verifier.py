@@ -263,25 +263,30 @@ def test_signature_binding_mutations_fail_closed(
 
 
 @pytest.mark.parametrize(
-    ("field", "replacement", "error"),
+    ("field", "replacement"),
     [
-        ("can_execute", True, "acceptance_authority_not_safe"),
-        ("can_trade", True, "acceptance_authority_not_safe"),
-        ("capital_permission", "ALLOW", "acceptance_authority_not_safe"),
-        ("deploy_permission", "ALLOW", "acceptance_authority_not_safe"),
-        ("execution_authority", "EXECUTE", "acceptance_authority_not_safe"),
+        ("can_execute", True),
+        ("can_trade", True),
+        ("capital_permission", "ALLOW"),
+        ("deploy_permission", "ALLOW"),
+        ("execution_authority", "EXECUTE"),
     ],
 )
-def test_authority_escalation_is_rejected(
-    field: str,
-    replacement,
-    error: str,
-) -> None:
+def test_authority_escalation_is_rejected(field: str, replacement) -> None:
     accepted = accepted_receipt()
     accepted[field] = replacement
     result = verify(accepted=accepted)
     assert result.ok is False
-    assert result.errors == (error,)
+    assert result.errors == ("acceptance_authority_not_safe",)
+
+
+@pytest.mark.parametrize("field", ["source_count", "observation_count"])
+def test_evidence_counts_are_bounded(field: str) -> None:
+    accepted = accepted_receipt()
+    accepted["ruap_evidence"][field] = verifier.MAX_EVIDENCE_COUNT + 1
+    result = verify(accepted=accepted)
+    assert result.ok is False
+    assert result.errors == ("ruap_evidence_contract_invalid",)
 
 
 def test_registry_order_is_bound_by_pinned_digest(
@@ -300,6 +305,53 @@ def test_registry_order_is_bound_by_pinned_digest(
     assert canonical_sha256(registry) != canonical_sha256(reverse)
     result = verify(registry=reverse)
     assert result.errors == ("registry_sha256_mismatch",)
+
+
+def test_base64_length_rejected_before_decoder(monkeypatch: pytest.MonkeyPatch) -> None:
+    def decoder_must_not_run(*args, **kwargs):
+        raise AssertionError("decoder called before encoded-length guard")
+
+    monkeypatch.setattr(verifier.base64, "b64decode", decoder_must_not_run)
+
+    with pytest.raises(ValueError, match="public_key_encoding_invalid"):
+        verifier._decode_canonical_b64u(
+            "A" * 44, expected_len=32, label="public_key"
+        )
+    with pytest.raises(ValueError, match="signature_encoding_invalid"):
+        verifier._decode_canonical_b64u(
+            "A" * 87, expected_len=64, label="signature"
+        )
+
+
+def test_oversized_strings_and_field_names_fail_before_canonicalization() -> None:
+    signature = trusted_signature()
+    signature["signature_b64u"] = "A" * (verifier.MAX_STRING_LEN + 1)
+    result = verify(signature=signature)
+    assert result.errors == ("string_too_long",)
+
+    signature = trusted_signature()
+    long_key = "x" * (verifier.MAX_FIELD_NAME_LEN + 1)
+    signature[long_key] = "caller"
+    result = verify(signature=signature)
+    assert result.errors == ("field_name_too_long",)
+
+
+def test_unknown_field_error_is_bounded() -> None:
+    signature = trusted_signature()
+    bounded_key = "x" * verifier.MAX_FIELD_NAME_LEN
+    signature[bounded_key] = "caller"
+    result = verify(signature=signature)
+    assert result.errors == (f"signature_unknown_key:{bounded_key}",)
+    assert len(result.errors[0]) <= verifier.MAX_FIELD_NAME_LEN + 32
+
+
+def test_snapshot_total_node_budget_fails_closed() -> None:
+    signature = trusted_signature()
+    # Shallow branching exceeds the global copy budget without hitting depth.
+    item = {f"k{index}": "x" for index in range(8)}
+    signature["extra"] = [copy.deepcopy(item) for _ in range(64)]
+    result = verify(signature=signature)
+    assert result.errors == ("snapshot_node_budget_exceeded",)
 
 
 def test_require_valid_returns_preverification_acceptance_snapshot_under_mutation(
@@ -345,12 +397,13 @@ def test_require_valid_returns_preverification_acceptance_snapshot_under_mutatio
 
 
 def test_require_valid_raises_bounded_error() -> None:
-    with pytest.raises(ValueError, match="registry_sha256_mismatch"):
+    with pytest.raises(ValueError, match="registry_sha256_mismatch") as exc:
         verifier.require_valid_cross_ai_ruap_receipt_acceptance_origin(
             accepted_receipt=accepted_receipt(),
             key_registry=trusted_registry(),
             signature_envelope=trusted_signature(),
         )
+    assert len(str(exc.value)) < 256
 
 
 def test_non_plain_and_unknown_fields_fail_closed() -> None:

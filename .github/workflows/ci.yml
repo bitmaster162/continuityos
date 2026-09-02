@@ -134,22 +134,6 @@ jobs:
           --source-root .
           --output "${{ runner.temp }}/continuityos-review-receipts/wheel-only-pytest.json"
 
-      - name: Install acceptance-origin crypto backend
-        run: >-
-          python -m tools.ci_review run
-          --output "${{ runner.temp }}/continuityos-review-receipts/acceptance-origin-crypto-install.json"
-          -- python -m pip install --only-binary=:all: cryptography==50.0.1
-
-      - name: Verify acceptance-origin Ed25519 backend
-        env:
-          PYTHONUTF8: "1"
-        run: >-
-          python -m tools.ci_review run
-          --output "${{ runner.temp }}/continuityos-review-receipts/acceptance-origin-ed25519.json"
-          -- python -m pytest -q
-          tests/test_cross_ai_ruap_receipt_acceptance_origin_verifier.py::test_real_cryptography_backend_accepts_precomputed_fixture
-          tests/test_cross_ai_ruap_receipt_acceptance_origin_verifier.py::test_real_cryptography_backend_rejects_signature_tampering
-
       - name: Install editable package without optional runtime dependencies
         run: >-
           python -m tools.ci_review run
@@ -202,6 +186,22 @@ jobs:
           --output "${{ runner.temp }}/continuityos-review-receipts/linux-symlink-realpath.json"
           -- python -m pytest -q
           tests/test_ci_linux_symlink_realpath.py::test_linux_symlink_realpath_cannot_bypass_protected_path
+
+      - name: Install acceptance-origin crypto backend
+        run: >-
+          python -m tools.ci_review run
+          --output "${{ runner.temp }}/continuityos-review-receipts/acceptance-origin-crypto-install.json"
+          -- python -m pip install --only-binary=:all: cryptography==50.0.1
+
+      - name: Verify acceptance-origin Ed25519 backend
+        env:
+          PYTHONUTF8: "1"
+        run: >-
+          python -m tools.ci_review run
+          --output "${{ runner.temp }}/continuityos-review-receipts/acceptance-origin-ed25519.json"
+          -- python -m pytest -q
+          tests/test_cross_ai_ruap_receipt_acceptance_origin_verifier.py::test_real_cryptography_backend_accepts_precomputed_fixture
+          tests/test_cross_ai_ruap_receipt_acceptance_origin_verifier.py::test_real_cryptography_backend_rejects_signature_tampering
 
       - name: Write SHA-256 receipt manifest
         if: always()
