@@ -131,6 +131,39 @@ def test_acceptance_fails_closed_when_verifier_rejects(mutator):
         cara.accept_cross_ai_ruap_transport_receipt(value)
 
 
+def test_acceptance_snapshots_before_verification_and_projects_from_snapshot(monkeypatch):
+    value = receipt()
+    expected_transport_id = value["transport_id"]
+    expected_digest = value["ruap_evidence"]["snapshot_sha256"]
+    original_require = cara.require_valid_cross_ai_ruap_transport_receipt
+    seen = []
+
+    def verify_snapshot_then_mutate_caller(snapshot_value):
+        seen.append(snapshot_value)
+        verified = original_require(snapshot_value)
+        value["source_client"] = "hermes"
+        value["ruap_evidence"]["authority_ceiling"] = "EXECUTE"
+        value["ruap_evidence"]["snapshot_sha256"] = "0" * 64
+        value["transport_id"] = "xrt_" + ("0" * 64)
+        return verified
+
+    monkeypatch.setattr(
+        cara,
+        "require_valid_cross_ai_ruap_transport_receipt",
+        verify_snapshot_then_mutate_caller,
+    )
+
+    accepted = cara.accept_cross_ai_ruap_transport_receipt(value)
+
+    assert len(seen) == 1
+    assert seen[0] is not value
+    assert seen[0]["ruap_evidence"] is not value["ruap_evidence"]
+    assert accepted["source_client"] == "claude"
+    assert accepted["ruap_evidence"]["authority_ceiling"] == "OBSERVE_ONLY"
+    assert accepted["ruap_evidence"]["snapshot_sha256"] == expected_digest
+    assert accepted["transport_id"] == expected_transport_id
+
+
 def test_acceptance_invokes_standalone_verifier_before_projection(monkeypatch):
     calls = []
 
@@ -149,6 +182,7 @@ def test_acceptance_invokes_standalone_verifier_before_projection(monkeypatch):
         cara.accept_cross_ai_ruap_transport_receipt(supplied)
 
     assert calls == [supplied]
+    assert calls[0] is not supplied
 
 
 def test_acceptance_public_surface_accepts_only_supplied_receipt():

@@ -1,8 +1,10 @@
 """Pure consumer-side acceptance for verified Cross-AI RUAP transport receipts.
 
-This module accepts only a supplied public transport receipt that first passes the
+This module accepts only a supplied public transport receipt after first taking an
+independent bounded plain-data snapshot and then passing that snapshot through the
 standalone Cross-AI RUAP transport verifier. It copies only bounded evidence and
-governance metadata into a deterministic in-process acceptance record.
+governance metadata from the verified snapshot into a deterministic in-process
+acceptance record.
 
 Acceptance here means closed-shape and self-consistency validation only. It does
 not prove cryptographic authenticity, trusted provenance, or signer identity, and
@@ -24,9 +26,32 @@ MODE = "EVIDENCE_ONLY"
 ACCEPTANCE_CLASS = "STRUCTURAL_SELF_CONSISTENCY_ONLY"
 
 
+def _snapshot_plain_data(value: Any, *, depth: int = 0) -> Any:
+    """Copy the bounded receipt shape without retaining caller-owned containers."""
+    if type(value) is dict:
+        if depth >= 2:
+            raise ValueError(
+                "invalid Cross-AI RUAP transport receipt: snapshot_nested_too_deep"
+            )
+        snapshot: dict[str, Any] = {}
+        for key, item in value.items():
+            if type(key) is not str:
+                raise ValueError(
+                    "invalid Cross-AI RUAP transport receipt: snapshot_non_string_key"
+                )
+            snapshot[key] = _snapshot_plain_data(item, depth=depth + 1)
+        return snapshot
+    if type(value) in (str, bool, int):
+        return value
+    raise ValueError(
+        "invalid Cross-AI RUAP transport receipt: snapshot_non_plain_value"
+    )
+
+
 def accept_cross_ai_ruap_transport_receipt(receipt: Any) -> dict[str, Any]:
     """Accept one verified public transport receipt into a bounded evidence record."""
-    verified = require_valid_cross_ai_ruap_transport_receipt(receipt)
+    snapshot = _snapshot_plain_data(receipt)
+    verified = require_valid_cross_ai_ruap_transport_receipt(snapshot)
     evidence = verified["ruap_evidence"]
 
     return {
