@@ -52,6 +52,39 @@ def accepted_receipt() -> dict:
     return cara.accept_cross_ai_ruap_transport_receipt(transport)
 
 
+def fabricated_acceptance_shaped_evidence() -> dict:
+    return {
+        "schema": "continuityos.cross_ai_ruap_receipt_acceptance/v1",
+        "mode": "EVIDENCE_ONLY",
+        "acceptance_class": "STRUCTURAL_SELF_CONSISTENCY_ONLY",
+        "transport_id": "xrt_" + ("a" * 64),
+        "source_client": "claude",
+        "target_client": "cursor",
+        "ruap_evidence": {
+            "schema": "ruap.snapshot/v1",
+            "snapshot_sha256": "b" * 64,
+            "source_count": 7,
+            "observation_count": 11,
+            "freshness_required": True,
+            "authority_ceiling": "OBSERVE_ONLY",
+            "authority_class": "EVIDENCE_ONLY",
+        },
+        "verification": {
+            "shape_verified": True,
+            "integrity_checked": True,
+            "authenticity_verified": False,
+            "provenance_verified": False,
+            "signer_identity_verified": False,
+            "current_truth_promoted": False,
+        },
+        "execution_authority": "NONE",
+        "can_execute": False,
+        "can_trade": False,
+        "capital_permission": "DENY",
+        "deploy_permission": "DENY",
+    }
+
+
 def external_assertion(accepted: dict) -> dict:
     return {
         "schema": "continuityos.cross_ai_ruap_external_authenticity_assertion/v1",
@@ -95,6 +128,7 @@ def test_binding_projects_only_bounded_target_and_claim_metadata():
         ),
         "mode": "EVIDENCE_ONLY",
         "binding_class": "EXTERNAL_ASSERTION_BINDING_ONLY",
+        "acceptance_input_class": "CALLER_SUPPLIED_ACCEPTANCE_SHAPED_EVIDENCE",
         "transport_id": accepted["transport_id"],
         "source_client": "claude",
         "target_client": "cursor",
@@ -115,6 +149,7 @@ def test_binding_projects_only_bounded_target_and_claim_metadata():
         },
         "verification": {
             "acceptance_shape_verified": True,
+            "acceptance_origin_verified": False,
             "assertion_shape_verified": True,
             "transport_binding_verified": True,
             "client_binding_verified": True,
@@ -157,6 +192,27 @@ def test_binding_is_deterministic_detached_and_does_not_mutate_inputs():
 
     assert first["external_assertion"]["claims"]["authenticity_claimed"] is True
     assert first["ruap_snapshot_sha256"] != "0" * 64
+
+
+def test_fabricated_safe_shaped_acceptance_is_not_misclassified_as_origin_verified():
+    fabricated = fabricated_acceptance_shaped_evidence()
+    assertion = external_assertion(fabricated)
+
+    binding = caab.bind_cross_ai_ruap_receipt_authenticity_assertion(
+        accepted_receipt=fabricated,
+        external_assertion=assertion,
+    )
+
+    assert binding["acceptance_input_class"] == (
+        "CALLER_SUPPLIED_ACCEPTANCE_SHAPED_EVIDENCE"
+    )
+    assert binding["acceptance_sha256"] == canonical_sha256(fabricated)
+    assert binding["verification"]["acceptance_shape_verified"] is True
+    assert binding["verification"]["acceptance_origin_verified"] is False
+    assert binding["verification"]["authenticity_verified"] is False
+    assert binding["verification"]["provenance_verified"] is False
+    assert binding["verification"]["signer_identity_verified"] is False
+    assert binding["verification"]["current_truth_promoted"] is False
 
 
 @pytest.mark.parametrize(
@@ -266,7 +322,9 @@ def test_binding_rejects_raw_signature_or_identity_fields():
         ),
     ],
 )
-def test_binding_rejects_unsafe_or_forged_acceptance(mutator, match):
+def test_binding_rejects_unsafe_or_malformed_acceptance_shaped_evidence(
+    mutator, match
+):
     accepted = accepted_receipt()
     assertion = external_assertion(accepted)
     mutator(accepted)
@@ -278,7 +336,7 @@ def test_binding_rejects_unsafe_or_forged_acceptance(mutator, match):
         )
 
 
-def test_binding_never_promotes_external_claims_to_verification():
+def test_binding_never_promotes_external_claims_or_acceptance_origin():
     accepted = accepted_receipt()
     assertion = external_assertion(accepted)
 
@@ -292,10 +350,19 @@ def test_binding_never_promotes_external_claims_to_verification():
         "provenance_claimed": True,
         "signer_identity_claimed": True,
     }
+    assert binding["verification"]["acceptance_origin_verified"] is False
     assert binding["verification"]["authenticity_verified"] is False
     assert binding["verification"]["provenance_verified"] is False
     assert binding["verification"]["signer_identity_verified"] is False
     assert binding["verification"]["current_truth_promoted"] is False
+
+
+def test_binding_source_has_no_already_accepted_origin_overclaim():
+    source = inspect.getsource(caab)
+
+    assert "already accepted transport receipt" not in source
+    assert "CALLER_SUPPLIED_ACCEPTANCE_SHAPED_EVIDENCE" in source
+    assert '"acceptance_origin_verified": False' in source
 
 
 def test_binding_public_surface_is_exactly_two_keyword_only_inputs():

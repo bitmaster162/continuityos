@@ -1,14 +1,16 @@
-"""Bind one external authenticity assertion to an accepted Cross-AI RUAP receipt.
+"""Bind one external authenticity assertion to caller-supplied acceptance-shaped evidence.
 
-This module performs deterministic in-process binding only. The external assertion is
-treated as untrusted evidence. Binding proves only that its bounded target metadata
-matches one already accepted transport receipt and that deterministic digests were
-computed over plain-data snapshots.
+This module performs deterministic in-process binding only. Both inputs are treated as
+caller-supplied evidence. Binding proves only that bounded assertion target metadata
+matches a closed-shape, safe-authority acceptance-shaped record and that deterministic
+digests were computed over plain-data snapshots.
 
-It does not verify a signature, key, signer identity, provider attestation, trusted
-provenance, authorship, or origin, and it never promotes evidence into current truth.
-No provider, network, credential, connector configuration, filesystem, environment,
-runtime, pointer, memory, subprocess, deployment, trading, or capital effects occur.
+It does not prove that the acceptance-shaped record was produced by the ContinuityOS
+acceptance boundary. It also does not verify a signature, key, signer identity,
+provider attestation, trusted provenance, authorship, or origin, and it never promotes
+evidence into current truth. No provider, network, credential, connector
+configuration, filesystem, environment, runtime, pointer, memory, subprocess,
+deployment, trading, or capital effects occur.
 """
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ from typing import Any
 SCHEMA = "continuityos.cross_ai_ruap_receipt_authenticity_assertion_binding/v1"
 MODE = "EVIDENCE_ONLY"
 BINDING_CLASS = "EXTERNAL_ASSERTION_BINDING_ONLY"
+ACCEPTANCE_INPUT_CLASS = "CALLER_SUPPLIED_ACCEPTANCE_SHAPED_EVIDENCE"
 
 ACCEPTANCE_SCHEMA = "continuityos.cross_ai_ruap_receipt_acceptance/v1"
 ACCEPTANCE_CLASS = "STRUCTURAL_SELF_CONSISTENCY_ONLY"
@@ -127,7 +130,7 @@ def _require_exact_keys(value: Any, expected: set[str], label: str) -> dict[str,
     return value
 
 
-def _require_safe_acceptance(receipt: Any) -> dict[str, Any]:
+def _require_safe_acceptance_shape(receipt: Any) -> dict[str, Any]:
     accepted = _require_exact_keys(receipt, _ACCEPTANCE_KEYS, "acceptance")
 
     if (
@@ -224,11 +227,11 @@ def bind_cross_ai_ruap_receipt_authenticity_assertion(
     accepted_receipt: Any,
     external_assertion: Any,
 ) -> dict[str, Any]:
-    """Bind one untrusted external assertion to one accepted evidence-only receipt."""
+    """Bind an untrusted assertion to caller-supplied acceptance-shaped evidence."""
     accepted_snapshot = _snapshot_plain_data(accepted_receipt)
     assertion_snapshot = _snapshot_plain_data(external_assertion)
 
-    accepted = _require_safe_acceptance(accepted_snapshot)
+    accepted = _require_safe_acceptance_shape(accepted_snapshot)
     assertion = _require_bound_assertion(assertion_snapshot, accepted=accepted)
 
     acceptance_sha256 = hashlib.sha256(_canonical_bytes(accepted)).hexdigest()
@@ -238,6 +241,7 @@ def bind_cross_ai_ruap_receipt_authenticity_assertion(
         "schema": SCHEMA,
         "mode": MODE,
         "binding_class": BINDING_CLASS,
+        "acceptance_input_class": ACCEPTANCE_INPUT_CLASS,
         "transport_id": accepted["transport_id"],
         "source_client": accepted["source_client"],
         "target_client": accepted["target_client"],
@@ -251,6 +255,7 @@ def bind_cross_ai_ruap_receipt_authenticity_assertion(
         },
         "verification": {
             "acceptance_shape_verified": True,
+            "acceptance_origin_verified": False,
             "assertion_shape_verified": True,
             "transport_binding_verified": True,
             "client_binding_verified": True,
