@@ -161,10 +161,46 @@ def test_current_cos_db_prefix_still_identifies_command(monkeypatch, capsys):
     assert result["effects"]["self_update"] is False
 
 
+def test_verified_current_session_allows_only_frozen_canonical_read_commands(monkeypatch, capsys):
+    clear_binding(monkeypatch)
+    set_binding(monkeypatch)
+    monkeypatch.setattr(guard, "verify_current_runtime_binding", passing_binding)
+    allowed = {"health", "snapshot", "decision", "project", "context"}
+    for command in sorted(allowed):
+        calls = []
+        args = [command]
+        if command == "decision":
+            args.append("D001")
+        if command == "project":
+            args.append("continuity-platform")
+        code = guard._dispatch(
+            "continuity-canon",
+            args,
+            loader(calls, result=11),
+            allow_commands=allowed,
+        )
+        assert code == 11
+        assert calls == [args]
+
+    calls = []
+    code = guard._dispatch(
+        "continuity-canon",
+        ["mutate"],
+        loader(calls),
+        allow_commands=allowed,
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert code == 3
+    assert calls == []
+    assert result["terminal"] == "CURRENT_ENTRYPOINT_HOLD"
+    assert result["effects"]["canonical_mutation"] is False
+
+
 def test_packaged_entrypoints_use_current_containment():
     expected = {
         "cos": "continuityos.current_entrypoints:cos_main",
         "continuity": "continuityos.current_runtime_cli:main",
+        "continuity-canon": "continuityos.current_entrypoints:canonical_payload_main",
         "continuity-state": "continuityos.current_entrypoints:state_main",
         "continuity-memory": "continuityos.current_entrypoints:operational_memory_main",
         "continuity-context": "continuityos.current_entrypoints:operational_context_main",
@@ -184,3 +220,21 @@ def test_packaged_entrypoints_use_current_containment():
         }
     for name, target in expected.items():
         assert observed[name] == target
+
+
+def test_canonical_payload_main_passes_frozen_allowlist_to_dispatch(monkeypatch):
+    observed = {}
+
+    def fake_dispatch(surface, argv, loader, **kwargs):
+        observed["surface"] = surface
+        observed["argv"] = list(argv or [])
+        observed["allow_commands"] = set(kwargs.get("allow_commands") or ())
+        return 23
+
+    monkeypatch.setattr(guard, "_dispatch", fake_dispatch)
+    assert guard.canonical_payload_main(["health"]) == 23
+    assert observed == {
+        "surface": "continuity-canon",
+        "argv": ["health"],
+        "allow_commands": {"health", "snapshot", "decision", "project", "context"},
+    }

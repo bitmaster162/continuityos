@@ -41,6 +41,7 @@ dev = ["pytest>=7", "pytest-cov>=4", "ruff>=0.5"]
 [project.scripts]
 cos = "continuityos.current_entrypoints:cos_main"
 continuity = "continuityos.current_runtime_cli:main"
+continuity-canon = "continuityos.current_entrypoints:canonical_payload_main"
 continuity-work = "continuityos.current_work_cli:main"
 continuity-project-update-review = "continuityos.current_project_update_review_cli:main"
 continuity-project-update-preflight = "continuityos.current_project_update_preflight_cli:main"
