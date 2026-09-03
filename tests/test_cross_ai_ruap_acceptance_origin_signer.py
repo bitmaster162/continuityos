@@ -17,14 +17,18 @@ import continuityos.cross_ai_ruap_transport as transport
 FAKE_PUBLIC_KEY = bytes(range(32))
 FAKE_SIGNATURE = bytes([0xA5]) * 64
 CONSUMERS = ["consumer-a", "consumer-b"]
+REVIEWED_HEAD_SHA = "1" * 40
+REVIEWED_TREE_SHA = "2" * 40
+SOURCE_BLOB_SHA = "3" * 40
+SOURCE_SHA256 = "4" * 64
 
 
 def b64u(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
 
-def key_id(raw_public_key: bytes) -> str:
-    return "ed25519-sha256:" + hashlib.sha256(raw_public_key).hexdigest()
+def key_id(public_key: bytes) -> str:
+    return "ed25519-sha256:" + hashlib.sha256(public_key).hexdigest()
 
 
 def canonical_sha256(value) -> str:
@@ -52,12 +56,16 @@ def ruap_snapshot() -> dict:
         "capital_permission": "DENY",
         "deploy_permission": "DENY",
         "sources": [{
-            "id": "s1", "provider": "github", "locator": "PRIVATE_LOCATOR",
+            "id": "s1",
+            "provider": "github",
+            "locator": "PRIVATE_LOCATOR",
             "observed_at": "PRIVATE_OBSERVED_AT",
         }],
         "observations": [{
-            "subject": "PRIVATE_SUBJECT", "claim": "PRIVATE_CLAIM",
-            "class": "PROVIDER_READBACK", "source_id": "s1",
+            "subject": "PRIVATE_SUBJECT",
+            "claim": "PRIVATE_CLAIM",
+            "class": "PROVIDER_READBACK",
+            "source_id": "s1",
             "freshness_required_before_effect": True,
         }],
     }
@@ -89,11 +97,10 @@ def registry(public_key: bytes = FAKE_PUBLIC_KEY) -> dict:
 def rollout_evidence(registry_value: dict) -> dict:
     cohort_id = "cohort-fixture-r1"
     registry_sha256 = canonical_sha256(registry_value)
-    member_sha256 = membership_sha256(cohort_id, CONSUMERS)
     return {
         "schema": signer.ROLLOUT_EVIDENCE_SCHEMA,
         "cohort_id": cohort_id,
-        "cohort_membership_sha256": member_sha256,
+        "cohort_membership_sha256": membership_sha256(cohort_id, CONSUMERS),
         "expected_consumer_count": len(CONSUMERS),
         "verifier_release_id": "verifier-fixture-r1",
         "registry_sha256": registry_sha256,
@@ -122,11 +129,29 @@ def rollout(evidence: dict) -> dict:
     }
 
 
-def manifest(public_key: bytes, registry_value: dict, rollout_value: dict) -> dict:
+def implementation_evidence() -> dict:
+    return {
+        "schema": signer.IMPLEMENTATION_EVIDENCE_SCHEMA,
+        "reviewed_head_sha": REVIEWED_HEAD_SHA,
+        "reviewed_tree_sha": REVIEWED_TREE_SHA,
+        "signer_source_blob_sha": SOURCE_BLOB_SHA,
+        "signer_source_sha256": SOURCE_SHA256,
+        "signer_release_id": signer.SIGNER_RELEASE_ID,
+    }
+
+
+def manifest(
+    public_key: bytes,
+    registry_value: dict,
+    rollout_value: dict,
+    implementation_value: dict,
+    *,
+    generation: int = 1,
+) -> dict:
     return {
         "schema": signer.ACTIVATION_MANIFEST_SCHEMA,
         "producer_id": signer.PRODUCER_ID,
-        "activation_generation": 1,
+        "activation_generation": generation,
         "key_id": key_id(public_key),
         "public_key_sha256": hashlib.sha256(public_key).hexdigest(),
         "registry_sha256": canonical_sha256(registry_value),
@@ -135,15 +160,27 @@ def manifest(public_key: bytes, registry_value: dict, rollout_value: dict) -> di
         "rollout_membership_sha256": rollout_value["cohort_membership_sha256"],
         "rollout_receipt_sha256": canonical_sha256(rollout_value),
         "signer_release_id": signer.SIGNER_RELEASE_ID,
-        "signer_implementation_sha256": signer.TestOnlyAcceptanceOriginSigner.implementation_sha256(),
+        "implementation_evidence_sha256": canonical_sha256(implementation_value),
     }
 
 
-def activation_anchor(manifest_value: dict) -> dict:
+def monotonic_anchor(
+    manifest_value: dict,
+    implementation_value: dict,
+    *,
+    last_committed_generation: int | None = None,
+) -> dict:
     return {
         "schema": signer.TEST_ANCHOR_SCHEMA,
-        "activation_generation": manifest_value["activation_generation"],
-        "activation_manifest_sha256": canonical_sha256(manifest_value),
+        "last_committed_generation": (
+            manifest_value["activation_generation"]
+            if last_committed_generation is None
+            else last_committed_generation
+        ),
+        "committed_activation_manifest_sha256": canonical_sha256(manifest_value),
+        "trusted_implementation_evidence_sha256": canonical_sha256(
+            implementation_value
+        ),
     }
 
 
@@ -155,14 +192,24 @@ def build_signer(
     registry_value: dict | None = None,
     evidence_value: dict | None = None,
     rollout_value: dict | None = None,
+    implementation_value: dict | None = None,
     manifest_value: dict | None = None,
     anchor_value: dict | None = None,
 ):
     registry_value = registry_value or registry(public_key)
     evidence_value = evidence_value or rollout_evidence(registry_value)
     rollout_value = rollout_value or rollout(evidence_value)
-    manifest_value = manifest_value or manifest(public_key, registry_value, rollout_value)
-    anchor_value = anchor_value or activation_anchor(manifest_value)
+    implementation_value = implementation_value or implementation_evidence()
+    manifest_value = manifest_value or manifest(
+        public_key,
+        registry_value,
+        rollout_value,
+        implementation_value,
+    )
+    anchor_value = anchor_value or monotonic_anchor(
+        manifest_value,
+        implementation_value,
+    )
     instance = signer.TestOnlyAcceptanceOriginSigner(
         test_public_key_b64u=b64u(public_key),
         test_fixed_signature=fixed_signature,
@@ -170,30 +217,44 @@ def build_signer(
         key_registry=registry_value,
         rollout_receipt=rollout_value,
         rollout_evidence=evidence_value,
+        implementation_evidence=implementation_value,
         activation_manifest=manifest_value,
-        test_activation_anchor=anchor_value,
+        test_monotonic_anchor=anchor_value,
     )
-    return instance, registry_value, evidence_value, rollout_value, manifest_value, anchor_value
+    return (
+        instance,
+        registry_value,
+        evidence_value,
+        rollout_value,
+        implementation_value,
+        manifest_value,
+        anchor_value,
+    )
 
 
 def sign_request(receipt_value: dict | None = None) -> dict:
     return {
         "schema": signer.SIGN_REQUEST_SCHEMA,
-        "transport_receipt": receipt_value if receipt_value is not None else receipt(),
+        "transport_receipt": (
+            receipt_value if receipt_value is not None else receipt()
+        ),
     }
 
 
-def test_registry_list_snapshot_and_exact_signed_bundle() -> None:
-    instance, _, _, _, _, _ = build_signer()
+def test_registry_list_snapshot_and_fixed_probe_is_dry_run_only() -> None:
+    instance, *_ = build_signer()
     request = sign_request()
     before = copy.deepcopy(request)
     response = instance.produce(sign_request=request)
-    expected = acceptance.accept_cross_ai_ruap_transport_receipt(before["transport_receipt"])
+    expected = acceptance.accept_cross_ai_ruap_transport_receipt(
+        before["transport_receipt"]
+    )
     assert request == before
+    assert response["schema"] == signer.DRY_RUN_RESPONSE_SCHEMA
+    assert response["production_response_emitted"] is False
+    assert "signature_envelope" not in response
     assert response["acceptance"] == expected
-    assert response["signature_envelope"]["key_id"] == key_id(FAKE_PUBLIC_KEY)
-    assert response["signature_envelope"]["acceptance_sha256"] == canonical_sha256(expected)
-    assert response["signature_envelope"]["signature_b64u"] == b64u(FAKE_SIGNATURE)
+    assert response["signature_probe_b64u"] == b64u(FAKE_SIGNATURE)
 
 
 @pytest.mark.parametrize("field,value", [
@@ -220,7 +281,11 @@ def test_oversized_transport_input_is_rejected_before_builder(monkeypatch) -> No
         calls.append(value)
         raise AssertionError("builder must not run")
 
-    monkeypatch.setattr(signer.acceptance_builder, "accept_cross_ai_ruap_transport_receipt", forbidden_builder)
+    monkeypatch.setattr(
+        signer.acceptance_builder,
+        "accept_cross_ai_ruap_transport_receipt",
+        forbidden_builder,
+    )
     with pytest.raises(ValueError, match="snapshot_string_too_long"):
         instance.produce(sign_request=sign_request(supplied))
     assert calls == []
@@ -236,27 +301,24 @@ def test_evidence_counts_are_bounded_before_builder(monkeypatch) -> None:
         calls.append(value)
         raise AssertionError("builder must not run")
 
-    monkeypatch.setattr(signer.acceptance_builder, "accept_cross_ai_ruap_transport_receipt", forbidden_builder)
+    monkeypatch.setattr(
+        signer.acceptance_builder,
+        "accept_cross_ai_ruap_transport_receipt",
+        forbidden_builder,
+    )
     with pytest.raises(ValueError, match="transport_source_count_out_of_bounds"):
         instance.produce(sign_request=sign_request(supplied))
     assert calls == []
 
 
-def test_no_effectful_adapter_injection_surface_exists() -> None:
+def test_no_effectful_adapter_or_self_hash_surface_exists() -> None:
     signature = inspect.signature(signer.TestOnlyAcceptanceOriginSigner)
     assert "signing_custody" not in signature.parameters
     assert "activation_anchor" not in signature.parameters
-    with pytest.raises(ValueError, match="test_fixed_signature_invalid"):
-        signer.TestOnlyAcceptanceOriginSigner(
-            test_public_key_b64u=b64u(FAKE_PUBLIC_KEY),
-            test_fixed_signature=object(),
-            test_private_key_seed=None,
-            key_registry=registry(),
-            rollout_receipt=rollout(rollout_evidence(registry())),
-            rollout_evidence=rollout_evidence(registry()),
-            activation_manifest={},
-            test_activation_anchor={},
-        )
+    source = inspect.getsource(signer)
+    assert "Protocol" not in source
+    assert "marshal" not in source
+    assert "implementation_sha256" not in source
 
 
 def test_rollout_receipt_requires_exact_readback_evidence_digest() -> None:
@@ -264,78 +326,130 @@ def test_rollout_receipt_requires_exact_readback_evidence_digest() -> None:
     evidence_value = rollout_evidence(registry_value)
     rollout_value = rollout(evidence_value)
     rollout_value["readback_evidence_sha256"] = "0" * 64
-    manifest_value = manifest(FAKE_PUBLIC_KEY, registry_value, rollout_value)
+    implementation_value = implementation_evidence()
+    manifest_value = manifest(
+        FAKE_PUBLIC_KEY,
+        registry_value,
+        rollout_value,
+        implementation_value,
+    )
     with pytest.raises(ValueError, match="rollout_readback_evidence_digest_mismatch"):
         build_signer(
             registry_value=registry_value,
             evidence_value=evidence_value,
             rollout_value=rollout_value,
+            implementation_value=implementation_value,
             manifest_value=manifest_value,
-            anchor_value=activation_anchor(manifest_value),
+            anchor_value=monotonic_anchor(manifest_value, implementation_value),
         )
 
 
 def test_every_rollout_readback_must_prove_exact_release_and_pin() -> None:
     registry_value = registry()
     evidence_value = rollout_evidence(registry_value)
-    evidence_value["readbacks"][1]["verifier_release_id"] = "wrong-release"
+    evidence_value["readbacks"][1]["registry_sha256"] = "0" * 64
     rollout_value = rollout(evidence_value)
-    manifest_value = manifest(FAKE_PUBLIC_KEY, registry_value, rollout_value)
+    implementation_value = implementation_evidence()
+    manifest_value = manifest(
+        FAKE_PUBLIC_KEY,
+        registry_value,
+        rollout_value,
+        implementation_value,
+    )
     with pytest.raises(ValueError, match="rollout_readback_not_exact_success"):
         build_signer(
             registry_value=registry_value,
             evidence_value=evidence_value,
             rollout_value=rollout_value,
+            implementation_value=implementation_value,
             manifest_value=manifest_value,
-            anchor_value=activation_anchor(manifest_value),
+            anchor_value=monotonic_anchor(manifest_value, implementation_value),
         )
 
 
-def test_rollout_membership_digest_is_recomputed_from_unique_consumers() -> None:
+def test_external_implementation_evidence_is_anchor_pinned() -> None:
+    implementation_value = implementation_evidence()
+    instance, *rest = build_signer(implementation_value=implementation_value)
+    assert instance is not None
+    anchor_value = rest[-1]
+    assert anchor_value["trusted_implementation_evidence_sha256"] == canonical_sha256(
+        implementation_value
+    )
+    assert implementation_value["reviewed_head_sha"] == REVIEWED_HEAD_SHA
+    assert implementation_value["reviewed_tree_sha"] == REVIEWED_TREE_SHA
+    assert implementation_value["signer_source_blob_sha"] == SOURCE_BLOB_SHA
+
+
+def test_activation_manifest_rejects_wrong_implementation_evidence_digest() -> None:
     registry_value = registry()
     evidence_value = rollout_evidence(registry_value)
-    evidence_value["readbacks"][1]["consumer_id"] = "consumer-a"
     rollout_value = rollout(evidence_value)
-    manifest_value = manifest(FAKE_PUBLIC_KEY, registry_value, rollout_value)
-    with pytest.raises(ValueError, match="rollout_readback_duplicate_consumer"):
+    implementation_value = implementation_evidence()
+    manifest_value = manifest(
+        FAKE_PUBLIC_KEY,
+        registry_value,
+        rollout_value,
+        implementation_value,
+    )
+    manifest_value["implementation_evidence_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="activation_implementation_evidence_mismatch"):
         build_signer(
             registry_value=registry_value,
             evidence_value=evidence_value,
             rollout_value=rollout_value,
+            implementation_value=implementation_value,
             manifest_value=manifest_value,
-            anchor_value=activation_anchor(manifest_value),
+            anchor_value=monotonic_anchor(manifest_value, implementation_value),
         )
 
 
-def test_activation_manifest_binds_exact_loaded_signer_implementation() -> None:
+def test_monotonic_anchor_rejects_coordinated_manifest_rollback() -> None:
     registry_value = registry()
     evidence_value = rollout_evidence(registry_value)
     rollout_value = rollout(evidence_value)
-    manifest_value = manifest(FAKE_PUBLIC_KEY, registry_value, rollout_value)
-    manifest_value["signer_implementation_sha256"] = "0" * 64
-    with pytest.raises(ValueError, match="activation_signer_implementation_mismatch"):
+    implementation_value = implementation_evidence()
+    manifest_n = manifest(
+        FAKE_PUBLIC_KEY,
+        registry_value,
+        rollout_value,
+        implementation_value,
+        generation=1,
+    )
+    manifest_n1 = manifest(
+        FAKE_PUBLIC_KEY,
+        registry_value,
+        rollout_value,
+        implementation_value,
+        generation=2,
+    )
+    anchor_n1 = monotonic_anchor(manifest_n1, implementation_value)
+
+    build_signer(
+        registry_value=registry_value,
+        evidence_value=evidence_value,
+        rollout_value=rollout_value,
+        implementation_value=implementation_value,
+        manifest_value=manifest_n1,
+        anchor_value=anchor_n1,
+    )
+
+    with pytest.raises(ValueError, match="activation_generation_rollback_or_mismatch"):
         build_signer(
             registry_value=registry_value,
             evidence_value=evidence_value,
             rollout_value=rollout_value,
-            manifest_value=manifest_value,
-            anchor_value=activation_anchor(manifest_value),
+            implementation_value=implementation_value,
+            manifest_value=manifest_n,
+            anchor_value=anchor_n1,
         )
 
 
-def test_activation_anchor_rollback_fails_before_signing(monkeypatch) -> None:
-    instance, *_ = build_signer()
-    instance._test_activation_anchor["activation_generation"] = 2
-    calls = []
-
-    def forbidden_sign(self, message):
-        calls.append(message)
-        return FAKE_SIGNATURE
-
-    monkeypatch.setattr(signer.TestOnlyAcceptanceOriginSigner, "_sign_test_message", forbidden_sign)
-    with pytest.raises(ValueError, match="signer_implementation_drift|test_activation_anchor_mismatch"):
-        instance.produce(sign_request=sign_request())
-    assert calls == []
+def test_fixed_probe_can_never_emit_production_response() -> None:
+    instance, *_ = build_signer(fixed_signature=FAKE_SIGNATURE, private_seed=None)
+    response = instance.produce(sign_request=sign_request())
+    assert response["schema"] == signer.DRY_RUN_RESPONSE_SCHEMA
+    assert response["production_response_emitted"] is False
+    assert "signature_envelope" not in response
 
 
 def test_candidate_has_no_hardware_provider_network_or_subprocess_imports() -> None:
@@ -351,8 +465,6 @@ def test_candidate_has_no_hardware_provider_network_or_subprocess_imports() -> N
         "yubihsm", "tpm2_pytss",
     })
     source = inspect.getsource(signer)
-    assert "Protocol" not in source
-    assert "signing_custody" not in source
     assert "open(" not in source
     assert "CURRENT_SIGNING =" not in source
 
@@ -379,13 +491,20 @@ def test_real_test_key_round_trip_through_existing_verifier(monkeypatch) -> None
         encoding=serialization.Encoding.Raw,
         format=serialization.PublicFormat.Raw,
     )
-    instance, registry_value, _, _, _, _ = build_signer(
+    instance, registry_value, *_ = build_signer(
         public_key=public_key,
         fixed_signature=None,
         private_seed=seed,
     )
     response = instance.produce(sign_request=sign_request())
-    monkeypatch.setattr(verifier, "PINNED_REGISTRY_SHA256", canonical_sha256(registry_value))
+    assert response["schema"] == signer.PRODUCER_RESPONSE_SCHEMA
+    assert "signature_envelope" in response
+
+    monkeypatch.setattr(
+        verifier,
+        "PINNED_REGISTRY_SHA256",
+        canonical_sha256(registry_value),
+    )
     result = verifier.verify_cross_ai_ruap_receipt_acceptance_origin(
         accepted_receipt=response["acceptance"],
         key_registry=registry_value,
