@@ -14,7 +14,7 @@ import base64
 import hashlib
 from typing import Any, Protocol
 
-from .cross_ai_ruap_receipt_acceptance import accept_cross_ai_ruap_transport_receipt
+from . import cross_ai_ruap_receipt_acceptance as acceptance_builder
 from . import cross_ai_ruap_receipt_acceptance_origin_verifier as origin_verifier
 
 
@@ -324,7 +324,7 @@ class TestOnlyAcceptanceOriginSigner:
         _prevalidate_transport_bounds(transport_receipt)
         _, key_id, _, _ = self._assert_live_test_coherence()
 
-        materialized = accept_cross_ai_ruap_transport_receipt(transport_receipt)
+        materialized = acceptance_builder.accept_cross_ai_ruap_transport_receipt(transport_receipt)
         acceptance = origin_verifier._require_safe_acceptance(origin_verifier._snapshot(materialized))
         acceptance = _snapshot_bounded(acceptance)
         acceptance_sha256 = _canonical_sha256(acceptance)
