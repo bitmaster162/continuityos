@@ -195,6 +195,10 @@ def _canonical_b64u_length(decoded_len: int) -> int:
     return (decoded_len * 4 + 2) // 3
 
 
+def _derive_key_id(public_key: bytes) -> str:
+    return "ed25519-sha256:" + hashlib.sha256(public_key).hexdigest()
+
+
 def _decode_canonical_b64u(
     value: Any,
     *,
@@ -312,11 +316,13 @@ def _require_registry(
             or record["state"] not in _ALLOWED_KEY_STATES
         ):
             raise ValueError("registry_key_contract_invalid")
-        _decode_canonical_b64u(
+        public_key = _decode_canonical_b64u(
             record["public_key_b64u"],
             expected_len=32,
             label="public_key",
         )
+        if key_id != _derive_key_id(public_key):
+            raise ValueError("registry_key_id_public_key_mismatch")
         identity = (producer_id, key_id)
         if identity in seen:
             raise ValueError("registry_duplicate_key")
