@@ -1,19 +1,17 @@
-"""Test-only acceptance-origin signer for the frozen YubiHSM2 + TPM2 R1 profile.
+"""Test-only acceptance-origin signer model for the frozen YubiHSM2 + TPM2 R1 profile.
 
-This candidate models the producer/signer contract without importing or touching
-YubiHSM, TPM, provider, network, credential, filesystem, environment, subprocess,
-runtime, deployment, trading, or capital surfaces.
-
-Only closed plain-data fixtures plus bytes are accepted. No caller-supplied
-callable, adapter, protocol object, or hardware/network/filesystem capability can
-be injected into the signer. Production hardware access, production key use,
+The candidate is deliberately incapable of production hardware access. It accepts only
+closed plain-data evidence plus test bytes. Production signing custody, TPM persistence,
 trust-anchor provisioning, and CURRENT_SIGNING activation remain separately gated.
+
+Production-shaped success is emitted only by the software Ed25519 test path. A fixed
+64-byte test probe can exercise pre-signing logic, but returns a distinct dry-run schema
+and can never be mistaken for an R1 producer response.
 """
 from __future__ import annotations
 
 import base64
 import hashlib
-import marshal
 from typing import Any
 
 from . import cross_ai_ruap_receipt_acceptance as acceptance_builder
@@ -21,13 +19,16 @@ from . import cross_ai_ruap_receipt_acceptance_origin_verifier as origin_verifie
 
 SIGN_REQUEST_SCHEMA = "continuityos.cross_ai_ruap_acceptance_origin_sign_request/v1"
 PRODUCER_RESPONSE_SCHEMA = "continuityos.cross_ai_ruap_acceptance_origin_producer_response/v1"
+DRY_RUN_RESPONSE_SCHEMA = "continuityos.cross_ai_ruap_acceptance_origin_test_dry_run/v1"
 ROLLOUT_RECEIPT_SCHEMA = "continuityos.cross_ai_ruap_acceptance_origin_rollout_receipt/v1"
 ROLLOUT_EVIDENCE_SCHEMA = "continuityos.cross_ai_ruap_acceptance_origin_rollout_readback_evidence/v1"
 COHORT_MEMBERSHIP_SCHEMA = "continuityos.cross_ai_ruap_acceptance_origin_rollout_membership/v1"
+IMPLEMENTATION_EVIDENCE_SCHEMA = "continuityos.cross_ai_ruap_acceptance_origin_signer_implementation_evidence/v1"
 ACTIVATION_MANIFEST_SCHEMA = "continuityos.cross_ai_ruap_acceptance_origin_activation_manifest/v1"
-TEST_ANCHOR_SCHEMA = "continuityos.cross_ai_ruap_acceptance_origin_test_activation_anchor/v1"
+TEST_ANCHOR_SCHEMA = "continuityos.cross_ai_ruap_acceptance_origin_test_monotonic_anchor/v1"
+
 PRODUCER_ID = "continuityos.cross_ai_acceptance_producer.r1"
-SIGNER_RELEASE_ID = "continuityos.cross_ai_ruap_acceptance_origin_signer_test_only/v2"
+SIGNER_RELEASE_ID = "continuityos.cross_ai_ruap_acceptance_origin_signer_test_only/v3"
 CUSTODY_PROFILE = "YUBIHSM2_ED25519_PLUS_TPM2_NV_TEST_ONLY"
 TEST_ONLY_MODE = "TEST_ONLY_NO_PRODUCTION_HARDWARE"
 
@@ -55,14 +56,19 @@ _ROLLOUT_EVIDENCE_KEYS = frozenset({
 _READBACK_KEYS = frozenset({
     "consumer_id", "verifier_release_id", "registry_sha256", "ok",
 })
+_IMPLEMENTATION_EVIDENCE_KEYS = frozenset({
+    "schema", "reviewed_head_sha", "reviewed_tree_sha", "signer_source_blob_sha",
+    "signer_source_sha256", "signer_release_id",
+})
 _ACTIVATION_KEYS = frozenset({
     "schema", "producer_id", "activation_generation", "key_id", "public_key_sha256",
     "registry_sha256", "verifier_release_id", "rollout_cohort_id",
     "rollout_membership_sha256", "rollout_receipt_sha256", "signer_release_id",
-    "signer_implementation_sha256",
+    "implementation_evidence_sha256",
 })
 _ANCHOR_KEYS = frozenset({
-    "schema", "activation_generation", "activation_manifest_sha256",
+    "schema", "last_committed_generation", "committed_activation_manifest_sha256",
+    "trusted_implementation_evidence_sha256",
 })
 
 
@@ -119,15 +125,17 @@ def _canonical_sha256(value: Any) -> str:
     return origin_verifier._canonical_sha256(value)
 
 
+def _is_git_sha(value: Any) -> bool:
+    return type(value) is str and len(value) == 40 and all(c in "0123456789abcdef" for c in value)
+
+
 def _derive_key_id(public_key: bytes) -> str:
     return "ed25519-sha256:" + hashlib.sha256(public_key).hexdigest()
 
 
 def _decode_public_key(public_key_b64u: Any) -> bytes:
     return origin_verifier._decode_canonical_b64u(
-        public_key_b64u,
-        expected_len=32,
-        label="test_signing_public_key",
+        public_key_b64u, expected_len=32, label="test_signing_public_key"
     )
 
 
@@ -140,21 +148,9 @@ def _validate_test_signing_material(*, public_key_b64u: Any, test_fixed_signatur
     if test_fixed_signature is not None:
         if type(test_fixed_signature) is not bytes or len(test_fixed_signature) != 64:
             raise ValueError("test_fixed_signature_invalid")
-        return "FIXED_TEST_SIGNATURE", public_key
+        return "FIXED_DRY_RUN_ONLY", public_key
     if type(test_private_key_seed) is not bytes or len(test_private_key_seed) != 32:
         raise ValueError("test_private_key_seed_invalid")
-    try:
-        from cryptography.hazmat.primitives import serialization
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    except (ImportError, ModuleNotFoundError) as exc:
-        raise ValueError("test_ed25519_backend_unavailable") from exc
-    private_key = Ed25519PrivateKey.from_private_bytes(test_private_key_seed)
-    derived = private_key.public_key().public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw,
-    )
-    if derived != public_key:
-        raise ValueError("test_private_key_public_key_mismatch")
     return "SOFTWARE_TEST_ED25519", public_key
 
 
@@ -185,7 +181,7 @@ def _require_rollout_evidence(value: Any) -> dict[str, Any]:
     if type(readbacks) is not list or len(readbacks) != expected:
         raise ValueError("rollout_evidence_readback_count_mismatch")
     seen: set[str] = set()
-    consumer_ids: list[str] = []
+    consumers: list[str] = []
     for item in readbacks:
         readback = _require_exact_keys(item, _READBACK_KEYS, "rollout_readback")
         consumer_id = readback["consumer_id"]
@@ -194,7 +190,7 @@ def _require_rollout_evidence(value: Any) -> dict[str, Any]:
         if consumer_id in seen:
             raise ValueError("rollout_readback_duplicate_consumer")
         seen.add(consumer_id)
-        consumer_ids.append(consumer_id)
+        consumers.append(consumer_id)
         if (
             readback["verifier_release_id"] != evidence["verifier_release_id"]
             or readback["registry_sha256"] != evidence["registry_sha256"]
@@ -202,7 +198,7 @@ def _require_rollout_evidence(value: Any) -> dict[str, Any]:
         ):
             raise ValueError("rollout_readback_not_exact_success")
     if evidence["cohort_membership_sha256"] != _cohort_membership_sha256(
-        cohort_id=evidence["cohort_id"], consumer_ids=consumer_ids
+        cohort_id=evidence["cohort_id"], consumer_ids=consumers
     ):
         raise ValueError("rollout_evidence_membership_digest_mismatch")
     return evidence
@@ -227,7 +223,7 @@ def _require_rollout_receipt(value: Any, *, evidence: dict[str, Any]) -> dict[st
     failed = receipt["failed_readback_count"]
     unresolved = receipt["unresolved_consumer_count"]
     for label, count in (("expected", expected), ("successful", success), ("failed", failed), ("unresolved", unresolved)):
-        if type(count) is not int or count < 0 or count > MAX_ROLLOUT_CONSUMERS:
+        if type(count) is not int or not 0 <= count <= MAX_ROLLOUT_CONSUMERS:
             raise ValueError(f"rollout_{label}_count_invalid")
     if expected < 1 or success != expected or failed != 0 or unresolved != 0 or receipt["result"] != "COMPLETE":
         raise ValueError("rollout_not_complete")
@@ -245,7 +241,21 @@ def _require_rollout_receipt(value: Any, *, evidence: dict[str, Any]) -> dict[st
     return receipt
 
 
-def _require_activation_manifest(value: Any, *, signer_implementation_sha256: str) -> dict[str, Any]:
+def _require_implementation_evidence(value: Any) -> dict[str, Any]:
+    evidence = _require_exact_keys(value, _IMPLEMENTATION_EVIDENCE_KEYS, "implementation_evidence")
+    if evidence["schema"] != IMPLEMENTATION_EVIDENCE_SCHEMA:
+        raise ValueError("implementation_evidence_schema_invalid")
+    for key in ("reviewed_head_sha", "reviewed_tree_sha", "signer_source_blob_sha"):
+        if not _is_git_sha(evidence[key]):
+            raise ValueError(f"implementation_evidence_{key}_invalid")
+    if not origin_verifier._is_sha256(evidence["signer_source_sha256"]):
+        raise ValueError("implementation_evidence_source_sha256_invalid")
+    if evidence["signer_release_id"] != SIGNER_RELEASE_ID:
+        raise ValueError("implementation_evidence_release_mismatch")
+    return evidence
+
+
+def _require_activation_manifest(value: Any, *, implementation_evidence_sha256: str) -> dict[str, Any]:
     manifest = _require_exact_keys(value, _ACTIVATION_KEYS, "activation_manifest")
     if manifest["schema"] != ACTIVATION_MANIFEST_SCHEMA:
         raise ValueError("activation_manifest_schema_invalid")
@@ -256,7 +266,7 @@ def _require_activation_manifest(value: Any, *, signer_implementation_sha256: st
         raise ValueError("activation_generation_invalid")
     for key in (
         "public_key_sha256", "registry_sha256", "rollout_membership_sha256",
-        "rollout_receipt_sha256", "signer_implementation_sha256",
+        "rollout_receipt_sha256", "implementation_evidence_sha256",
     ):
         if not origin_verifier._is_sha256(manifest[key]):
             raise ValueError(f"activation_{key}_invalid")
@@ -268,20 +278,34 @@ def _require_activation_manifest(value: Any, *, signer_implementation_sha256: st
         raise ValueError("activation_rollout_cohort_invalid")
     if manifest["signer_release_id"] != SIGNER_RELEASE_ID:
         raise ValueError("activation_signer_release_mismatch")
-    if manifest["signer_implementation_sha256"] != signer_implementation_sha256:
-        raise ValueError("activation_signer_implementation_mismatch")
+    if manifest["implementation_evidence_sha256"] != implementation_evidence_sha256:
+        raise ValueError("activation_implementation_evidence_mismatch")
     return manifest
 
 
-def _require_test_anchor(value: Any) -> dict[str, Any]:
-    anchor = _require_exact_keys(value, _ANCHOR_KEYS, "test_activation_anchor")
+def _require_test_anchor(
+    value: Any,
+    *,
+    manifest: dict[str, Any],
+    manifest_sha256: str,
+    implementation_evidence_sha256: str,
+) -> dict[str, Any]:
+    anchor = _require_exact_keys(value, _ANCHOR_KEYS, "test_monotonic_anchor")
     if anchor["schema"] != TEST_ANCHOR_SCHEMA:
-        raise ValueError("test_activation_anchor_schema_invalid")
-    generation = anchor["activation_generation"]
+        raise ValueError("test_monotonic_anchor_schema_invalid")
+    generation = anchor["last_committed_generation"]
     if type(generation) is not int or generation < 1 or generation > MAX_ACTIVATION_GENERATION:
-        raise ValueError("test_activation_anchor_generation_invalid")
-    if not origin_verifier._is_sha256(anchor["activation_manifest_sha256"]):
-        raise ValueError("test_activation_anchor_digest_invalid")
+        raise ValueError("test_monotonic_anchor_generation_invalid")
+    if not origin_verifier._is_sha256(anchor["committed_activation_manifest_sha256"]):
+        raise ValueError("test_monotonic_anchor_manifest_digest_invalid")
+    if not origin_verifier._is_sha256(anchor["trusted_implementation_evidence_sha256"]):
+        raise ValueError("test_monotonic_anchor_implementation_digest_invalid")
+    if generation != manifest["activation_generation"]:
+        raise ValueError("activation_generation_rollback_or_mismatch")
+    if anchor["committed_activation_manifest_sha256"] != manifest_sha256:
+        raise ValueError("test_monotonic_anchor_manifest_mismatch")
+    if anchor["trusted_implementation_evidence_sha256"] != implementation_evidence_sha256:
+        raise ValueError("test_monotonic_anchor_implementation_mismatch")
     return anchor
 
 
@@ -309,17 +333,8 @@ def _signature_message(*, key_id: str, acceptance_sha256: str) -> bytes:
     return origin_verifier.DOMAIN + origin_verifier._canonical_bytes(payload)
 
 
-def _code_identity_sha256(code_objects: tuple[Any, ...]) -> str:
-    digest = hashlib.sha256()
-    for code in code_objects:
-        encoded = marshal.dumps(code)
-        digest.update(len(encoded).to_bytes(8, "big"))
-        digest.update(encoded)
-    return digest.hexdigest()
-
-
 class TestOnlyAcceptanceOriginSigner:
-    """Frozen-contract producer facade with sealed software-only test signing."""
+    """Frozen-contract producer facade with no injected effectful capability."""
 
     def __init__(
         self,
@@ -330,8 +345,9 @@ class TestOnlyAcceptanceOriginSigner:
         key_registry: Any,
         rollout_receipt: Any,
         rollout_evidence: Any,
+        implementation_evidence: Any,
         activation_manifest: Any,
-        test_activation_anchor: Any,
+        test_monotonic_anchor: Any,
     ) -> None:
         self._test_public_key_b64u = test_public_key_b64u
         self._test_fixed_signature = test_fixed_signature
@@ -342,38 +358,16 @@ class TestOnlyAcceptanceOriginSigner:
             test_private_key_seed=test_private_key_seed,
         )
         self._key_id = _derive_key_id(self._public_key)
-        self._implementation_sha256 = self.implementation_sha256()
         self._key_registry = _snapshot_bounded(key_registry)
         self._rollout_evidence = _snapshot_bounded(rollout_evidence)
         self._rollout_receipt = _snapshot_bounded(rollout_receipt)
+        self._implementation_evidence = _snapshot_bounded(implementation_evidence)
         self._activation_manifest = _snapshot_bounded(activation_manifest)
-        self._test_activation_anchor = _snapshot_bounded(test_activation_anchor)
+        self._test_monotonic_anchor = _snapshot_bounded(test_monotonic_anchor)
         self._registry_sha256 = ""
+        self._implementation_evidence_sha256 = ""
         self._activation_manifest_sha256 = ""
         self._validate_static_coherence()
-
-    @staticmethod
-    def implementation_sha256() -> str:
-        return _code_identity_sha256((
-            _snapshot_bounded.__code__,
-            _require_exact_keys.__code__,
-            _validate_test_signing_material.__code__,
-            _cohort_membership_sha256.__code__,
-            _require_rollout_evidence.__code__,
-            _require_rollout_receipt.__code__,
-            _require_activation_manifest.__code__,
-            _require_test_anchor.__code__,
-            _prevalidate_transport_bounds.__code__,
-            _signature_message.__code__,
-            acceptance_builder.accept_cross_ai_ruap_transport_receipt.__code__,
-            origin_verifier._require_safe_acceptance.__code__,
-            origin_verifier._canonical_bytes.__code__,
-            TestOnlyAcceptanceOriginSigner.__init__.__code__,
-            TestOnlyAcceptanceOriginSigner._validate_static_coherence.__code__,
-            TestOnlyAcceptanceOriginSigner._assert_test_anchor.__code__,
-            TestOnlyAcceptanceOriginSigner._sign_test_message.__code__,
-            TestOnlyAcceptanceOriginSigner.produce.__code__,
-        ))
 
     def _validate_static_coherence(self) -> None:
         registry, keys = origin_verifier._require_registry(origin_verifier._snapshot(self._key_registry))
@@ -385,15 +379,25 @@ class TestOnlyAcceptanceOriginSigner:
             )
             if record["key_id"] != _derive_key_id(public_key):
                 raise ValueError("registry_key_id_fingerprint_mismatch")
+
         registry_sha256 = _canonical_sha256(registry)
-        evidence = _require_rollout_evidence(self._rollout_evidence)
-        rollout = _require_rollout_receipt(self._rollout_receipt, evidence=evidence)
+        rollout_evidence = _require_rollout_evidence(self._rollout_evidence)
+        rollout = _require_rollout_receipt(self._rollout_receipt, evidence=rollout_evidence)
         rollout_sha256 = _canonical_sha256(rollout)
+        implementation_evidence = _require_implementation_evidence(self._implementation_evidence)
+        implementation_evidence_sha256 = _canonical_sha256(implementation_evidence)
         manifest = _require_activation_manifest(
             self._activation_manifest,
-            signer_implementation_sha256=self._implementation_sha256,
+            implementation_evidence_sha256=implementation_evidence_sha256,
         )
-        anchor = _require_test_anchor(self._test_activation_anchor)
+        manifest_sha256 = _canonical_sha256(manifest)
+        _require_test_anchor(
+            self._test_monotonic_anchor,
+            manifest=manifest,
+            manifest_sha256=manifest_sha256,
+            implementation_evidence_sha256=implementation_evidence_sha256,
+        )
+
         public_key_sha256 = hashlib.sha256(self._public_key).hexdigest()
         matches = [
             record for record in keys
@@ -415,39 +419,50 @@ class TestOnlyAcceptanceOriginSigner:
             or manifest["rollout_receipt_sha256"] != rollout_sha256
         ):
             raise ValueError("activation_manifest_coherence_mismatch")
-        manifest_sha256 = _canonical_sha256(manifest)
-        if (
-            anchor["activation_generation"] != manifest["activation_generation"]
-            or anchor["activation_manifest_sha256"] != manifest_sha256
-        ):
-            raise ValueError("test_activation_anchor_mismatch")
+
         self._registry_sha256 = registry_sha256
+        self._implementation_evidence_sha256 = implementation_evidence_sha256
         self._activation_manifest_sha256 = manifest_sha256
 
-    def _assert_test_anchor(self) -> None:
-        if self.implementation_sha256() != self._implementation_sha256:
-            raise ValueError("signer_implementation_drift")
-        anchor = _require_test_anchor(_snapshot_bounded(self._test_activation_anchor))
+    def _assert_test_monotonic_anchor(self) -> None:
+        implementation_evidence = _require_implementation_evidence(
+            _snapshot_bounded(self._implementation_evidence)
+        )
+        implementation_evidence_sha256 = _canonical_sha256(implementation_evidence)
+        manifest = _require_activation_manifest(
+            _snapshot_bounded(self._activation_manifest),
+            implementation_evidence_sha256=implementation_evidence_sha256,
+        )
+        manifest_sha256 = _canonical_sha256(manifest)
+        _require_test_anchor(
+            _snapshot_bounded(self._test_monotonic_anchor),
+            manifest=manifest,
+            manifest_sha256=manifest_sha256,
+            implementation_evidence_sha256=implementation_evidence_sha256,
+        )
         if (
-            anchor["activation_generation"] != self._activation_manifest["activation_generation"]
-            or anchor["activation_manifest_sha256"] != self._activation_manifest_sha256
+            implementation_evidence_sha256 != self._implementation_evidence_sha256
+            or manifest_sha256 != self._activation_manifest_sha256
         ):
-            raise ValueError("test_activation_anchor_mismatch")
+            raise ValueError("activation_evidence_drift")
 
-    def _sign_test_message(self, message: bytes) -> bytes:
-        if type(message) is not bytes:
-            raise ValueError("test_signing_message_not_bytes")
-        if self._signing_mode == "FIXED_TEST_SIGNATURE":
-            assert self._test_fixed_signature is not None
-            return self._test_fixed_signature
+    def _real_test_sign(self, message: bytes) -> bytes:
         if self._signing_mode != "SOFTWARE_TEST_ED25519":
-            raise ValueError("test_signing_mode_invalid")
+            raise ValueError("production_response_requires_real_test_ed25519")
         assert self._test_private_key_seed is not None
         try:
+            from cryptography.hazmat.primitives import serialization
             from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
         except (ImportError, ModuleNotFoundError) as exc:
             raise ValueError("test_ed25519_backend_unavailable") from exc
-        return Ed25519PrivateKey.from_private_bytes(self._test_private_key_seed).sign(message)
+        private_key = Ed25519PrivateKey.from_private_bytes(self._test_private_key_seed)
+        derived = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        if derived != self._public_key:
+            raise ValueError("test_private_key_public_key_mismatch")
+        return private_key.sign(message)
 
     def produce(self, *, sign_request: Any) -> dict[str, Any]:
         request = _snapshot_bounded(sign_request)
@@ -456,18 +471,30 @@ class TestOnlyAcceptanceOriginSigner:
             raise ValueError("sign_request_schema_invalid")
         transport_receipt = request["transport_receipt"]
         _prevalidate_transport_bounds(transport_receipt)
-        self._assert_test_anchor()
+        self._assert_test_monotonic_anchor()
+
         materialized = acceptance_builder.accept_cross_ai_ruap_transport_receipt(transport_receipt)
         acceptance = origin_verifier._require_safe_acceptance(origin_verifier._snapshot(materialized))
         acceptance = _snapshot_bounded(acceptance)
         acceptance_sha256 = _canonical_sha256(acceptance)
         message = _signature_message(key_id=self._key_id, acceptance_sha256=acceptance_sha256)
-        raw_signature = self._sign_test_message(message)
-        if type(raw_signature) is not bytes:
-            raise ValueError("ed25519_signature_not_bytes")
+
+        if self._signing_mode == "FIXED_DRY_RUN_ONLY":
+            assert self._test_fixed_signature is not None
+            self._assert_test_monotonic_anchor()
+            return {
+                "schema": DRY_RUN_RESPONSE_SCHEMA,
+                "mode": TEST_ONLY_MODE,
+                "acceptance": acceptance,
+                "would_sign_message_sha256": hashlib.sha256(message).hexdigest(),
+                "signature_probe_b64u": base64.urlsafe_b64encode(self._test_fixed_signature).rstrip(b"=").decode("ascii"),
+                "production_response_emitted": False,
+            }
+
+        raw_signature = self._real_test_sign(message)
         if len(raw_signature) != 64:
             raise ValueError("ed25519_signature_length_invalid")
-        self._assert_test_anchor()
+        self._assert_test_monotonic_anchor()
         signature_envelope = {
             "schema": origin_verifier.SIGNATURE_SCHEMA,
             "purpose": origin_verifier.PURPOSE,
