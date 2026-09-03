@@ -202,6 +202,7 @@ jobs:
           -- python -m pytest -q
           tests/test_cross_ai_ruap_receipt_acceptance_origin_verifier.py::test_real_cryptography_backend_accepts_precomputed_fixture
           tests/test_cross_ai_ruap_receipt_acceptance_origin_verifier.py::test_real_cryptography_backend_rejects_signature_tampering
+          tests/test_cross_ai_ruap_acceptance_origin_signer.py::test_real_test_key_round_trip_through_existing_verifier
 
       - name: Write SHA-256 receipt manifest
         if: always()
