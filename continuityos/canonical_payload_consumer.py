@@ -41,7 +41,8 @@ PROJECT_COUNT = 10
 PROJECT_STATUS_COUNTS = {"CURRENT_TRUNK": 9, "LEGACY_VALID_CONCEPT": 1}
 CACHE_CONTROL_TOKENS = frozenset({"private", "no-store"})
 
-HEALTH_PATH = "/central-memory/payload/health"
+CANON_HEALTH_PATH = "/central-memory/health"
+PAYLOAD_HEALTH_PATH = "/central-memory/payload/health"
 DECISIONS_PATH = "/central-memory/current/decisions"
 PROJECTS_PATH = "/central-memory/current/projects"
 DECISION_PATH = "/central-memory/current/decisions/{decision_id}"
@@ -58,11 +59,19 @@ POINT_MAX_BYTES = 262_144
 class ConsumerHold(RuntimeError):
     """Fail-closed consumer terminal with bounded, non-secret reason text."""
 
-    def __init__(self, status: str, reason: str, *, http_status: int | None = None):
+    def __init__(
+        self,
+        status: str,
+        reason: str,
+        *,
+        http_status: int | None = None,
+        network_attempted: bool = False,
+    ):
         super().__init__(f"{status}: {reason}")
         self.status = status
         self.reason = reason
         self.http_status = http_status
+        self.network_attempted = network_attempted
 
 
 @dataclass(frozen=True)
@@ -214,6 +223,10 @@ def _cache_control_tokens(headers: Mapping[str, str]) -> set[str]:
     return {part.strip().lower() for part in headers.get("cache-control", "").split(",") if part.strip()}
 
 
+def _network_hold(status: str, reason: str, *, http_status: int | None = None) -> ConsumerHold:
+    return ConsumerHold(status, reason, http_status=http_status, network_attempted=True)
+
+
 def _meta_from_health(doc: Mapping[str, Any]) -> dict[str, Any]:
     return {key: doc.get(key) for key in (
         "stable_source_id", "role", "resolution_disposition", "currentness_status",
@@ -223,7 +236,7 @@ def _meta_from_health(doc: Mapping[str, Any]) -> dict[str, Any]:
 
 def _validate_meta(meta: Any) -> dict[str, Any]:
     if not isinstance(meta, dict):
-        raise ConsumerHold("HOLD_META_MISMATCH", "canonical payload meta is unavailable")
+        raise _network_hold("HOLD_META_MISMATCH", "canonical payload meta is unavailable")
     expected = {
         "stable_source_id": STABLE_SOURCE_ID,
         "role": ROLE,
@@ -236,13 +249,33 @@ def _validate_meta(meta: Any) -> dict[str, Any]:
     }
     for key, value in expected.items():
         if meta.get(key) != value:
-            raise ConsumerHold("HOLD_META_MISMATCH", f"canonical payload meta mismatch: {key}")
+            raise _network_hold("HOLD_META_MISMATCH", f"canonical payload meta mismatch: {key}")
     return dict(meta)
+
+
+def _validate_canon_health(doc: Any) -> dict[str, Any]:
+    if not isinstance(doc, dict):
+        raise _network_hold("HOLD_CANON_HEALTH_MISMATCH", "Central canon health response must be an object")
+    if doc.get("ok") is not True or doc.get("enabled") is not True or doc.get("status") != "READ_ONLY_READY":
+        raise _network_hold("HOLD_CANON_HEALTH_MISMATCH", "Central canon health is not READ_ONLY_READY")
+    expected = {
+        "source_id": STABLE_SOURCE_ID,
+        "role": ROLE,
+        "resolution_disposition": DISPOSITION,
+        "record_digest": RECORD_DIGEST,
+        "projection_digest": PROJECTION_DIGEST,
+        "authority_upgraded": False,
+        "integrity_check": "ok",
+    }
+    for key, value in expected.items():
+        if doc.get(key) != value:
+            raise _network_hold("HOLD_CANON_HEALTH_MISMATCH", f"Central canon health mismatch: {key}")
+    return dict(doc)
 
 
 def _same_meta(*metas: Mapping[str, Any]) -> None:
     if metas and any(dict(meta) != dict(metas[0]) for meta in metas[1:]):
-        raise ConsumerHold("HOLD_META_MISMATCH", "canonical payload meta differs across endpoints")
+        raise _network_hold("HOLD_META_MISMATCH", "canonical payload meta differs across endpoints")
 
 
 class CanonicalPayloadConsumer:
@@ -256,7 +289,14 @@ class CanonicalPayloadConsumer:
         token = base64.b64encode(f"{USERNAME}:{self.config.password}".encode("utf-8")).decode("ascii")
         return f"Basic {token}"
 
-    def _get_json(self, path: str, *, max_bytes: int, expected_statuses: Sequence[int] = (200,)) -> tuple[int, Mapping[str, str], Any]:
+    def _get_json(
+        self,
+        path: str,
+        *,
+        max_bytes: int,
+        expected_statuses: Sequence[int] = (200,),
+        require_no_store: bool = True,
+    ) -> tuple[int, Mapping[str, str], Any]:
         if not path.startswith("/") or "\r" in path or "\n" in path:
             raise ConsumerHold("HOLD_REQUEST_INVALID", "request path is invalid")
         headers = {
@@ -275,89 +315,110 @@ class CanonicalPayloadConsumer:
             observed_headers = {str(k).lower(): str(v) for k, v in response.getheaders()}
             encoding = observed_headers.get("content-encoding", "identity").strip().lower()
             if encoding not in {"", "identity"}:
-                raise ConsumerHold("HOLD_CONTENT_ENCODING", "compressed response content is denied", http_status=status)
+                raise _network_hold("HOLD_CONTENT_ENCODING", "compressed response content is denied", http_status=status)
             length = observed_headers.get("content-length")
             if length:
                 try:
                     declared = int(length)
                 except ValueError as exc:
-                    raise ConsumerHold("HOLD_RESPONSE_SIZE", "invalid Content-Length") from exc
+                    raise _network_hold("HOLD_RESPONSE_SIZE", "invalid Content-Length", http_status=status) from exc
                 if declared < 0 or declared > max_bytes:
-                    raise ConsumerHold("HOLD_RESPONSE_SIZE", "response exceeds size limit", http_status=status)
+                    raise _network_hold("HOLD_RESPONSE_SIZE", "response exceeds size limit", http_status=status)
             body = response.read(max_bytes + 1)
             if len(body) > max_bytes:
-                raise ConsumerHold("HOLD_RESPONSE_SIZE", "response exceeds size limit", http_status=status)
+                raise _network_hold("HOLD_RESPONSE_SIZE", "response exceeds size limit", http_status=status)
         except ConsumerHold:
             raise
         except ssl.SSLError as exc:
-            raise ConsumerHold("HOLD_TLS_FAILURE", "TLS verification failed") from exc
+            raise _network_hold("HOLD_TLS_FAILURE", "TLS verification failed") from exc
         except (OSError, http.client.HTTPException) as exc:
-            raise ConsumerHold("HOLD_TRANSPORT_FAILURE", "HTTPS transport failed") from exc
+            raise _network_hold("HOLD_TRANSPORT_FAILURE", "HTTPS transport failed") from exc
         finally:
             if connection is not None:
                 try:
                     connection.close()
                 except Exception:
                     pass
-        if not CACHE_CONTROL_TOKENS.issubset(_cache_control_tokens(observed_headers)):
-            raise ConsumerHold("HOLD_CACHE_CONTROL", "required private,no-store cache control is absent", http_status=status)
-        doc = strict_json_loads(body)
+        if require_no_store and not CACHE_CONTROL_TOKENS.issubset(_cache_control_tokens(observed_headers)):
+            raise _network_hold("HOLD_CACHE_CONTROL", "required private,no-store cache control is absent", http_status=status)
+        try:
+            doc = strict_json_loads(body)
+        except ConsumerHold as exc:
+            raise _network_hold(exc.status, exc.reason, http_status=status) from exc
         if status in (301, 302, 303, 307, 308):
-            raise ConsumerHold("HOLD_REDIRECT_DENIED", "redirect response is denied", http_status=status)
+            raise _network_hold("HOLD_REDIRECT_DENIED", "redirect response is denied", http_status=status)
         if status in (401, 403):
-            raise ConsumerHold("HOLD_AUTH", "canonical payload authentication rejected", http_status=status)
+            raise _network_hold("HOLD_AUTH", "canonical payload authentication rejected", http_status=status)
         if status == 503:
             detail = doc.get("detail") if isinstance(doc, dict) else None
             remote = detail.get("status") if isinstance(detail, dict) else None
             remote_status = remote if isinstance(remote, str) and remote else "HOLD_PROVIDER_503"
-            raise ConsumerHold(remote_status, "canonical payload provider returned 503", http_status=status)
+            raise _network_hold(remote_status, "canonical payload provider returned 503", http_status=status)
         if status not in expected_statuses:
-            raise ConsumerHold("HOLD_HTTP_STATUS", f"unexpected HTTP status {status}", http_status=status)
+            raise _network_hold("HOLD_HTTP_STATUS", f"unexpected HTTP status {status}", http_status=status)
         return status, observed_headers, doc
 
     def health(self) -> dict[str, Any]:
-        _, _, doc = self._get_json(HEALTH_PATH, max_bytes=HEALTH_MAX_BYTES)
+        _, _, canon_doc = self._get_json(CANON_HEALTH_PATH, max_bytes=HEALTH_MAX_BYTES, require_no_store=False)
+        canon = _validate_canon_health(canon_doc)
+        _, _, doc = self._get_json(PAYLOAD_HEALTH_PATH, max_bytes=HEALTH_MAX_BYTES)
         if not isinstance(doc, dict):
-            raise ConsumerHold("HOLD_HEALTH_MISMATCH", "payload health response must be an object")
+            raise _network_hold("HOLD_HEALTH_MISMATCH", "payload health response must be an object")
         if doc.get("ok") is not True or doc.get("enabled") is not True or doc.get("status") != "READ_ONLY_READY":
-            raise ConsumerHold("HOLD_HEALTH_MISMATCH", "payload health is not READ_ONLY_READY")
+            raise _network_hold("HOLD_HEALTH_MISMATCH", "payload health is not READ_ONLY_READY")
         meta = _validate_meta(_meta_from_health(doc))
         if doc.get("decision_count") != DECISION_COUNT or doc.get("project_count") != PROJECT_COUNT:
-            raise ConsumerHold("HOLD_COUNT_MISMATCH", "payload health count mismatch")
-        return {"meta": meta, "decision_count": DECISION_COUNT, "project_count": PROJECT_COUNT}
+            raise _network_hold("HOLD_COUNT_MISMATCH", "payload health count mismatch")
+        if canon.get("record_digest") != meta["record_digest"] or canon.get("projection_digest") != meta["projection_digest"]:
+            raise _network_hold("HOLD_HEALTH_CROSSCHECK_MISMATCH", "Central canon and payload health digests differ")
+        return {
+            "canon_health": {
+                "status": canon["status"],
+                "source_id": canon["source_id"],
+                "role": canon["role"],
+                "resolution_disposition": canon["resolution_disposition"],
+                "record_digest": canon["record_digest"],
+                "projection_digest": canon["projection_digest"],
+                "authority_upgraded": canon["authority_upgraded"],
+                "integrity_check": canon["integrity_check"],
+            },
+            "meta": meta,
+            "decision_count": DECISION_COUNT,
+            "project_count": PROJECT_COUNT,
+        }
 
     def decisions(self) -> dict[str, Any]:
         _, _, doc = self._get_json(DECISIONS_PATH, max_bytes=COLLECTION_MAX_BYTES)
         if not isinstance(doc, dict) or not isinstance(doc.get("records"), list):
-            raise ConsumerHold("HOLD_DECISIONS_MISMATCH", "decision collection schema mismatch")
+            raise _network_hold("HOLD_DECISIONS_MISMATCH", "decision collection schema mismatch")
         meta = _validate_meta(doc.get("meta"))
         records = doc["records"]
         if doc.get("count") != DECISION_COUNT or len(records) != DECISION_COUNT or doc.get("range") != list(DECISION_RANGE):
-            raise ConsumerHold("HOLD_DECISIONS_MISMATCH", "decision count or range mismatch")
+            raise _network_hold("HOLD_DECISIONS_MISMATCH", "decision count or range mismatch")
         expected_ids = [f"D{i:03d}" for i in range(1, DECISION_COUNT + 1)]
         ids = [record.get("decision_id") if isinstance(record, dict) else None for record in records]
         if ids != expected_ids or any(not isinstance(record, dict) or record.get("status") != "CURRENT" for record in records):
-            raise ConsumerHold("HOLD_DECISIONS_MISMATCH", "decision records are not contiguous CURRENT D001-D139")
+            raise _network_hold("HOLD_DECISIONS_MISMATCH", "decision records are not contiguous CURRENT D001-D139")
         return {"meta": meta, "records": records}
 
     def projects(self) -> dict[str, Any]:
         _, _, doc = self._get_json(PROJECTS_PATH, max_bytes=COLLECTION_MAX_BYTES)
         if not isinstance(doc, dict) or not isinstance(doc.get("records"), list):
-            raise ConsumerHold("HOLD_PROJECTS_MISMATCH", "project collection schema mismatch")
+            raise _network_hold("HOLD_PROJECTS_MISMATCH", "project collection schema mismatch")
         meta = _validate_meta(doc.get("meta"))
         records = doc["records"]
         if doc.get("count") != PROJECT_COUNT or len(records) != PROJECT_COUNT:
-            raise ConsumerHold("HOLD_PROJECTS_MISMATCH", "project count mismatch")
+            raise _network_hold("HOLD_PROJECTS_MISMATCH", "project count mismatch")
         ids = [record.get("project_id") if isinstance(record, dict) else None for record in records]
         if any(not isinstance(value, str) for value in ids) or len(set(ids)) != PROJECT_COUNT:
-            raise ConsumerHold("HOLD_PROJECTS_MISMATCH", "project IDs are not unique")
+            raise _network_hold("HOLD_PROJECTS_MISMATCH", "project IDs are not unique")
         counts: dict[str, int] = {}
         for record in records:
             if not isinstance(record, dict) or not isinstance(record.get("status"), str):
-                raise ConsumerHold("HOLD_PROJECTS_MISMATCH", "project record schema mismatch")
+                raise _network_hold("HOLD_PROJECTS_MISMATCH", "project record schema mismatch")
             counts[record["status"]] = counts.get(record["status"], 0) + 1
         if counts != PROJECT_STATUS_COUNTS:
-            raise ConsumerHold("HOLD_PROJECTS_MISMATCH", "project status counts mismatch")
+            raise _network_hold("HOLD_PROJECTS_MISMATCH", "project status counts mismatch")
         return {"meta": meta, "records": records}
 
     def snapshot(self) -> dict[str, Any]:
@@ -392,45 +453,39 @@ class CanonicalPayloadConsumer:
         return value
 
     def decision(self, decision_id: str) -> dict[str, Any]:
-        expected = 200 if DECISION_ID_RE.fullmatch(decision_id) else 422
-        status, _, doc = self._get_json(DECISION_PATH.format(decision_id=decision_id), max_bytes=POINT_MAX_BYTES, expected_statuses=(200, 404, 422))
-        if status == 422:
-            if expected != 422:
-                raise ConsumerHold("HOLD_POINT_MISMATCH", "provider rejected a valid decision ID", http_status=status)
+        if not isinstance(decision_id, str) or not DECISION_ID_RE.fullmatch(decision_id):
             return {"status": 422, "terminal": "INVALID_DECISION_ID"}
+        status, _, doc = self._get_json(
+            DECISION_PATH.format(decision_id=decision_id),
+            max_bytes=POINT_MAX_BYTES,
+            expected_statuses=(200, 404),
+        )
         if status == 404:
-            if expected == 422:
-                raise ConsumerHold("HOLD_POINT_MISMATCH", "invalid decision ID did not return 422", http_status=status)
             return {"status": 404, "terminal": "NOT_FOUND"}
-        if expected == 422:
-            raise ConsumerHold("HOLD_POINT_MISMATCH", "invalid decision ID unexpectedly resolved", http_status=status)
         if not isinstance(doc, dict) or not isinstance(doc.get("record"), dict):
-            raise ConsumerHold("HOLD_POINT_MISMATCH", "decision point response schema mismatch")
+            raise _network_hold("HOLD_POINT_MISMATCH", "decision point response schema mismatch")
         meta = _validate_meta(doc.get("meta"))
         record = doc["record"]
         if record.get("decision_id") != decision_id or record.get("status") != "CURRENT":
-            raise ConsumerHold("HOLD_POINT_MISMATCH", "decision point identity mismatch")
+            raise _network_hold("HOLD_POINT_MISMATCH", "decision point identity mismatch")
         return {"status": 200, "meta": meta, "record": record}
 
     def project(self, project_id: str) -> dict[str, Any]:
-        expected = 200 if PROJECT_ID_RE.fullmatch(project_id) else 422
-        status, _, doc = self._get_json(PROJECT_PATH.format(project_id=project_id), max_bytes=POINT_MAX_BYTES, expected_statuses=(200, 404, 422))
-        if status == 422:
-            if expected != 422:
-                raise ConsumerHold("HOLD_POINT_MISMATCH", "provider rejected a valid project ID", http_status=status)
+        if not isinstance(project_id, str) or not PROJECT_ID_RE.fullmatch(project_id):
             return {"status": 422, "terminal": "INVALID_PROJECT_ID"}
+        status, _, doc = self._get_json(
+            PROJECT_PATH.format(project_id=project_id),
+            max_bytes=POINT_MAX_BYTES,
+            expected_statuses=(200, 404),
+        )
         if status == 404:
-            if expected == 422:
-                raise ConsumerHold("HOLD_POINT_MISMATCH", "invalid project ID did not return 422", http_status=status)
             return {"status": 404, "terminal": "NOT_FOUND"}
-        if expected == 422:
-            raise ConsumerHold("HOLD_POINT_MISMATCH", "invalid project ID unexpectedly resolved", http_status=status)
         if not isinstance(doc, dict) or not isinstance(doc.get("record"), dict):
-            raise ConsumerHold("HOLD_POINT_MISMATCH", "project point response schema mismatch")
+            raise _network_hold("HOLD_POINT_MISMATCH", "project point response schema mismatch")
         meta = _validate_meta(doc.get("meta"))
         record = doc["record"]
         if record.get("project_id") != project_id:
-            raise ConsumerHold("HOLD_POINT_MISMATCH", "project point identity mismatch")
+            raise _network_hold("HOLD_POINT_MISMATCH", "project point identity mismatch")
         return {"status": 200, "meta": meta, "record": record}
 
 
@@ -439,14 +494,14 @@ def disabled_receipt() -> dict[str, Any]:
 
 
 def hold_receipt(exc: ConsumerHold) -> dict[str, Any]:
+    network_read = exc.network_attempted or exc.http_status is not None
     value: dict[str, Any] = {
         "schema": SCHEMA,
         "terminal": "CANONICAL_PAYLOAD_HOLD",
         "status": exc.status,
         "reason": exc.reason,
-        "effects": effects(network_read=False),
+        "effects": effects(network_read=network_read),
     }
     if exc.http_status is not None:
         value["http_status"] = exc.http_status
-        value["effects"] = effects(network_read=True)
     return value

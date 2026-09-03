@@ -6,6 +6,8 @@
 
 The consumer permits only HTTPS `GET` reads. It does not write ContinuityOS memory, operational memory, databases, files, provider state, Central Memory, or current state; it does not run subprocesses, deploy, trade, access wallets, or auto-inject into MCP. `context` is an ephemeral in-process projection only.
 
+Any HOLD after an outbound GET has been attempted conservatively reports `network_read=true`, including TLS, transport, JSON, cache-control, and post-response identity/schema validation failures. Pre-network configuration/binding failures remain `network_read=false`.
+
 ## Configuration
 
 The feature is disabled unless:
@@ -33,6 +35,15 @@ continuity-canon context
 
 The five commands are the only `continuity-canon` commands allowed through verified current-session containment. Partial or invalid current-session binding never falls back to the consumer.
 
+`continuity-canon health` verifies both frozen producer health surfaces before accepting readiness:
+
+```text
+GET /central-memory/health
+GET /central-memory/payload/health
+```
+
+The Central canon health response must be `READ_ONLY_READY`, integrity `ok`, source/role/disposition bound, and match the frozen record/projection digests. The payload health response must independently validate the frozen payload meta, 139-decision count, 10-project count, and the same record/projection digests.
+
 ## Frozen producer identity
 
 ```text
@@ -48,8 +59,12 @@ decisions=139 contiguous D001-D139, all CURRENT
 projects=10 unique: 9 CURRENT_TRUNK + 1 LEGACY_VALID_CONCEPT
 ```
 
+## Point-ID boundary
+
+Decision IDs must match `^D[0-9]{3}$`; project IDs must match `^[a-z0-9][a-z0-9-]{0,127}$`. Malformed IDs are rejected locally with frozen `422` semantics before any network request, so `/`, `?`, `#`, percent-encoded path separators, whitespace, and other malformed input cannot alter the request target. Valid-but-unknown IDs still reach the producer and preserve `404` semantics.
+
 ## Transport hardening
 
-The implementation is stdlib-only and uses `http.client.HTTPSConnection` plus `ssl.create_default_context()`. Host/port are fixed to `archiveos.bitevo.work:443`; redirects are denied; retries are zero; only identity content encoding is accepted; response byte ceilings are enforced; duplicate JSON keys and non-finite constants are rejected; every accepted response requires both `private` and `no-store` cache-control tokens.
+The implementation is stdlib-only and uses `http.client.HTTPSConnection` plus `ssl.create_default_context()`. Host/port are fixed to `archiveos.bitevo.work:443`; redirects are denied; retries are zero; only identity content encoding is accepted; response byte ceilings are enforced; duplicate JSON keys and non-finite constants are rejected. Payload/data responses require both `private` and `no-store` cache-control tokens.
 
 A remote 503 remains a HOLD and does not trigger fallback or a new effect-generating attempt.
