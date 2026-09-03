@@ -260,7 +260,7 @@ def test_oversized_transport_input_is_rejected_before_builder(monkeypatch) -> No
         calls.append(value)
         raise AssertionError("builder must not run")
 
-    monkeypatch.setattr(signer, "accept_cross_ai_ruap_transport_receipt", forbidden_builder)
+    monkeypatch.setattr(signer.acceptance_builder, "accept_cross_ai_ruap_transport_receipt", forbidden_builder)
     with pytest.raises(ValueError, match="snapshot_string_too_long"):
         instance.produce(sign_request=sign_request(supplied))
     assert calls == []
@@ -277,7 +277,7 @@ def test_evidence_counts_are_bounded_before_builder(monkeypatch) -> None:
         calls.append(value)
         raise AssertionError("builder must not run")
 
-    monkeypatch.setattr(signer, "accept_cross_ai_ruap_transport_receipt", forbidden_builder)
+    monkeypatch.setattr(signer.acceptance_builder, "accept_cross_ai_ruap_transport_receipt", forbidden_builder)
     with pytest.raises(ValueError, match="transport_source_count_out_of_bounds"):
         instance.produce(sign_request=sign_request(supplied))
     assert calls == []
