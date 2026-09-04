@@ -496,10 +496,23 @@ def _prevalidate_anchor_evidence(
         or proof["activation_manifest_sha256"] != contract._canonical_sha256(activation_manifest)
     ):
         raise ValueError("production_activation_anchor_mismatch")
-    if proof["activation_generation"] == 1:
-        _require_genesis(previous_value)
-    else:
-        _require_previous_evidence_bundle(previous_value)
+
+    # Step 9 must finish every hardware-independent proof/chain check before
+    # CURRENT_SIGNING is accepted at step 10. Reuse the pure proof verifier with a
+    # proof-derived state so it validates commitment/genesis/parent/digest continuity
+    # without pretending that any TPM read has occurred. Step 11 repeats the same
+    # verifier against the actual fresh TPM readback.
+    static_fresh_state = {
+        "nv_public_sha256": proof["nv_public_sha256"],
+        "nv_name_sha256": proof["nv_name_sha256"],
+        "observed_nv_extend_digest": proof["observed_nv_extend_digest"],
+    }
+    _verify_activation_anchor_proof(
+        proof=proof,
+        activation_manifest=activation_manifest,
+        previous_proof_or_genesis_evidence=previous_value,
+        fresh_nv_state=static_fresh_state,
+    )
     return proof
 
 
