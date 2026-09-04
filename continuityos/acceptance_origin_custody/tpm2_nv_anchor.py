@@ -2,7 +2,7 @@
 
 The production runtime provider is intentionally unprovisioned. No NV handle, TPMA_NV
 mask, authPolicy, authorization mechanism, credential source, or TCTI is defaulted by
-this source. Pure proof and wire-identity verification remain hardware-free.
+this source. Pure proof and exact TPMS_NV_PUBLIC wire verification remain hardware-free.
 """
 from __future__ import annotations
 
@@ -16,6 +16,11 @@ PROOF_SCHEMA = "continuityos.cross_ai_ruap_acceptance_origin_activation_anchor_p
 GENESIS_SCHEMA = "continuityos.cross_ai_ruap_acceptance_origin_activation_anchor_genesis/v1"
 COMMITMENT_SCHEMA = "continuityos.cross_ai_ruap_acceptance_origin_activation_anchor_commitment/v1"
 
+_TPM_ALG_SHA256 = 0x000B
+_TPMA_NV_NT_MASK = 0x000000F0
+_TPMA_NV_NT_EXTEND = 0x00000040
+_TPMA_NV_ORDERLY = 0x04000000
+
 _PROOF_KEYS = frozenset({
     "schema", "producer_id", "activation_generation", "activation_manifest_sha256",
     "anchor_genesis_evidence_sha256", "previous_activation_generation",
@@ -27,6 +32,7 @@ _GENESIS_KEYS = frozenset({
     "nv_name_sha256", "genesis_nv_extend_digest", "nv_type", "name_alg",
     "data_size", "orderly", "result",
 })
+_PREVIOUS_EVIDENCE_BUNDLE_KEYS = frozenset({"genesis_evidence", "previous_proof"})
 
 
 @dataclass(frozen=True)
@@ -39,7 +45,11 @@ class _BoundTpmNvProfile:
     def __post_init__(self) -> None:
         if type(self.nv_index) is not int or self.nv_index <= 0:
             raise ValueError("production_tpm_nv_policy_unbound")
-        if type(self.tpma_nv_mask) is not int or self.tpma_nv_mask < 0:
+        if type(self.tpma_nv_mask) is not int or not 0 <= self.tpma_nv_mask <= 0xFFFFFFFF:
+            raise ValueError("production_tpm_nv_policy_unbound")
+        if (self.tpma_nv_mask & _TPMA_NV_NT_MASK) != _TPMA_NV_NT_EXTEND:
+            raise ValueError("production_tpm_nv_policy_unbound")
+        if self.tpma_nv_mask & _TPMA_NV_ORDERLY:
             raise ValueError("production_tpm_nv_policy_unbound")
         if self.auth_policy_sha256 is not None and not contract._is_sha256(
             self.auth_policy_sha256
@@ -58,12 +68,36 @@ class _UnprovisionedRuntimeTpmReadProvider(_RuntimeTpmReadProvider):
     pass
 
 
+def _parse_tpms_nv_public(tpms_nv_public_marshaled: bytes) -> dict[str, Any]:
+    """Parse the exact inner TPMS_NV_PUBLIC wire bytes; outer TPM2B size is forbidden."""
+    if type(tpms_nv_public_marshaled) is not bytes or len(tpms_nv_public_marshaled) < 14:
+        raise ValueError("production_tpm_nv_public_area_mismatch")
+    raw = tpms_nv_public_marshaled
+    nv_index = int.from_bytes(raw[0:4], "big")
+    name_alg = int.from_bytes(raw[4:6], "big")
+    attributes = int.from_bytes(raw[6:10], "big")
+    policy_size = int.from_bytes(raw[10:12], "big")
+    policy_end = 12 + policy_size
+    if policy_end + 2 != len(raw):
+        raise ValueError("production_tpm_nv_public_area_mismatch")
+    auth_policy = raw[12:policy_end]
+    data_size = int.from_bytes(raw[policy_end:policy_end + 2], "big")
+    return {
+        "nv_index": nv_index,
+        "name_alg": name_alg,
+        "attributes": attributes,
+        "auth_policy": auth_policy,
+        "data_size": data_size,
+    }
+
+
 def _require_wire_identity(
     *,
     tpms_nv_public_marshaled: bytes,
     raw_tpm_name: bytes,
 ) -> tuple[str, str]:
-    if type(tpms_nv_public_marshaled) is not bytes or not tpms_nv_public_marshaled:
+    parsed = _parse_tpms_nv_public(tpms_nv_public_marshaled)
+    if parsed["name_alg"] != _TPM_ALG_SHA256:
         raise ValueError("production_tpm_nv_public_area_mismatch")
     if type(raw_tpm_name) is not bytes or len(raw_tpm_name) != 34:
         raise ValueError("production_tpm_nv_name_binding_invalid")
@@ -76,6 +110,26 @@ def _require_wire_identity(
         hashlib.sha256(tpms_nv_public_marshaled).hexdigest(),
         hashlib.sha256(raw_tpm_name).hexdigest(),
     )
+
+
+def _require_parsed_profile_match(
+    *, parsed: dict[str, Any], profile: _BoundTpmNvProfile
+) -> None:
+    if (
+        parsed["nv_index"] != profile.nv_index
+        or parsed["name_alg"] != _TPM_ALG_SHA256
+        or parsed["attributes"] != profile.tpma_nv_mask
+        or (parsed["attributes"] & _TPMA_NV_NT_MASK) != _TPMA_NV_NT_EXTEND
+        or bool(parsed["attributes"] & _TPMA_NV_ORDERLY)
+        or parsed["data_size"] != 32
+    ):
+        raise ValueError("production_tpm_nv_public_area_mismatch")
+    auth_policy = parsed["auth_policy"]
+    if profile.auth_policy_sha256 is None:
+        if auth_policy != b"":
+            raise ValueError("production_tpm_nv_public_area_mismatch")
+    elif len(auth_policy) != 32 or auth_policy.hex() != profile.auth_policy_sha256:
+        raise ValueError("production_tpm_nv_public_area_mismatch")
 
 
 class _Tpm2NvAnchorAdapter:
@@ -117,6 +171,20 @@ class _Tpm2NvAnchorAdapter:
             or not contract._is_sha256(snapshot["observed_nv_extend_digest"])
         ):
             raise ValueError("production_tpm_nv_public_area_mismatch")
+
+        parsed = _parse_tpms_nv_public(snapshot["tpms_nv_public_marshaled"])
+        _require_parsed_profile_match(parsed=parsed, profile=self._profile)
+        if (
+            parsed["nv_index"] != snapshot["nv_index"]
+            or parsed["attributes"] != snapshot["tpma_nv_mask"]
+            or (parsed["name_alg"] == _TPM_ALG_SHA256) != (snapshot["name_alg"] == "SHA256")
+            or ((parsed["attributes"] & _TPMA_NV_NT_MASK) == _TPMA_NV_NT_EXTEND)
+            != (snapshot["nv_type"] == "TPM_NT_EXTEND")
+            or bool(parsed["attributes"] & _TPMA_NV_ORDERLY) != snapshot["orderly"]
+            or parsed["data_size"] != snapshot["data_size"]
+        ):
+            raise ValueError("production_tpm_nv_public_area_mismatch")
+
         nv_public_sha256, nv_name_sha256 = _require_wire_identity(
             tpms_nv_public_marshaled=snapshot["tpms_nv_public_marshaled"],
             raw_tpm_name=snapshot["raw_tpm_name"],
@@ -159,6 +227,7 @@ def _require_proof_shape(value: Any) -> dict[str, Any]:
         or type(proof["activation_generation"]) is not int
         or not 1 <= proof["activation_generation"] <= contract.MAX_INTEGER_ABS
         or type(proof["previous_activation_generation"]) is not int
+        or not 0 <= proof["previous_activation_generation"] < proof["activation_generation"]
     ):
         raise ValueError("production_tpm_anchor_proof_invalid")
     for key in (
@@ -192,6 +261,27 @@ def _expected_observed_digest(
     ).hexdigest()
 
 
+def _require_proof_commitment_consistency(proof: dict[str, Any]) -> None:
+    if proof["commitment_sha256"] != _commitment_sha256(proof):
+        raise ValueError("production_tpm_anchor_proof_invalid")
+    if proof["observed_nv_extend_digest"] != _expected_observed_digest(
+        previous_nv_extend_digest=proof["previous_nv_extend_digest"],
+        commitment_sha256=proof["commitment_sha256"],
+    ):
+        raise ValueError("production_activation_anchor_mismatch")
+
+
+def _require_previous_evidence_bundle(value: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    bundle = contract._require_exact_keys(
+        contract._snapshot_bounded(value),
+        _PREVIOUS_EVIDENCE_BUNDLE_KEYS,
+        "activation_anchor_previous_evidence",
+    )
+    genesis = _require_genesis(bundle["genesis_evidence"])
+    previous = _require_proof_shape(bundle["previous_proof"])
+    return genesis, previous
+
+
 def _verify_activation_anchor_proof(
     *,
     proof: Any,
@@ -203,31 +293,24 @@ def _verify_activation_anchor_proof(
     manifest_sha256 = contract._canonical_sha256(activation_manifest)
     if (
         current["activation_manifest_sha256"] != manifest_sha256
-        or current["activation_generation"] != activation_manifest.get(
-            "activation_generation"
-        )
+        or current["activation_generation"] != activation_manifest.get("activation_generation")
     ):
         raise ValueError("production_activation_anchor_mismatch")
 
-    if set(fresh_nv_state) != {
+    if type(fresh_nv_state) is not dict or set(fresh_nv_state) != {
         "nv_public_sha256", "nv_name_sha256", "observed_nv_extend_digest"
     }:
+        raise ValueError("production_tpm_anchor_unavailable")
+    if not all(contract._is_sha256(fresh_nv_state[key]) for key in fresh_nv_state):
         raise ValueError("production_tpm_anchor_unavailable")
     if (
         current["nv_public_sha256"] != fresh_nv_state["nv_public_sha256"]
         or current["nv_name_sha256"] != fresh_nv_state["nv_name_sha256"]
-        or current["observed_nv_extend_digest"]
-        != fresh_nv_state["observed_nv_extend_digest"]
+        or current["observed_nv_extend_digest"] != fresh_nv_state["observed_nv_extend_digest"]
     ):
         raise ValueError("production_activation_anchor_mismatch")
 
-    if current["commitment_sha256"] != _commitment_sha256(current):
-        raise ValueError("production_tpm_anchor_proof_invalid")
-    if current["observed_nv_extend_digest"] != _expected_observed_digest(
-        previous_nv_extend_digest=current["previous_nv_extend_digest"],
-        commitment_sha256=current["commitment_sha256"],
-    ):
-        raise ValueError("production_activation_anchor_mismatch")
+    _require_proof_commitment_consistency(current)
 
     if current["activation_generation"] == 1:
         genesis = _require_genesis(previous_proof_or_genesis_evidence)
@@ -236,29 +319,40 @@ def _verify_activation_anchor_proof(
             current["previous_activation_generation"] != 0
             or current["anchor_genesis_evidence_sha256"] != genesis_sha256
             or current["previous_anchor_proof_sha256"] != genesis_sha256
-            or current["previous_nv_extend_digest"]
-            != genesis["genesis_nv_extend_digest"]
+            or current["previous_nv_extend_digest"] != genesis["genesis_nv_extend_digest"]
             or current["nv_public_sha256"] != genesis["nv_public_sha256"]
             or current["nv_name_sha256"] != genesis["nv_name_sha256"]
         ):
             raise ValueError("production_tpm_genesis_evidence_invalid")
-    else:
-        previous = _require_proof_shape(previous_proof_or_genesis_evidence)
-        if (
-            current["previous_activation_generation"]
-            != current["activation_generation"] - 1
-            or previous["activation_generation"]
-            != current["previous_activation_generation"]
-            or current["previous_anchor_proof_sha256"]
-            != contract._canonical_sha256(previous)
-            or current["previous_nv_extend_digest"]
-            != previous["observed_nv_extend_digest"]
-            or current["anchor_genesis_evidence_sha256"]
-            != previous["anchor_genesis_evidence_sha256"]
-            or current["nv_public_sha256"] != previous["nv_public_sha256"]
-            or current["nv_name_sha256"] != previous["nv_name_sha256"]
-        ):
-            raise ValueError("production_activation_generation_rollback")
+        return current
+
+    # For N>1, the immediate parent proof is required to be the exact reviewed N-1
+    # proof, and the exact reviewed genesis object is supplied alongside it so the
+    # invariant root hash is resolved rather than merely copied from parent evidence.
+    genesis, previous = _require_previous_evidence_bundle(
+        previous_proof_or_genesis_evidence
+    )
+    genesis_sha256 = contract._canonical_sha256(genesis)
+    _require_proof_commitment_consistency(previous)
+    if (
+        current["previous_activation_generation"] != current["activation_generation"] - 1
+        or previous["activation_generation"] != current["previous_activation_generation"]
+        or current["previous_anchor_proof_sha256"] != contract._canonical_sha256(previous)
+        or current["previous_nv_extend_digest"] != previous["observed_nv_extend_digest"]
+        or current["anchor_genesis_evidence_sha256"] != genesis_sha256
+        or previous["anchor_genesis_evidence_sha256"] != genesis_sha256
+        or current["nv_public_sha256"] != previous["nv_public_sha256"]
+        or current["nv_name_sha256"] != previous["nv_name_sha256"]
+        or previous["nv_public_sha256"] != genesis["nv_public_sha256"]
+        or previous["nv_name_sha256"] != genesis["nv_name_sha256"]
+    ):
+        raise ValueError("production_activation_generation_rollback")
+    if previous["activation_generation"] == 1 and (
+        previous["previous_activation_generation"] != 0
+        or previous["previous_anchor_proof_sha256"] != genesis_sha256
+        or previous["previous_nv_extend_digest"] != genesis["genesis_nv_extend_digest"]
+    ):
+        raise ValueError("production_tpm_genesis_evidence_invalid")
     return current
 
 

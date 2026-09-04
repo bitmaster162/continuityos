@@ -62,7 +62,10 @@ def _require_metadata_shape(value: Any, *, auth: bool) -> dict[str, Any]:
 
 
 class _YubiHsm2Ed25519Adapter:
-    __slots__ = ("_profile", "_session_provider", "_public_key_readback")
+    __slots__ = (
+        "_profile", "_session_provider", "_public_key_readback",
+        "_validated_session", "_sign_attempted",
+    )
 
     def __init__(
         self,
@@ -73,6 +76,8 @@ class _YubiHsm2Ed25519Adapter:
         self._profile = profile
         self._session_provider = session_provider
         self._public_key_readback: bytes | None = None
+        self._validated_session: Any | None = None
+        self._sign_attempted = False
 
     def _open_session(self) -> Any:
         session = self._session_provider._open_authenticated_session()
@@ -99,7 +104,6 @@ class _YubiHsm2Ed25519Adapter:
 
         key_info = _require_metadata_shape(key_info, auth=False)
         auth_info = _require_metadata_shape(auth_info, auth=True)
-
         expected_domain = frozenset({self._profile.signer_domain_bit})
         if (
             key_info["object_id"] != self._profile.signing_key_object_id
@@ -110,7 +114,6 @@ class _YubiHsm2Ed25519Adapter:
             or key_info["exportable"] is not False
         ):
             raise ValueError("production_hsm_capability_profile_invalid")
-
         if (
             auth_info["object_id"] != self._profile.runtime_auth_key_object_id
             or auth_info["object_type"] != "AUTHENTICATION_KEY"
@@ -122,6 +125,10 @@ class _YubiHsm2Ed25519Adapter:
             raise ValueError("production_hsm_capability_profile_invalid")
 
     def _read_bound_public_key(self) -> bytes:
+        if self._sign_attempted:
+            raise ValueError("production_hsm_sign_failed")
+        if self._public_key_readback is not None:
+            return self._public_key_readback
         session = self._open_session()
         self._validate_session_metadata(session)
         try:
@@ -133,14 +140,24 @@ class _YubiHsm2Ed25519Adapter:
         if type(public_key) is not bytes or len(public_key) != 32:
             raise ValueError("production_key_public_readback_invalid")
         self._public_key_readback = public_key
+        self._validated_session = session
         return public_key
 
     def _sign_bound_acceptance_message(self, message: bytes) -> bytes:
         if type(message) is not bytes or not message:
             raise ValueError("production_hsm_sign_failed")
-        if self._public_key_readback is None:
+        if self._sign_attempted:
+            raise ValueError("production_hsm_sign_failed")
+        if self._public_key_readback is None or self._validated_session is None:
             raise ValueError("production_key_public_readback_invalid")
-        session = self._open_session()
+
+        # Step 15 MUST use the exact session already opened and validated at step 12.
+        # Revalidate metadata on that same session immediately before the irreversible
+        # sign attempt; never reacquire a potentially different session here.
+        session = self._validated_session
+        self._validate_session_metadata(session)
+        self._sign_attempted = True
+        self._validated_session = None
         try:
             signature = session._sign_ed25519(
                 self._profile.signing_key_object_id, message

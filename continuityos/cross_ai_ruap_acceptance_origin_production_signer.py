@@ -16,6 +16,9 @@ from . import cross_ai_ruap_receipt_acceptance as acceptance_builder
 from . import cross_ai_ruap_receipt_acceptance_origin_verifier as origin_verifier
 from .acceptance_origin_custody.tpm2_nv_anchor import (
     _build_tpm2_nv_anchor_adapter,
+    _require_genesis,
+    _require_previous_evidence_bundle,
+    _require_proof_shape,
     _verify_activation_anchor_proof,
 )
 from .acceptance_origin_custody.yubihsm2_ed25519 import (
@@ -150,7 +153,6 @@ def _require_phase_b_packet(value: Any) -> dict[str, Any]:
         or packet["result"] != "FINAL_WITH_PIN_UPDATE_LINEAGE"
     ):
         raise ValueError("production_phase_b_packet_invalid")
-
     if (
         packet["producer_id"] != contract.PRODUCER_ID
         or packet["algorithm"] != contract.ALGORITHM
@@ -171,7 +173,6 @@ def _require_phase_b_packet(value: Any) -> dict[str, Any]:
         or packet["production_signature_attempted"] is not False
     ):
         raise ValueError("production_phase_b_packet_invalid")
-
     for key in (
         "phase_a_packet_sha256", "signer_implementation_evidence_sha256",
         "candidate_registry_sha256", "pre_pin_registry_sha256",
@@ -180,7 +181,6 @@ def _require_phase_b_packet(value: Any) -> dict[str, Any]:
     ):
         if not contract._is_sha256(packet[key]):
             raise ValueError("production_phase_b_packet_invalid")
-
     for key in (
         "verifier_master_sha", "verifier_tree_sha", "verifier_source_blob_sha",
         "pin_update_reviewed_head_sha", "pin_update_reviewed_tree_sha",
@@ -190,18 +190,14 @@ def _require_phase_b_packet(value: Any) -> dict[str, Any]:
     ):
         if not contract._is_git_sha(packet[key]):
             raise ValueError("production_phase_b_packet_invalid")
-
     if (
-        packet["master_sha_at_pin_merge_readback"]
-        != packet["pin_update_merge_commit_sha"]
-        or packet["published_registry_sha256"]
-        != packet["candidate_registry_sha256"]
+        packet["master_sha_at_pin_merge_readback"] != packet["pin_update_merge_commit_sha"]
+        or packet["published_registry_sha256"] != packet["candidate_registry_sha256"]
         or not _bounded_text(packet["pin_update_branch"])
         or type(packet["pin_update_pr_number"]) is not int
         or not 1 <= packet["pin_update_pr_number"] <= contract.MAX_INTEGER_ABS
     ):
         raise ValueError("production_phase_b_packet_invalid")
-
     for key in (
         "frozen_contract_file_id", "parent_contract_file_id",
         "chat_authority_file_id", "primary_authority_file_id",
@@ -216,13 +212,11 @@ def _require_phase_b_packet(value: Any) -> dict[str, Any]:
     ):
         if not _positive_revision(packet[key]):
             raise ValueError("production_phase_b_packet_invalid")
-
     if (
         packet["frozen_contract_file_id"] != PRODUCER_SIGNING_CONTRACT_FILE_ID
         or packet["frozen_contract_revision"] != PRODUCER_SIGNING_CONTRACT_REVISION
         or packet["ceremony_spec_file_id"] != CEREMONY_SPEC_FILE_ID
-        or packet["ceremony_spec_semantic_revision"]
-        != CEREMONY_SPEC_SEMANTIC_REVISION
+        or packet["ceremony_spec_semantic_revision"] != CEREMONY_SPEC_SEMANTIC_REVISION
         or packet["ceremony_spec_freeze_revision"] != CEREMONY_SPEC_FREEZE_REVISION
     ):
         raise ValueError("production_phase_b_packet_invalid")
@@ -236,7 +230,6 @@ def _require_phase_b_packet(value: Any) -> dict[str, Any]:
         or packet["key_id"] != contract._derive_key_id(public_key)
     ):
         raise ValueError("production_key_id_mismatch")
-
     registry, keys = contract._require_registry(packet["candidate_registry"])
     if (
         len(keys) != 1
@@ -246,8 +239,7 @@ def _require_phase_b_packet(value: Any) -> dict[str, Any]:
         or keys[0]["algorithm"] != contract.ALGORITHM
         or keys[0]["usage"] != contract.PURPOSE
         or keys[0]["state"] != "ACTIVE"
-        or contract._canonical_sha256(registry)
-        != packet["candidate_registry_sha256"]
+        or contract._canonical_sha256(registry) != packet["candidate_registry_sha256"]
     ):
         raise ValueError("production_registry_coherence_mismatch")
     return packet
@@ -257,8 +249,7 @@ def _require_phase_b_review(
     value: Any, *, phase_b_packet: dict[str, Any]
 ) -> dict[str, Any]:
     receipt = contract._require_exact_keys(
-        contract._snapshot_bounded(value),
-        _PHASE_B_REVIEW_KEYS,
+        contract._snapshot_bounded(value), _PHASE_B_REVIEW_KEYS,
         "phase_b_review_receipt",
     )
     if (
@@ -271,8 +262,7 @@ def _require_phase_b_review(
     ):
         raise ValueError("production_phase_b_review_receipt_invalid")
     for key in (
-        "phase_b_packet_sha256", "phase_a_packet_sha256",
-        "published_registry_sha256",
+        "phase_b_packet_sha256", "phase_a_packet_sha256", "published_registry_sha256"
     ):
         if not contract._is_sha256(receipt[key]):
             raise ValueError("production_phase_b_review_receipt_invalid")
@@ -280,16 +270,11 @@ def _require_phase_b_review(
         if not contract._is_git_sha(receipt[key]):
             raise ValueError("production_phase_b_review_receipt_invalid")
     if (
-        receipt["phase_b_packet_sha256"]
-        != contract._canonical_sha256(phase_b_packet)
-        or receipt["phase_a_packet_sha256"]
-        != phase_b_packet["phase_a_packet_sha256"]
-        or receipt["pin_update_merge_commit_sha"]
-        != phase_b_packet["pin_update_merge_commit_sha"]
-        or receipt["phase_b_observed_master_sha"]
-        != phase_b_packet["phase_b_observed_master_sha"]
-        or receipt["published_registry_sha256"]
-        != phase_b_packet["published_registry_sha256"]
+        receipt["phase_b_packet_sha256"] != contract._canonical_sha256(phase_b_packet)
+        or receipt["phase_a_packet_sha256"] != phase_b_packet["phase_a_packet_sha256"]
+        or receipt["pin_update_merge_commit_sha"] != phase_b_packet["pin_update_merge_commit_sha"]
+        or receipt["phase_b_observed_master_sha"] != phase_b_packet["phase_b_observed_master_sha"]
+        or receipt["published_registry_sha256"] != phase_b_packet["published_registry_sha256"]
     ):
         raise ValueError("production_phase_b_review_receipt_invalid")
     return receipt
@@ -305,8 +290,7 @@ def _cohort_membership_sha256(*, cohort_id: str, consumer_ids: list[str]) -> str
 
 def _require_rollout_evidence(value: Any) -> dict[str, Any]:
     evidence = contract._require_exact_keys(
-        contract._snapshot_bounded(value),
-        _ROLLOUT_EVIDENCE_KEYS,
+        contract._snapshot_bounded(value), _ROLLOUT_EVIDENCE_KEYS,
         "rollout_evidence",
     )
     if (
@@ -324,15 +308,12 @@ def _require_rollout_evidence(value: Any) -> dict[str, Any]:
     seen: set[str] = set()
     consumers: list[str] = []
     for item in evidence["readbacks"]:
-        readback = contract._require_exact_keys(
-            item, _READBACK_KEYS, "rollout_readback"
-        )
+        readback = contract._require_exact_keys(item, _READBACK_KEYS, "rollout_readback")
         consumer_id = readback["consumer_id"]
         if (
             not contract._is_identifier(consumer_id)
             or consumer_id in seen
-            or readback["verifier_release_id"]
-            != evidence["verifier_release_id"]
+            or readback["verifier_release_id"] != evidence["verifier_release_id"]
             or readback["registry_sha256"] != evidence["registry_sha256"]
             or readback["ok"] is not True
         ):
@@ -354,8 +335,7 @@ def _require_rollout_receipt(
     phase_b_review: dict[str, Any],
 ) -> dict[str, Any]:
     receipt = contract._require_exact_keys(
-        contract._snapshot_bounded(value),
-        _ROLLOUT_RECEIPT_KEYS,
+        contract._snapshot_bounded(value), _ROLLOUT_RECEIPT_KEYS,
         "rollout_receipt",
     )
     if (
@@ -373,36 +353,26 @@ def _require_rollout_receipt(
         "expected_consumer_count", "successful_readback_count",
         "failed_readback_count", "unresolved_consumer_count",
     ):
-        if (
-            type(receipt[key]) is not int
-            or not 0 <= receipt[key] <= _MAX_ROLLOUT_CONSUMERS
-        ):
+        if type(receipt[key]) is not int or not 0 <= receipt[key] <= _MAX_ROLLOUT_CONSUMERS:
             raise ValueError("production_rollout_evidence_mismatch")
     if (
         receipt["expected_consumer_count"] < 1
-        or receipt["successful_readback_count"]
-        != receipt["expected_consumer_count"]
+        or receipt["successful_readback_count"] != receipt["expected_consumer_count"]
         or receipt["failed_readback_count"] != 0
         or receipt["unresolved_consumer_count"] != 0
         or receipt["result"] != "COMPLETE"
-        or receipt["readback_evidence_sha256"]
-        != contract._canonical_sha256(evidence)
-        or receipt["phase_b_packet_sha256"]
-        != contract._canonical_sha256(phase_b_packet)
-        or receipt["phase_b_review_receipt_sha256"]
-        != contract._canonical_sha256(phase_b_review)
+        or receipt["readback_evidence_sha256"] != contract._canonical_sha256(evidence)
+        or receipt["phase_b_packet_sha256"] != contract._canonical_sha256(phase_b_packet)
+        or receipt["phase_b_review_receipt_sha256"] != contract._canonical_sha256(phase_b_review)
     ):
         raise ValueError("production_rollout_evidence_mismatch")
     if (
         receipt["cohort_id"] != evidence["cohort_id"]
-        or receipt["cohort_membership_sha256"]
-        != evidence["cohort_membership_sha256"]
-        or receipt["expected_consumer_count"]
-        != evidence["expected_consumer_count"]
+        or receipt["cohort_membership_sha256"] != evidence["cohort_membership_sha256"]
+        or receipt["expected_consumer_count"] != evidence["expected_consumer_count"]
         or receipt["verifier_release_id"] != evidence["verifier_release_id"]
         or receipt["registry_sha256"] != evidence["registry_sha256"]
-        or receipt["registry_sha256"]
-        != phase_b_packet["published_registry_sha256"]
+        or receipt["registry_sha256"] != phase_b_packet["published_registry_sha256"]
     ):
         raise ValueError("production_rollout_evidence_mismatch")
     return receipt
@@ -410,8 +380,7 @@ def _require_rollout_receipt(
 
 def _require_implementation_evidence(value: Any) -> dict[str, Any]:
     evidence = contract._require_exact_keys(
-        contract._snapshot_bounded(value),
-        _IMPLEMENTATION_EVIDENCE_KEYS,
+        contract._snapshot_bounded(value), _IMPLEMENTATION_EVIDENCE_KEYS,
         "implementation_evidence",
     )
     if (
@@ -419,13 +388,10 @@ def _require_implementation_evidence(value: Any) -> dict[str, Any]:
         or evidence["repository_full_name"] != "bitmaster162/continuityos"
         or evidence["producer_id"] != contract.PRODUCER_ID
         or evidence["signer_release_id"] != SIGNER_RELEASE_ID
-        or evidence["producer_signing_contract_file_id"]
-        != PRODUCER_SIGNING_CONTRACT_FILE_ID
-        or evidence["producer_signing_contract_revision"]
-        != PRODUCER_SIGNING_CONTRACT_REVISION
+        or evidence["producer_signing_contract_file_id"] != PRODUCER_SIGNING_CONTRACT_FILE_ID
+        or evidence["producer_signing_contract_revision"] != PRODUCER_SIGNING_CONTRACT_REVISION
         or evidence["ceremony_spec_file_id"] != CEREMONY_SPEC_FILE_ID
-        or evidence["ceremony_spec_semantic_revision"]
-        != CEREMONY_SPEC_SEMANTIC_REVISION
+        or evidence["ceremony_spec_semantic_revision"] != CEREMONY_SPEC_SEMANTIC_REVISION
         or evidence["custody_profile"] != CUSTODY_PROFILE
         or evidence["conformance_scope"] != CONFORMANCE_SCOPE
         or evidence["test_only"] is not False
@@ -452,9 +418,7 @@ def _require_activation_manifest(
     phase_b_packet: dict[str, Any],
 ) -> dict[str, Any]:
     manifest = contract._require_exact_keys(
-        contract._snapshot_bounded(value),
-        _ACTIVATION_KEYS,
-        "activation_manifest",
+        contract._snapshot_bounded(value), _ACTIVATION_KEYS, "activation_manifest"
     )
     if (
         manifest["schema"] != ACTIVATION_MANIFEST_SCHEMA
@@ -469,22 +433,17 @@ def _require_activation_manifest(
         or not contract._is_sha256(manifest["rollout_membership_sha256"])
         or not contract._is_sha256(manifest["rollout_receipt_sha256"])
         or manifest["signer_release_id"] != SIGNER_RELEASE_ID
-        or manifest["implementation_evidence_sha256"]
-        != implementation_evidence_sha256
+        or manifest["implementation_evidence_sha256"] != implementation_evidence_sha256
     ):
         raise ValueError("production_implementation_evidence_mismatch")
     if (
         manifest["key_id"] != phase_b_packet["key_id"]
         or manifest["public_key_sha256"] != phase_b_packet["public_key_sha256"]
-        or manifest["registry_sha256"]
-        != phase_b_packet["published_registry_sha256"]
-        or manifest["verifier_release_id"]
-        != rollout_receipt["verifier_release_id"]
+        or manifest["registry_sha256"] != phase_b_packet["published_registry_sha256"]
+        or manifest["verifier_release_id"] != rollout_receipt["verifier_release_id"]
         or manifest["rollout_cohort_id"] != rollout_receipt["cohort_id"]
-        or manifest["rollout_membership_sha256"]
-        != rollout_receipt["cohort_membership_sha256"]
-        or manifest["rollout_receipt_sha256"]
-        != contract._canonical_sha256(rollout_receipt)
+        or manifest["rollout_membership_sha256"] != rollout_receipt["cohort_membership_sha256"]
+        or manifest["rollout_receipt_sha256"] != contract._canonical_sha256(rollout_receipt)
     ):
         raise ValueError("production_rollout_evidence_mismatch")
     return manifest
@@ -496,11 +455,19 @@ def _load_runtime_signing_context() -> dict[str, Any]:
 
 
 def _require_runtime_context(value: Any) -> dict[str, Any]:
+    # Step 9 only: snapshot the closed implementation-owned context. Activation state
+    # is deliberately NOT accepted here; CURRENT_SIGNING is verified separately at
+    # step 10 after every required evidence object has passed validation.
     raw = contract._require_exact_keys(value, _RUNTIME_CONTEXT_KEYS, "runtime_context")
-    context = {
-        key: contract._snapshot_bounded(item)
-        for key, item in raw.items()
-    }
+    return {key: contract._snapshot_bounded(item) for key, item in raw.items()}
+
+
+def _require_current_signing(
+    context: dict[str, Any],
+    *,
+    phase_b_packet: dict[str, Any],
+    activation_manifest: dict[str, Any],
+) -> None:
     if (
         context["state"] != "CURRENT_SIGNING"
         or not contract._is_identifier(context["bound_key_id"])
@@ -509,9 +476,31 @@ def _require_runtime_context(value: Any) -> dict[str, Any]:
         or context["production_signer_key_reachable"] is not True
         or context["production_runtime_hsm_auth_path_enabled"] is not True
         or context["current_signing_key_configured"] is not True
+        or context["bound_key_id"] != phase_b_packet["key_id"]
+        or context["bound_key_id"] != activation_manifest["key_id"]
+        or context["bound_registry_sha256"] != phase_b_packet["published_registry_sha256"]
+        or context["bound_registry_sha256"] != activation_manifest["registry_sha256"]
     ):
         raise ValueError("production_signer_not_activated")
-    return context
+
+
+def _prevalidate_anchor_evidence(
+    *,
+    proof_value: Any,
+    previous_value: Any,
+    activation_manifest: dict[str, Any],
+) -> dict[str, Any]:
+    proof = _require_proof_shape(proof_value)
+    if (
+        proof["activation_generation"] != activation_manifest["activation_generation"]
+        or proof["activation_manifest_sha256"] != contract._canonical_sha256(activation_manifest)
+    ):
+        raise ValueError("production_activation_anchor_mismatch")
+    if proof["activation_generation"] == 1:
+        _require_genesis(previous_value)
+    else:
+        _require_previous_evidence_bundle(previous_value)
+    return proof
 
 
 class ProductionAcceptanceOriginSigner:
@@ -522,28 +511,25 @@ class ProductionAcceptanceOriginSigner:
     def produce(self, *, sign_request: Any) -> dict[str, Any]:
         # Steps 1-4: bounded request snapshot and exact closed input.
         request = contract._require_sign_request(sign_request)
-        transport_receipt = contract._snapshot_bounded(
-            request["transport_receipt"]
-        )
+        transport_receipt = contract._snapshot_bounded(request["transport_receipt"])
         contract._prevalidate_transport_bounds(transport_receipt)
 
-        # Steps 5-8: materialize acceptance once, snapshot once, validate and hash.
+        # Steps 5-8: materialize exactly once, snapshot exactly once, validate that
+        # same snapshot without reconstructing it, then hash the exact returned object.
         materialized = acceptance_builder.accept_cross_ai_ruap_transport_receipt(
             transport_receipt
         )
         acceptance = contract._snapshot_bounded(materialized)
-        acceptance = contract._require_safe_acceptance(acceptance)
+        origin_verifier._require_safe_acceptance(acceptance)
         acceptance_sha256 = contract._canonical_sha256(acceptance)
 
-        # Steps 9-10: load exact reviewed public evidence and CURRENT_SIGNING state.
+        # Step 9: load/snapshot and validate all exact public evidence first.
         context = _require_runtime_context(_load_runtime_signing_context())
         phase_b_packet = _require_phase_b_packet(context["phase_b_packet"])
         phase_b_review = _require_phase_b_review(
             context["phase_b_review_receipt"], phase_b_packet=phase_b_packet
         )
-        rollout_evidence = _require_rollout_evidence(
-            context["rollout_evidence"]
-        )
+        rollout_evidence = _require_rollout_evidence(context["rollout_evidence"])
         rollout_receipt = _require_rollout_receipt(
             context["rollout_receipt"],
             evidence=rollout_evidence,
@@ -559,23 +545,32 @@ class ProductionAcceptanceOriginSigner:
         if (
             phase_b_packet["signer_implementation_evidence_sha256"]
             != implementation_evidence_sha256
-            or context["bound_key_id"] != phase_b_packet["key_id"]
-            or context["bound_registry_sha256"]
-            != phase_b_packet["published_registry_sha256"]
         ):
-            raise ValueError("production_registry_coherence_mismatch")
+            raise ValueError("production_implementation_evidence_mismatch")
         activation_manifest = _require_activation_manifest(
             context["activation_manifest"],
             implementation_evidence_sha256=implementation_evidence_sha256,
             rollout_receipt=rollout_receipt,
             phase_b_packet=phase_b_packet,
         )
+        anchor_proof = _prevalidate_anchor_evidence(
+            proof_value=context["activation_anchor_proof"],
+            previous_value=context["previous_anchor_proof_or_genesis_evidence"],
+            activation_manifest=activation_manifest,
+        )
 
-        # Step 11: fresh TPM read; current factory is fail-closed/unprovisioned.
+        # Step 10: only after step-9 evidence passes, accept CURRENT_SIGNING/binding.
+        _require_current_signing(
+            context,
+            phase_b_packet=phase_b_packet,
+            activation_manifest=activation_manifest,
+        )
+
+        # Step 11: fresh TPM read and exact anti-rollback verification.
         tpm_adapter = _build_tpm2_nv_anchor_adapter()
         fresh_nv_state = tpm_adapter._read_current_nv_extend_state()
         _verify_activation_anchor_proof(
-            proof=context["activation_anchor_proof"],
+            proof=anchor_proof,
             activation_manifest=activation_manifest,
             previous_proof_or_genesis_evidence=(
                 context["previous_anchor_proof_or_genesis_evidence"]
@@ -583,14 +578,12 @@ class ProductionAcceptanceOriginSigner:
             fresh_nv_state=fresh_nv_state,
         )
 
-        # Steps 12-13: fresh bound HSM public-key read and coherence checks.
+        # Steps 12-13: bound HSM public-key read and coherence checks.
         hsm_adapter = _build_yubihsm2_ed25519_adapter()
         public_key = hsm_adapter._read_bound_public_key()
         public_key_sha256 = hashlib.sha256(public_key).hexdigest()
         key_id = contract._derive_key_id(public_key)
-        registry, keys = contract._require_registry(
-            phase_b_packet["candidate_registry"]
-        )
+        registry, keys = contract._require_registry(phase_b_packet["candidate_registry"])
         matches = [
             item for item in keys
             if item["producer_id"] == contract.PRODUCER_ID
@@ -603,12 +596,12 @@ class ProductionAcceptanceOriginSigner:
             or key_id != activation_manifest["key_id"]
             or public_key_sha256 != activation_manifest["public_key_sha256"]
             or public_key_sha256 != phase_b_packet["public_key_sha256"]
-            or contract._canonical_sha256(registry)
-            != context["bound_registry_sha256"]
+            or contract._canonical_sha256(registry) != context["bound_registry_sha256"]
         ):
             raise ValueError("production_registry_coherence_mismatch")
 
-        # Steps 14-16: exact frozen message, exactly one HSM sign, exact length.
+        # Steps 14-16: exact frozen message; adapter enforces one validated session
+        # from step 12 and exactly one sign attempt at step 15.
         message = contract._signature_message(
             key_id=key_id, acceptance_sha256=acceptance_sha256
         )
@@ -616,12 +609,12 @@ class ProductionAcceptanceOriginSigner:
         if type(signature) is not bytes or len(signature) != 64:
             raise ValueError("production_hsm_signature_invalid")
 
-        # Step 17: local verify against the same bound public key.
+        # Step 17: local verification against the exact step-12 public key.
         origin_verifier._verify_ed25519(
             public_key=public_key, signature=signature, message=message
         )
 
-        # Steps 18-19: exact atomic success bundle; any exception returns no bundle.
+        # Steps 18-19: exact atomic success bundle; exceptions expose no partial success.
         signature_envelope = {
             "schema": contract.SIGNATURE_SCHEMA,
             "purpose": contract.PURPOSE,
