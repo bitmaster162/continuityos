@@ -338,3 +338,315 @@ def test_torn_buffer_line_is_quarantined_without_blocking_valid_events(tmp_path)
     assert quarantined[0]["raw"] == '{"kind":"torn"'
     assert len(quarantined[0]["raw_sha256"]) == 64
     assert quarantined[0]["error_type"] == "JSONDecodeError"
+
+
+def _single_attempt_fixture(ledger):
+    action = {
+        "tool": "exec",
+        "command": "python --version",
+        "args": ["python", "--version"],
+        "paths": [],
+        "cwd": os.getcwd(),
+        "agent": "test",
+        "meta": {},
+    }
+    rollback_plan = {}
+    preflight_hash = ledger.append("preflight", {
+        "action": action,
+        "decision": "ALLOW",
+        "rollback_plan": rollback_plan,
+    })
+    binding = "b" * 64
+    claim = ledger.claim_execution_attempt(
+        preflight_hash=preflight_hash,
+        binding_sha256=binding,
+        expected_action=action,
+        expected_rollback_plan=rollback_plan,
+        expected_decision="ALLOW",
+    )
+    assert claim["status"] == "CLAIMED_NEW"
+    return preflight_hash, binding, action, rollback_plan
+
+
+def _single_attempt_claim_worker(path, preflight_hash, binding, action, rollback_plan, out):
+    try:
+        with Ledger(path) as ledger:
+            result = ledger.claim_execution_attempt(
+                preflight_hash=preflight_hash,
+                binding_sha256=binding,
+                expected_action=action,
+                expected_rollback_plan=rollback_plan,
+                expected_decision="ALLOW",
+            )
+        out.put(("ok", result["status"]))
+    except Exception as exc:
+        out.put(("error", f"{type(exc).__name__}: {exc}"))
+
+
+def test_attempt_start_bad_payload_preflight_rolls_back(tmp_path):
+    path = str(tmp_path / "bad-start.db")
+    with Ledger(path) as ledger:
+        preflight_hash, binding, _, _ = _single_attempt_fixture(ledger)
+        with pytest.raises(ValueError, match="preflight hash mismatch"):
+            ledger.start_execution_attempt(
+                preflight_hash=preflight_hash,
+                binding_sha256=binding,
+                payload={"preflight_hash": "f" * 64, "execution_attempted": True},
+            )
+        row = dict(ledger._attempt_row(preflight_hash))
+        assert row["phase"] == "CLAIMED"
+        assert row["execution_started_hash"] is None
+        assert not any(e["kind"] == "execution_started" for e in ledger.export(100))
+
+
+def _start_single_attempt(ledger, preflight_hash, binding):
+    return ledger.start_execution_attempt(
+        preflight_hash=preflight_hash,
+        binding_sha256=binding,
+        payload={
+            "preflight_hash": preflight_hash,
+            "execution_attempted": True,
+            "executed": False,
+            "mode": "exec",
+        },
+    )
+
+
+def test_attempt_finish_bad_payload_preflight_rolls_back(tmp_path):
+    path = str(tmp_path / "bad-finish.db")
+    with Ledger(path) as ledger:
+        preflight_hash, binding, _, _ = _single_attempt_fixture(ledger)
+        started_hash = _start_single_attempt(ledger, preflight_hash, binding)
+        with pytest.raises(ValueError, match="preflight hash mismatch"):
+            ledger.finish_execution_attempt(
+                preflight_hash=preflight_hash,
+                binding_sha256=binding,
+                terminal_kind="execution_completed",
+                payload={
+                    "preflight_hash": "f" * 64,
+                    "execution_attempted": True,
+                    "executed": True,
+                    "execution_started_hash": started_hash,
+                    "exit_code": 0,
+                },
+            )
+        row = dict(ledger._attempt_row(preflight_hash))
+        assert row["phase"] == "ATTEMPT_STARTED"
+        assert row["terminal_hash"] is None
+        assert not any(e["kind"] in ("execution_completed", "execution_failed") for e in ledger.export(100))
+
+
+@pytest.mark.parametrize("terminal_kind,fields", [
+    ("execution_completed", {"execution_attempted": False, "executed": False}),
+    ("execution_failed", {"executed": False}),
+    ("execution_failed", {"execution_attempted": None, "executed": False}),
+    ("execution_failed", {"execution_attempted": True, "executed": False}),
+    ("execution_failed", {"execution_attempted": False, "executed": True}),
+])
+def test_claimed_rejects_invalid_terminal_transitions(tmp_path, terminal_kind, fields):
+    path = str(tmp_path / "claimed-invalid.db")
+    with Ledger(path) as ledger:
+        preflight_hash, binding, _, _ = _single_attempt_fixture(ledger)
+        payload = {"preflight_hash": preflight_hash, "exit_code": None, **fields}
+        with pytest.raises(ValueError, match="invalid CLAIMED"):
+            ledger.finish_execution_attempt(
+                preflight_hash=preflight_hash,
+                binding_sha256=binding,
+                terminal_kind=terminal_kind,
+                payload=payload,
+            )
+        row = dict(ledger._attempt_row(preflight_hash))
+        assert row["phase"] == "CLAIMED"
+        assert row["terminal_hash"] is None
+
+
+def test_claimed_preexecution_failure_terminalizes_and_is_cached(tmp_path):
+    path = str(tmp_path / "claimed-failed.db")
+    with Ledger(path) as ledger:
+        preflight_hash, binding, action, rollback_plan = _single_attempt_fixture(ledger)
+        terminal_hash = ledger.finish_execution_attempt(
+            preflight_hash=preflight_hash,
+            binding_sha256=binding,
+            terminal_kind="execution_failed",
+            payload={
+                "preflight_hash": preflight_hash,
+                "execution_attempted": False,
+                "executed": False,
+                "exit_code": None,
+                "error_type": "RollbackMaterializationError",
+                "error": "injected",
+            },
+        )
+        row = ledger._validate_attempt_row(ledger._attempt_row(preflight_hash))
+        assert row["phase"] == "TERMINAL"
+        assert row["terminal_hash"] == terminal_hash
+        cached = ledger.claim_execution_attempt(
+            preflight_hash=preflight_hash,
+            binding_sha256=binding,
+            expected_action=action,
+            expected_rollback_plan=rollback_plan,
+            expected_decision="ALLOW",
+        )
+        assert cached["status"] == "TERMINAL"
+        assert cached["terminal_hash"] == terminal_hash
+
+
+@pytest.mark.parametrize("attempted,started_value", [
+    (False, "exact"),
+    (None, "exact"),
+    (True, "wrong"),
+])
+def test_started_rejects_invalid_terminal_binding(tmp_path, attempted, started_value):
+    path = str(tmp_path / "started-invalid.db")
+    with Ledger(path) as ledger:
+        preflight_hash, binding, _, _ = _single_attempt_fixture(ledger)
+        started_hash = _start_single_attempt(ledger, preflight_hash, binding)
+        terminal_started = started_hash if started_value == "exact" else "f" * 64
+        with pytest.raises(ValueError):
+            ledger.finish_execution_attempt(
+                preflight_hash=preflight_hash,
+                binding_sha256=binding,
+                terminal_kind="execution_failed",
+                payload={
+                    "preflight_hash": preflight_hash,
+                    "execution_attempted": attempted,
+                    "executed": True,
+                    "execution_started_hash": terminal_started,
+                    "exit_code": 7,
+                },
+            )
+        row = dict(ledger._attempt_row(preflight_hash))
+        assert row["phase"] == "ATTEMPT_STARTED"
+        assert row["terminal_hash"] is None
+
+
+def test_terminal_started_pointer_corruption_fails_closed(tmp_path):
+    path = str(tmp_path / "terminal-corrupt.db")
+    with Ledger(path) as ledger:
+        preflight_hash, binding, _, _ = _single_attempt_fixture(ledger)
+        started_hash = _start_single_attempt(ledger, preflight_hash, binding)
+        terminal_hash = ledger.finish_execution_attempt(
+            preflight_hash=preflight_hash,
+            binding_sha256=binding,
+            terminal_kind="execution_completed",
+            payload={
+                "preflight_hash": preflight_hash,
+                "execution_attempted": True,
+                "executed": True,
+                "execution_started_hash": started_hash,
+                "exit_code": 0,
+            },
+        )
+        terminal = ledger.event(terminal_hash)
+        corrupt = dict(terminal["payload"])
+        corrupt["execution_started_hash"] = "f" * 64
+        body = json.dumps(corrupt, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        ledger.con.execute("UPDATE events SET payload=? WHERE hash=?", (body, terminal_hash))
+        ledger.con.commit()
+        with pytest.raises(ValueError, match="execution_started_hash mismatch"):
+            ledger._validate_attempt_row(ledger._attempt_row(preflight_hash))
+
+
+def test_cross_process_attempt_claim_has_single_winner(tmp_path):
+    path = str(tmp_path / "claim-race.db")
+    action = {"tool": "exec", "command": "python --version", "args": ["python", "--version"],
+              "paths": [], "cwd": os.getcwd(), "agent": "test", "meta": {}}
+    rollback_plan = {}
+    with Ledger(path) as ledger:
+        preflight_hash = ledger.append("preflight", {
+            "action": action, "decision": "ALLOW", "rollback_plan": rollback_plan,
+        })
+    binding = "c" * 64
+    ctx = multiprocessing.get_context("spawn")
+    out = ctx.Queue()
+    workers = [ctx.Process(target=_single_attempt_claim_worker,
+                           args=(path, preflight_hash, binding, action, rollback_plan, out))
+               for _ in range(8)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(30)
+        if worker.is_alive():
+            worker.terminate()
+            worker.join(5)
+        assert worker.exitcode == 0
+    results = [out.get(timeout=10) for _ in workers]
+    assert not [item for item in results if item[0] == "error"]
+    statuses = [item[1] for item in results]
+    assert statuses.count("CLAIMED_NEW") == 1
+    assert statuses.count("CLAIMED") == 7
+    with Ledger(path) as ledger:
+        assert ledger.con.execute(
+            "SELECT COUNT(*) FROM execution_attempts WHERE preflight_hash=?", (preflight_hash,)
+        ).fetchone()[0] == 1
+        assert ledger.con.execute(
+            "SELECT COUNT(*) FROM events WHERE kind='attempt_claimed'"
+        ).fetchone()[0] == 1
+
+
+def test_historical_db_migrates_without_rewriting_event_chain(tmp_path):
+    import sqlite3
+    path = str(tmp_path / "historical.db")
+    payload = json.dumps({"legacy": True}, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    ts = 123.456789
+    digest = hashlib.sha256((("0" * 64) + "legacy" + ("%.6f" % ts) + payload).encode("utf-8")).hexdigest()
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, kind TEXT, payload TEXT, prev_hash TEXT, hash TEXT)")
+    con.execute("INSERT INTO events(ts,kind,payload,prev_hash,hash) VALUES(?,?,?,?,?)",
+                (ts, "legacy", payload, "0" * 64, digest))
+    con.commit()
+    before = con.execute("SELECT ts,kind,payload,prev_hash,hash FROM events").fetchone()
+    con.close()
+    with Ledger(path) as ledger:
+        assert ledger.verify() == {"ok": True, "verified": 1}
+        after = ledger.con.execute("SELECT ts,kind,payload,prev_hash,hash FROM events").fetchone()
+        assert tuple(after) == tuple(before)
+        assert ledger.con.execute("SELECT COUNT(*) FROM execution_attempts").fetchone()[0] == 0
+
+def test_corrupt_claim_payload_phase_fails_closed(tmp_path):
+    path = str(tmp_path / "corrupt-phase.db")
+    with Ledger(path) as ledger:
+        action = {"tool":"exec","command":"x","args":[],"paths":[],"cwd":".","agent":"t","meta":{}}
+        rollback_plan = {}
+        preflight_hash = ledger.append("preflight", {"action":action,"decision":"ALLOW","rollback_plan":rollback_plan})
+        binding = "a"*64
+        claim = ledger.claim_execution_attempt(
+            preflight_hash=preflight_hash, binding_sha256=binding,
+            expected_action=action, expected_rollback_plan=rollback_plan, expected_decision="ALLOW")
+        claim_hash = claim["claim_hash"]
+        # corrupt phase in claim event payload
+        event = ledger.event(claim_hash)
+        corrupt = dict(event["payload"])
+        corrupt["phase"] = "WRONG"
+        body = json.dumps(corrupt, sort_keys=True, ensure_ascii=False, separators=(",",":"))
+        ledger.con.execute("UPDATE events SET payload=? WHERE hash=?", (body, claim_hash))
+        ledger.con.commit()
+        with pytest.raises(ValueError, match="phase is not CLAIMED"):
+            ledger._validate_attempt_row(ledger._attempt_row(preflight_hash))
+
+
+def test_claimed_preexecution_failure_nonnull_started_hash_raises(tmp_path):
+    path = str(tmp_path / "claimed-start-hash.db")
+    with Ledger(path) as ledger:
+        action = {"tool":"exec","command":"x","args":[],"paths":[],"cwd":".","agent":"t","meta":{}}
+        rollback_plan = {}
+        preflight_hash = ledger.append("preflight", {"action":action,"decision":"ALLOW","rollback_plan":rollback_plan})
+        binding = "b"*64
+        ledger.claim_execution_attempt(
+            preflight_hash=preflight_hash, binding_sha256=binding,
+            expected_action=action, expected_rollback_plan=rollback_plan, expected_decision="ALLOW")
+        with pytest.raises(ValueError, match="execution_started_hash"):
+            ledger.finish_execution_attempt(
+                preflight_hash=preflight_hash, binding_sha256=binding,
+                terminal_kind="execution_failed",
+                payload={
+                    "preflight_hash": preflight_hash,
+                    "execution_attempted": False,
+                    "executed": False,
+                    "execution_started_hash": "f"*64,
+                    "exit_code": None,
+                })
+        row = dict(ledger._attempt_row(preflight_hash))
+        assert row["phase"] == "CLAIMED"
+        assert row["terminal_hash"] is None
+        assert not any(e["kind"] in ("execution_completed","execution_failed") for e in ledger.export(100))
