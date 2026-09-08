@@ -155,10 +155,13 @@ class Ledger:
                 raise ValueError("execution_started pointer is invalid")
             if started["payload"].get("preflight_hash") != data["preflight_hash"]:
                 raise ValueError("execution_started points at another preflight")
+        if data["phase"] in ("CLAIMED", "ATTEMPT_STARTED"):
+            if data.get("terminal_kind") is not None or data.get("terminal_hash") is not None or data.get("terminal_exit_code") is not None or data.get("terminal_error_type") is not None or data.get("terminal_error") is not None:
+                raise ValueError("CLAIMED/ATTEMPT_STARTED has terminal fields set")
         if data["phase"] == "TERMINAL":
-            if not terminal_hash:
-                raise ValueError("TERMINAL attempt has no terminal receipt pointer")
-            terminal = self.event(terminal_hash)
+            if data["terminal_kind"] not in ("execution_completed", "execution_failed"):
+                raise ValueError("TERMINAL has invalid terminal_kind")
+            terminal = self.event(data["terminal_hash"])
             if terminal is None or terminal.get("kind") != data["terminal_kind"]:
                 raise ValueError("terminal receipt pointer is invalid")
             payload = terminal["payload"]
@@ -171,10 +174,31 @@ class Ledger:
             if payload.get("error") != data["terminal_error"]:
                 raise ValueError("terminal error metadata mismatch")
             if started_hash:
+                started = self.event(started_hash)
+                if started is None or started.get("kind") != "execution_started":
+                    raise ValueError("execution_started pointer is invalid")
+                if started["payload"].get("preflight_hash") != data["preflight_hash"]:
+                    raise ValueError("execution_started points at another preflight")
                 if payload.get("execution_attempted") is not True:
                     raise ValueError("started_hash exists but attempted not true")
                 if payload.get("execution_started_hash") != started_hash:
                     raise ValueError("execution_started_hash mismatch with registry")
+                if data["terminal_kind"] == "execution_completed":
+                    if payload.get("executed") is not True:
+                        raise ValueError("execution_completed requires executed True")
+                    if type(payload.get("exit_code")) is not int or payload.get("exit_code") != 0:
+                        raise ValueError("execution_completed requires exit_code int 0")
+                elif data["terminal_kind"] == "execution_failed":
+                    if payload.get("executed") is True:
+                        if type(payload.get("exit_code")) is not int or payload.get("exit_code") == 0:
+                            raise ValueError("execution_failed executed=True requires int exit_code != 0")
+                    elif payload.get("executed") is False:
+                        if payload.get("exit_code") is not None:
+                            raise ValueError("execution_failed executed=False requires exit_code None")
+                    else:
+                        raise ValueError("execution_failed requires executed True or False")
+                else:
+                    raise ValueError("invalid terminal_kind for TERMINAL")
             else:
                 if data["terminal_kind"] != "execution_failed":
                     raise ValueError("no started_hash requires execution_failed")
@@ -184,6 +208,8 @@ class Ledger:
                     raise ValueError("no started_hash requires executed false")
                 if payload.get("execution_started_hash") is not None:
                     raise ValueError("no started_hash requires no execution_started_hash in payload")
+                if payload.get("exit_code") is not None:
+                    raise ValueError("no started_hash requires exit_code None")
         return data
 
     def claim_execution_attempt(
@@ -263,16 +289,33 @@ class Ledger:
             data = self._validate_attempt_row(self._attempt_row(preflight_hash))
             if data["binding_sha256"] != binding_sha256:
                 raise ValueError("execution attempt binding conflict")
+            registry_started_hash = data.get("execution_started_hash")
             if data["phase"] == "CLAIMED":
+                if terminal_kind != "execution_failed":
+                    raise ValueError("invalid CLAIMED terminal kind: execution_failed required")
                 if payload.get("execution_started_hash") is not None:
-                    raise ValueError("CLAIMED -> TERMINAL payload carries execution_started_hash")
-                if terminal_kind != 'execution_failed' or payload.get('execution_attempted') is not False or payload.get('executed') is not False or data['execution_started_hash'] is not None:
-                    raise ValueError("invalid CLAIMED -> TERMINAL transition")
+                    raise ValueError("execution_started_hash must be None for CLAIMED")
+                if payload.get("execution_attempted") is not False or payload.get("executed") is not False or registry_started_hash is not None or payload.get("exit_code") is not None:
+                    raise ValueError("invalid CLAIMED terminal shape")
             if data["phase"] == "ATTEMPT_STARTED":
                 if payload.get("execution_attempted") is not True:
-                    raise ValueError("ATTEMPT_STARTED -> TERMINAL requires attempted true")
-                if payload.get("execution_started_hash") != data["execution_started_hash"]:
-                    raise ValueError("terminal receipt does not bind execution_started hash")
+                    raise ValueError("ATTEMPT_STARTED requires execution_attempted True")
+                if payload.get("execution_started_hash") != registry_started_hash:
+                    raise ValueError("execution_started_hash mismatch")
+                if terminal_kind == "execution_completed":
+                    if payload.get("executed") is not True or type(payload.get("exit_code")) is not int or payload.get("exit_code") != 0:
+                        raise ValueError("execution_completed requires executed=True, int exit_code 0")
+                elif terminal_kind == "execution_failed":
+                    if payload.get("executed") is True:
+                        if type(payload.get("exit_code")) is not int or payload.get("exit_code") == 0:
+                            raise ValueError("execution_failed executed=True requires int exit_code != 0")
+                    elif payload.get("executed") is False:
+                        if payload.get("exit_code") is not None:
+                            raise ValueError("execution_failed executed=False requires exit_code None")
+                    else:
+                        raise ValueError("execution_failed requires executed True or False")
+                else:
+                    raise ValueError("invalid terminal_kind for TERMINAL")
             elif data["phase"] != "CLAIMED":
                 raise ValueError(f"execution attempt is {data['phase']}, not finishable")
             if payload.get('preflight_hash') != preflight_hash:
