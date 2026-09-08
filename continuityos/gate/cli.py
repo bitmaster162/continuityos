@@ -35,7 +35,7 @@
   continuity audit                        # show + verify the audit ledger
 """
 from __future__ import annotations
-import argparse, glob, json, os, sys, subprocess, shlex, re, time
+import argparse, glob, json, os, sys, subprocess, shlex, re, time, hashlib
 from pathlib import Path
 from .anti_amnesia import (
     EXIT_INTERNAL as ANTI_AMNESIA_EXIT_INTERNAL,
@@ -309,6 +309,7 @@ def _rollback_receipt(result):
 
 def _append_execution(kind, result, rollback_receipt, **fields):
     _require_legacy_gate()
+    binding_sha256 = fields.pop("_binding_sha256", None)
     payload = {
         "preflight_hash": result.get("ledger_hash"),
         "action": result.get("action"),
@@ -316,6 +317,16 @@ def _append_execution(kind, result, rollback_receipt, **fields):
     }
     payload.update(fields)
     with Ledger(LEDGER) as led:
+        if binding_sha256 and kind == "execution_started":
+            return led.start_execution_attempt(
+                preflight_hash=result.get("ledger_hash"),
+                binding_sha256=binding_sha256, payload=payload,
+            )
+        if binding_sha256 and kind in ("execution_completed", "execution_failed"):
+            return led.finish_execution_attempt(
+                preflight_hash=result.get("ledger_hash"),
+                binding_sha256=binding_sha256, terminal_kind=kind, payload=payload,
+            )
         return led.append(kind, payload)
 
 
@@ -459,6 +470,22 @@ def _execution_binding_error(cmd: str, mode: str, result, argv) -> str:
     return ""
 
 
+def _execution_binding_sha256(cmd: str, mode: str, result, argv) -> str:
+    action = result.get("action") or {}
+    action_cwd = action.get("cwd") or os.getcwd()
+    normalized_cwd = os.path.normcase(
+        os.path.realpath(os.path.abspath(os.path.expandvars(os.path.expanduser(action_cwd))))
+    )
+    body = json.dumps({
+        "preflight_hash": result.get("ledger_hash"),
+        "mode": mode,
+        "command": cmd,
+        "argv": list(argv),
+        "cwd": normalized_cwd,
+    }, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
 def _execute_approved(cmd: str, mode: str, result, argv=None) -> int:
     if argv is None:
         argv = shlex.split(cmd, posix=os.name != "nt")
@@ -468,29 +495,49 @@ def _execute_approved(cmd: str, mode: str, result, argv=None) -> int:
     if binding_error:
         print(f"\n[HELD] {binding_error}; command was not executed.")
         return 1
+    binding_sha256 = _execution_binding_sha256(cmd, mode, result, argv)
+    try:
+        with Ledger(LEDGER) as ledger:
+            claim = ledger.claim_execution_attempt(
+                preflight_hash=result.get("ledger_hash"),
+                binding_sha256=binding_sha256,
+                expected_action=result.get("action") or {},
+                expected_rollback_plan=result.get("rollback_plan") or {},
+                expected_decision=result.get("decision"),
+            )
+    except Exception as exc:
+        print(f"\n[HELD] execution claim failed closed: {type(exc).__name__}: {exc}")
+        return 1
+    claim_status = claim.get("status")
+    if claim_status == "TERMINAL":
+        cached_exit = claim.get("terminal_exit_code")
+        print("\n[CACHED] approval already has a verified terminal execution receipt; subprocess was not re-run.")
+        return cached_exit if isinstance(cached_exit, int) else 1
+    if claim_status == "ATTEMPT_STARTED":
+        print("\n[HELD] prior execution attempt has no verified terminal outcome; do not retry blindly.")
+        return 1
+    if claim_status == "CLAIMED":
+        print("\n[HELD] approval was already durably claimed; automatic reclaim is disabled.")
+        return 1
+    if claim_status != "CLAIMED_NEW":
+        print(f"\n[HELD] unknown execution claim state {claim_status!r}; command was not executed.")
+        return 1
     try:
         rollback_ok = _materialize_rollback(result)
     except Exception as exc:
         plan = result.get("rollback_plan") or {}
         plan.update({
-            "snapshot_status": "failed",
-            "restorable": False,
-            "snapshot_errors": [{
-                "error_type": type(exc).__name__,
-                "error": str(exc),
-            }],
+            "snapshot_status": "failed", "restorable": False,
+            "snapshot_errors": [{"error_type": type(exc).__name__, "error": str(exc)}],
         })
         rollback_ok = False
     rollback_receipt = _rollback_receipt(result)
     if not rollback_ok:
         try:
             _append_execution(
-                "execution_failed",
-                result,
-                rollback_receipt,
-                executed=False,
-                execution_attempted=False,
-                exit_code=None,
+                "execution_failed", result, rollback_receipt,
+                _binding_sha256=binding_sha256,
+                executed=False, execution_attempted=False, exit_code=None,
                 error_type="RollbackMaterializationError",
                 error="required rollback materialization failed",
             )
@@ -502,12 +549,9 @@ def _execute_approved(cmd: str, mode: str, result, argv=None) -> int:
         return 1
     try:
         started_hash = _append_execution(
-            "execution_started",
-            result,
-            rollback_receipt,
-            executed=False,
-            execution_attempted=True,
-            mode=mode,
+            "execution_started", result, rollback_receipt,
+            _binding_sha256=binding_sha256,
+            executed=False, execution_attempted=True, mode=mode,
         )
     except Exception as exc:
         print(f"\n[HELD] execution receipt could not be recorded: {type(exc).__name__}: {exc}")
@@ -520,37 +564,25 @@ def _execute_approved(cmd: str, mode: str, result, argv=None) -> int:
     except Exception as exc:
         try:
             _append_execution(
-                "execution_failed",
-                result,
-                rollback_receipt,
-                executed=False,
-                execution_attempted=True,
-                execution_started_hash=started_hash,
-                exit_code=None,
-                error_type=type(exc).__name__,
-                error=str(exc),
+                "execution_failed", result, rollback_receipt,
+                _binding_sha256=binding_sha256,
+                executed=False, execution_attempted=True,
+                execution_started_hash=started_hash, exit_code=None,
+                error_type=type(exc).__name__, error=str(exc),
             )
         except Exception as receipt_exc:
             return _handle_terminal_receipt_failure(
-                result,
-                rollback_receipt,
-                started_hash,
-                "execution_failed",
-                None,
-                receipt_exc,
-                execution_error=f"{type(exc).__name__}: {exc}",
+                result, rollback_receipt, started_hash, "execution_failed", None,
+                receipt_exc, execution_error=f"{type(exc).__name__}: {exc}",
             )
         return 1
     terminal_kind = "execution_completed" if exit_code == 0 else "execution_failed"
     try:
         _append_execution(
-            terminal_kind,
-            result,
-            rollback_receipt,
-            executed=True,
-            execution_attempted=True,
-            execution_started_hash=started_hash,
-            exit_code=exit_code,
+            terminal_kind, result, rollback_receipt,
+            _binding_sha256=binding_sha256,
+            executed=True, execution_attempted=True,
+            execution_started_hash=started_hash, exit_code=exit_code,
             **({} if exit_code == 0 else {
                 "error_type": "NonZeroExit",
                 "error": f"process exited with status {exit_code}",
@@ -558,12 +590,7 @@ def _execute_approved(cmd: str, mode: str, result, argv=None) -> int:
         )
     except Exception as receipt_exc:
         return _handle_terminal_receipt_failure(
-            result,
-            rollback_receipt,
-            started_hash,
-            terminal_kind,
-            exit_code,
-            receipt_exc,
+            result, rollback_receipt, started_hash, terminal_kind, exit_code, receipt_exc,
         )
     return exit_code
 
