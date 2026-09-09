@@ -229,6 +229,27 @@ class Ledger:
                     raise ValueError("execution attempt binding conflict")
                 self.con.commit()
                 return {"status": data["phase"], **data}
+            for claim_row in self.con.execute("SELECT payload FROM events WHERE kind='attempt_claimed'"):
+                try:
+                    p = json.loads(claim_row["payload"])
+                    if not isinstance(p, dict):
+                        raise ValueError("malformed attempt_claimed payload")
+                    pf = p.get("preflight_hash")
+                    bd = p.get("binding_sha256")
+                    if (
+                        not isinstance(pf, str)
+                        or len(pf) != 64
+                        or not all(c in "0123456789abcdef" for c in pf)
+                        or not isinstance(bd, str)
+                        or len(bd) != 64
+                        or not all(c in "0123456789abcdef" for c in bd)
+                        or p.get("phase") != "CLAIMED"
+                    ):
+                        raise ValueError("malformed attempt_claimed payload")
+                except (TypeError, json.JSONDecodeError) as e:
+                    raise ValueError("malformed attempt_claimed payload") from e
+                if pf == preflight_hash:
+                    raise ValueError("orphaned prior claim found with missing registry state")
             claim_hash = self._append_event_in_transaction("attempt_claimed", {
                 "preflight_hash": preflight_hash,
                 "binding_sha256": binding_sha256,

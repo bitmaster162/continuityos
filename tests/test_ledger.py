@@ -650,3 +650,114 @@ def test_claimed_preexecution_failure_nonnull_started_hash_raises(tmp_path):
         assert row["phase"] == "CLAIMED"
         assert row["terminal_hash"] is None
         assert not any(e["kind"] in ("execution_completed","execution_failed") for e in ledger.export(100))
+
+
+def test_orphaned_claim_after_attempt_row_deletion_fails_closed(tmp_path):
+    path = str(tmp_path / "r11-orphaned-claim.db")
+    with Ledger(path) as ledger:
+        preflight_hash, binding, action, rollback_plan = _single_attempt_fixture(ledger)
+        started_hash = _start_single_attempt(ledger, preflight_hash, binding)
+        ledger.finish_execution_attempt(
+            preflight_hash=preflight_hash,
+            binding_sha256=binding,
+            terminal_kind="execution_completed",
+            payload={
+                "preflight_hash": preflight_hash,
+                "execution_attempted": True,
+                "executed": True,
+                "execution_started_hash": started_hash,
+                "exit_code": 0,
+            },
+        )
+        assert ledger.con.execute(
+            "SELECT COUNT(*) FROM events WHERE kind='attempt_claimed'"
+        ).fetchone()[0] == 1
+        ledger.con.execute(
+            "DELETE FROM execution_attempts WHERE preflight_hash=?", (preflight_hash,)
+        )
+        ledger.con.commit()
+        with pytest.raises(ValueError, match="orphaned prior claim found with missing registry state"):
+            ledger.claim_execution_attempt(
+                preflight_hash=preflight_hash,
+                binding_sha256=binding,
+                expected_action=action,
+                expected_rollback_plan=rollback_plan,
+                expected_decision="ALLOW",
+            )
+        assert ledger.con.execute(
+            "SELECT COUNT(*) FROM events WHERE kind='attempt_claimed'"
+        ).fetchone()[0] == 1
+        assert ledger._attempt_row(preflight_hash) is None
+
+
+def test_fresh_preflight_without_claim_history_still_claims(tmp_path):
+    path = str(tmp_path / "r11-fresh-claim.db")
+    with Ledger(path) as ledger:
+        action = {
+            "tool": "exec", "command": "echo fresh", "args": ["echo", "fresh"],
+            "paths": [], "cwd": os.getcwd(), "agent": "test", "meta": {},
+        }
+        rollback_plan = {}
+        preflight_hash = ledger.append("preflight", {
+            "action": action, "decision": "ALLOW", "rollback_plan": rollback_plan,
+        })
+        binding = "b" * 64
+        claim = ledger.claim_execution_attempt(
+            preflight_hash=preflight_hash,
+            binding_sha256=binding,
+            expected_action=action,
+            expected_rollback_plan=rollback_plan,
+            expected_decision="ALLOW",
+        )
+        assert claim["status"] == "CLAIMED_NEW"
+        assert claim["preflight_hash"] == preflight_hash
+        row = ledger._attempt_row(preflight_hash)
+        assert row is not None
+        assert row["phase"] == "CLAIMED"
+        assert row["binding_sha256"] == binding
+        assert ledger.con.execute(
+            "SELECT COUNT(*) FROM execution_attempts WHERE preflight_hash=?",
+            (preflight_hash,)
+        ).fetchone()[0] == 1
+        events = ledger.export(100)
+        claim_events = [e for e in events if e["kind"] == "attempt_claimed"]
+        assert len(claim_events) == 1
+        assert claim_events[0]["payload"]["phase"] == "CLAIMED"
+
+def test_malformed_attempt_claimed_event_fails_closed_and_does_not_create_new_claim(tmp_path):
+    path = str(tmp_path / "r11-malformed.db")
+    with Ledger(path) as ledger:
+        # Create a fresh preflight
+        action = {"tool":"exec","command":"echo malformed","args":["echo","malformed"],"paths":[],"cwd":".","agent":"test","meta":{}}
+        rollback_plan = {}
+        preflight_hash = ledger.append("preflight", {"action":action,"decision":"ALLOW","rollback_plan":rollback_plan})
+        # Inject malformed attempt_claimed event with structurally invalid payload
+        # that passes hash chain but fails structural validation in claim_execution_attempt
+        prev_row = ledger.con.execute("SELECT hash FROM events ORDER BY id DESC LIMIT 1").fetchone()
+        prev_hash = prev_row["hash"] if prev_row else "0"*64
+        # Payload with bad binding_sha256 length (not 64 hex chars)
+        bad_body = {"phase":"CLAIMED", "preflight_hash":"a"*64, "binding_sha256":"b"*20}
+        bad_payload_str = json.dumps(bad_body, sort_keys=True, ensure_ascii=False, separators=(",",":"))
+        bad_ts = time.time()
+        bad_digest = hashlib.sha256((prev_hash + "attempt_claimed" + ("%.6f" % bad_ts) + bad_payload_str).encode("utf-8")).hexdigest()
+        ledger.con.execute("INSERT INTO events(ts,kind,payload,prev_hash,hash) VALUES(?,?,?,?,?)",
+                           (bad_ts, "attempt_claimed", bad_payload_str, prev_hash, bad_digest))
+        ledger.con.commit()
+        # Now the hash chain is intact but event payload is malformed.
+        # claim_execution_attempt for a fresh preflight must fail closed on the malformed event.
+        fresh_preflight_hash = ledger.append("preflight", {"action":{"tool":"exec","command":"echo fresh","args":["echo","fresh"],"paths":[],"cwd":".","agent":"test","meta":{}},"decision":"ALLOW","rollback_plan":{}})
+        with pytest.raises(ValueError, match="malformed attempt_claimed payload"):
+            ledger.claim_execution_attempt(
+                preflight_hash=fresh_preflight_hash,
+                binding_sha256="b"*64,
+                expected_action={"tool":"exec","command":"echo fresh","args":["echo","fresh"],"paths":[],"cwd":".","agent":"test","meta":{}},
+                expected_rollback_plan={},
+                expected_decision="ALLOW",
+            )
+        # Must not append a new execution_attempts row for the fresh preflight
+        fresh_attempt_count = ledger.con.execute("SELECT COUNT(*) FROM execution_attempts WHERE preflight_hash=?", (fresh_preflight_hash,)).fetchone()[0]
+        assert fresh_attempt_count == 0
+        # Must not create a new attempt_claimed event for the requested fresh preflight
+        claim_events = ledger.export(100)
+        fresh_claim_events = [e for e in claim_events if e["kind"] == "attempt_claimed" and e["payload"].get("preflight_hash") == fresh_preflight_hash]
+        assert len(fresh_claim_events) == 0
