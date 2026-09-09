@@ -236,9 +236,10 @@ def _decide(cmd: str, tool="shell", agent="cli", args=None, paths=None,
     return result, spec
 
 
-def _materialize_rollback(result) -> bool:
+def _materialize_rollback(result, ledger_path=None) -> bool:
     """Create the declared local snapshot immediately before approved execution."""
     _require_legacy_gate()
+    ledger_path = ledger_path if ledger_path is not None else LEDGER
     plan = result.get("rollback_plan") or {}
     if not plan.get("snapshot_required"):
         return True
@@ -273,7 +274,7 @@ def _materialize_rollback(result) -> bool:
         "restore_cmd": f"continuity rollback {snap['id']}",
         "snapshot_status": "materialized" if snap["restorable"] else "failed",
     })
-    with Ledger(LEDGER) as led:
+    with Ledger(ledger_path) as led:
         receipt_hash = led.append("rollback_snapshot", {
             "preflight_hash": result.get("ledger_hash"),
             "action": result.get("action"),
@@ -307,8 +308,10 @@ def _rollback_receipt(result):
     }
 
 
-def _append_execution(kind, result, rollback_receipt, **fields):
+def _append_execution(kind, result, rollback_receipt, ledger_path=None, **fields):
+    """Record execution attempt in the ledger."""
     _require_legacy_gate()
+    ledger_path = ledger_path if ledger_path is not None else LEDGER
     binding_sha256 = fields.pop("_binding_sha256", None)
     payload = {
         "preflight_hash": result.get("ledger_hash"),
@@ -316,7 +319,7 @@ def _append_execution(kind, result, rollback_receipt, **fields):
         "rollback_receipt": rollback_receipt,
     }
     payload.update(fields)
-    with Ledger(LEDGER) as led:
+    with Ledger(ledger_path) as led:
         if binding_sha256 and kind == "execution_started":
             return led.start_execution_attempt(
                 preflight_hash=result.get("ledger_hash"),
@@ -332,7 +335,7 @@ def _append_execution(kind, result, rollback_receipt, **fields):
 
 def _write_receipt_failure_fallback(
     result, rollback_receipt, started_hash, terminal_kind,
-    process_exit_code, receipt_error, execution_error=None,
+    process_exit_code, receipt_error, execution_error=None, ledger_path=None
 ):
     """Durable local ambiguity marker when the primary terminal ledger append fails."""
     payload = {
@@ -353,7 +356,8 @@ def _write_receipt_failure_fallback(
         "ts": time.time(),
         "instruction": "Do not retry blindly; reconcile the side effect and ledger first.",
     }
-    path = LEDGER + ".receipt_failures.jsonl"
+    ledger_path = ledger_path if ledger_path is not None else LEDGER
+    path = ledger_path + ".receipt_failures.jsonl"
     encoded = (
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         + "\n"
@@ -370,7 +374,7 @@ def _write_receipt_failure_fallback(
 
 def _handle_terminal_receipt_failure(
     result, rollback_receipt, started_hash, terminal_kind,
-    process_exit_code, receipt_error, execution_error=None,
+    process_exit_code, receipt_error, execution_error=None, ledger_path=None
 ):
     fallback = None
     fallback_error = None
@@ -383,6 +387,7 @@ def _handle_terminal_receipt_failure(
             process_exit_code,
             receipt_error,
             execution_error=execution_error,
+            ledger_path=ledger_path,
         )
     except Exception as exc:
         fallback_error = f"{type(exc).__name__}: {exc}"
@@ -403,7 +408,7 @@ def _handle_terminal_receipt_failure(
     return EXIT_RECEIPT_FAILURE
 
 
-def _execution_binding_error(cmd: str, mode: str, result, argv) -> str:
+def _execution_binding_error(cmd: str, mode: str, result, argv, execution_cwd=None, ledger_path=None) -> str:
     try:
         _require_legacy_gate()
     except Exception as exc:
@@ -427,11 +432,14 @@ def _execution_binding_error(cmd: str, mode: str, result, argv) -> str:
     if not os.path.isabs(os.path.expandvars(os.path.expanduser(action_cwd))):
         return "preflighted action cwd is not absolute"
     assessed_cwd = os.path.normcase(os.path.realpath(os.path.abspath(action_cwd)))
-    execution_cwd = os.path.normcase(os.path.realpath(os.path.abspath(os.getcwd())))
-    if assessed_cwd != execution_cwd:
+    if execution_cwd is None:
+        execution_cwd = os.getcwd()
+    normalized_execution_cwd = os.path.normcase(os.path.realpath(os.path.abspath(execution_cwd)))
+    if assessed_cwd != normalized_execution_cwd:
         return "execution cwd differs from the preflighted action"
+    ledger_path = ledger_path if ledger_path is not None else LEDGER
     try:
-        with Ledger(LEDGER) as ledger:
+        with Ledger(ledger_path) as ledger:
             verification = ledger.verify()
             if not verification.get("ok"):
                 return "execution ledger failed hash-chain verification"
@@ -470,9 +478,12 @@ def _execution_binding_error(cmd: str, mode: str, result, argv) -> str:
     return ""
 
 
-def _execution_binding_sha256(cmd: str, mode: str, result, argv) -> str:
+def _execution_binding_sha256(cmd: str, mode: str, result, argv, execution_cwd=None) -> str:
     action = result.get("action") or {}
-    action_cwd = action.get("cwd") or os.getcwd()
+    if execution_cwd is None:
+        action_cwd = action.get("cwd") or os.getcwd()
+    else:
+        action_cwd = action.get("cwd") or execution_cwd
     normalized_cwd = os.path.normcase(
         os.path.realpath(os.path.abspath(os.path.expandvars(os.path.expanduser(action_cwd))))
     )
@@ -486,18 +497,25 @@ def _execution_binding_sha256(cmd: str, mode: str, result, argv) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
-def _execute_approved(cmd: str, mode: str, result, argv=None) -> int:
+def _execute_approved(cmd: str, mode: str, result, argv=None, ledger_path=None,
+                      execution_cwd=None, stdout=None, stderr=None, env=None,
+                      outcome=None) -> int:
+    """Execute an approval and optionally expose this invocation's claim result.
+
+    ``outcome`` is an internal broker channel. The integer return remains the
+    legacy API; callers must not infer claim ownership from it or status text.
+    """
     if argv is None:
         argv = shlex.split(cmd, posix=os.name != "nt")
         if os.name == "nt":
             argv = [part[1:-1] if len(part) >= 2 and part[0] == part[-1] == '"' else part for part in argv]
-    binding_error = _execution_binding_error(cmd, mode, result, argv)
+    binding_error = _execution_binding_error(cmd, mode, result, argv, execution_cwd=execution_cwd, ledger_path=ledger_path)
     if binding_error:
         print(f"\n[HELD] {binding_error}; command was not executed.")
         return 1
     binding_sha256 = _execution_binding_sha256(cmd, mode, result, argv)
     try:
-        with Ledger(LEDGER) as ledger:
+        with Ledger(ledger_path if ledger_path is not None else LEDGER) as ledger:
             claim = ledger.claim_execution_attempt(
                 preflight_hash=result.get("ledger_hash"),
                 binding_sha256=binding_sha256,
@@ -509,6 +527,10 @@ def _execute_approved(cmd: str, mode: str, result, argv=None) -> int:
         print(f"\n[HELD] execution claim failed closed: {type(exc).__name__}: {exc}")
         return 1
     claim_status = claim.get("status")
+    if outcome is not None:
+        outcome["claim_status"] = claim_status
+        if claim_status == "CLAIMED_NEW":
+            outcome["claim_hash"] = claim.get("claim_hash")
     if claim_status == "TERMINAL":
         cached_exit = claim.get("terminal_exit_code")
         print("\n[CACHED] approval already has a verified terminal execution receipt; subprocess was not re-run.")
@@ -523,7 +545,7 @@ def _execute_approved(cmd: str, mode: str, result, argv=None) -> int:
         print(f"\n[HELD] unknown execution claim state {claim_status!r}; command was not executed.")
         return 1
     try:
-        rollback_ok = _materialize_rollback(result)
+        rollback_ok = _materialize_rollback(result, ledger_path=ledger_path)
     except Exception as exc:
         plan = result.get("rollback_plan") or {}
         plan.update({
@@ -540,6 +562,7 @@ def _execute_approved(cmd: str, mode: str, result, argv=None) -> int:
                 executed=False, execution_attempted=False, exit_code=None,
                 error_type="RollbackMaterializationError",
                 error="required rollback materialization failed",
+                ledger_path=ledger_path,
             )
         except Exception as exc:
             print(
@@ -552,15 +575,16 @@ def _execute_approved(cmd: str, mode: str, result, argv=None) -> int:
             "execution_started", result, rollback_receipt,
             _binding_sha256=binding_sha256,
             executed=False, execution_attempted=True, mode=mode,
+            ledger_path=ledger_path,
         )
     except Exception as exc:
         print(f"\n[HELD] execution receipt could not be recorded: {type(exc).__name__}: {exc}")
         return 1
     try:
         if mode == "shell":
-            exit_code = subprocess.call(cmd, shell=True)
+            exit_code = subprocess.call(cmd, shell=True, cwd=execution_cwd, stdout=stdout, stderr=stderr, env=env)
         else:
-            exit_code = subprocess.call(list(argv))
+            exit_code = subprocess.call(list(argv), cwd=execution_cwd, stdout=stdout, stderr=stderr, env=env)
     except Exception as exc:
         try:
             _append_execution(
@@ -569,11 +593,13 @@ def _execute_approved(cmd: str, mode: str, result, argv=None) -> int:
                 executed=False, execution_attempted=True,
                 execution_started_hash=started_hash, exit_code=None,
                 error_type=type(exc).__name__, error=str(exc),
+                ledger_path=ledger_path,
             )
         except Exception as receipt_exc:
             return _handle_terminal_receipt_failure(
                 result, rollback_receipt, started_hash, "execution_failed", None,
                 receipt_exc, execution_error=f"{type(exc).__name__}: {exc}",
+                ledger_path=ledger_path,
             )
         return 1
     terminal_kind = "execution_completed" if exit_code == 0 else "execution_failed"
@@ -583,6 +609,7 @@ def _execute_approved(cmd: str, mode: str, result, argv=None) -> int:
             _binding_sha256=binding_sha256,
             executed=True, execution_attempted=True,
             execution_started_hash=started_hash, exit_code=exit_code,
+            ledger_path=ledger_path,
             **({} if exit_code == 0 else {
                 "error_type": "NonZeroExit",
                 "error": f"process exited with status {exit_code}",
@@ -591,6 +618,7 @@ def _execute_approved(cmd: str, mode: str, result, argv=None) -> int:
     except Exception as receipt_exc:
         return _handle_terminal_receipt_failure(
             result, rollback_receipt, started_hash, terminal_kind, exit_code, receipt_exc,
+            ledger_path=ledger_path,
         )
     return exit_code
 
