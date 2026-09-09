@@ -1255,3 +1255,35 @@ def test_terminal_receipt_failure_retry_never_reexecutes(tmp_path, monkeypatch):
     assert cli._execute_approved(command, "exec", result, argv=argv) == 1
     assert len(calls) == 1
     assert [e["kind"] for e in _execution_events(ledger_path)] == ["execution_started"]
+
+
+def test_execute_approved_retry_after_attempt_row_deletion_fails_closed(tmp_path, monkeypatch):
+    import continuityos.gate.cli as cli
+    from continuityos.gate.ledger import Ledger as LegacyLedger
+    ledger_path = tmp_path / "retry-after-delete.db"
+    monkeypatch.setattr(cli, "LEDGER", str(ledger_path))
+    calls = []
+    monkeypatch.setattr(cli.subprocess, "call", lambda *a, **k: calls.append((a, k)) or 0)
+    command = "python --version"
+    argv = ["python", "--version"]
+    result = _bound_execution_result(ledger_path, command, argv)
+    assert cli._execute_approved(command, "exec", result, argv=argv) == 0
+    assert len(calls) == 1
+    preflight_hash = result["ledger_hash"]
+    # delete only execution_attempts row while preserving events/hash-chain
+    with LegacyLedger(str(ledger_path)) as ledger:
+        assert ledger.con.execute(
+            "SELECT COUNT(*) FROM events WHERE kind='attempt_claimed' AND payload LIKE ?",
+            ('%' + preflight_hash + '%',)
+        ).fetchone()[0] == 1
+        ledger.con.execute("DELETE FROM execution_attempts WHERE preflight_hash=?", (preflight_hash,))
+        ledger.con.commit()
+    # retry must hold (exit code 1), must not re-execute, must not recreate the row
+    assert cli._execute_approved(command, "exec", result, argv=argv) == 1
+    assert len(calls) == 1
+    with LegacyLedger(str(ledger_path)) as ledger:
+        assert ledger._attempt_row(preflight_hash) is None
+        assert ledger.con.execute(
+            "SELECT COUNT(*) FROM events WHERE kind='attempt_claimed' AND payload LIKE ?",
+            ('%' + preflight_hash + '%',)
+        ).fetchone()[0] == 1
