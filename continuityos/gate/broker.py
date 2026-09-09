@@ -30,12 +30,17 @@ _STDIO_REDIRECT_LOCK = threading.RLock()
 
 
 class GateBroker:
-    def __init__(self, registry_path=None, ledger_path=None, db=None):
+    def __init__(self, registry_path=None, ledger_path=None, db=None, *,
+                 policy_snapshot=None, context_error=""):
         self.registry_path = registry_path or os.path.expanduser(
             "~/.continuityos/gate_broker.db"
         )
         self.ledger_path = ledger_path or cli.LEDGER
         self.db = db
+        # Product adapters may inject the one policy snapshot loaded at their
+        # startup boundary.  ``None`` preserves the R12 discovery/load path.
+        self._policy_snapshot = policy_snapshot
+        self._context_error = context_error
         os.makedirs(
             os.path.dirname(os.path.abspath(self.registry_path)) or ".",
             exist_ok=True,
@@ -213,12 +218,18 @@ class GateBroker:
     def _load_adapter(self, spec):
         """Mirror cli._decide adapter wiring without constructing another spec."""
         cli._require_legacy_gate()
-        try:
-            policy = cli.load_policy(cli.discover_policy(cli.HOME))
-        except (cli.PolicyError, OSError) as exc:
-            policy = cli.default_policy()
-            spec.meta["policy_error"] = f"{type(exc).__name__}: {exc}"
-        context, context_error, _context_identity = cli._context(self.db)
+        if self._policy_snapshot is None:
+            try:
+                policy = cli.load_policy(cli.discover_policy(cli.HOME))
+            except (cli.PolicyError, OSError) as exc:
+                policy = cli.default_policy()
+                spec.meta["policy_error"] = f"{type(exc).__name__}: {exc}"
+        else:
+            policy = self._policy_snapshot
+        if self._context_error:
+            context, context_error = None, self._context_error
+        else:
+            context, context_error, _context_identity = cli._context(self.db)
         if context_error:
             spec.meta["context_error"] = context_error
         return policy, context

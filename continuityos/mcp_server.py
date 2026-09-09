@@ -20,6 +20,7 @@ from .twin import Twin
 from .control import ControlPlane
 from .db import resolve_memory_db
 from .gate import ActionSpec as _AS, preflight as _preflight, Ledger as _Ledger
+from .gate.broker import GateBroker as _GateBroker
 from .gate.policy import discover_policy as _discover_policy, load_policy as _load_policy
 from . import __version__
 
@@ -70,6 +71,17 @@ TOOLS = [
   "inputSchema":{"type":"object","properties":{"proposed_action":{"type":"string"}},"required":["proposed_action"]}},
  {"name":"preflight_action","description":"ADVISORY PREFLIGHT: returns a safety decision for a typed action. The MCP tool does not intercept other tools; the caller must enforce the result.",
   "inputSchema":{"type":"object","properties":{"tool":{"type":"string","default":"shell"},"command":{"type":"string"},"args":{"type":"array","items":{"type":"string"},"description":"Exact argument vector assessed by tool_schemas.max_args."},"paths":{"type":"array","items":{"type":"string"}},"cwd":{"type":"string","description":"Authoritative execution working directory; required for reliable relative-path decisions."}},"required":["command","args"]}},
+ {"name":"preflight_exec","description":"Durably preflight one exact argv/cwd action through the ContinuityOS GateBroker.",
+  "inputSchema":{"type":"object","additionalProperties":False,"properties":{
+     "request_id":{"type":"string","minLength":1,"maxLength":256},
+     "argv":{"type":"array","minItems":1,"maxItems":256,"items":{"type":"string","maxLength":32768}},
+     "cwd":{"type":"string","minLength":1,"maxLength":32768},
+     "paths":{"type":"array","maxItems":256,"items":{"type":"string","maxLength":32768}}},
+   "required":["request_id","argv","cwd"]}},
+ {"name":"execute_preflight","description":"Execute or return the cached terminal receipt for a previously brokered request ID.",
+  "inputSchema":{"type":"object","additionalProperties":False,"properties":{
+     "request_id":{"type":"string","minLength":1,"maxLength":256}},
+   "required":["request_id"]}},
  {"name":"srd_status","description":"Long-session safety: interaction count vs Safe Turn Depth. When reinject_due=true, re-inject the returned canon_reminder into context - omission-rules ('never do X') decay by ~turn 10 (Security-Recall Divergence).",
   "inputSchema":{"type":"object","properties":{}}},
  {"name":"memory_pointer","description":"Pass-by-reference: get a lightweight {namespace,key,version} pointer to a memory value instead of its content (A2A courier-tax fix). Dereference with recall/find.",
@@ -86,6 +98,7 @@ class Server:
     def __init__(self, db=None, policy_path: str = "", db_source: str = ""):
         resolved = resolve_memory_db(db)
         db = resolved["path"]
+        self.db_path = db
         configured_missing = (
             resolved["configured"]
             and db != ":memory:"
@@ -108,6 +121,7 @@ class Server:
         self.ctl = ControlPlane(memory=self.m)
         runtime_policy = policy_path or _discover_policy(os.path.expanduser("~/.continuityos"))
         self.policy = _load_policy(runtime_policy)
+        self._broker = None
         self.turns = 0
         self.std = 10  # Safe Turn Depth: re-inject canon before omission-rules ("never do X") decay (long-session SRD research)
 
@@ -157,6 +171,24 @@ class Server:
             with _Ledger(os.path.expanduser("~/.continuityos/ledger.db")) as ledger:
                 decision = _preflight(spec, policy=self.policy, ledger=ledger, context=self.c)
             return json.dumps(decision, ensure_ascii=False, indent=2)
+        if name == "preflight_exec":
+            self._validate_broker_args(
+                args, required={"request_id", "argv", "cwd"},
+                optional={"paths"},
+            )
+            result = self._gate_broker().preflight_exec(
+                args["request_id"], args["argv"], args["cwd"],
+                args.get("paths"),
+            )
+            return json.dumps(result, ensure_ascii=False, indent=2)
+        if name == "execute_preflight":
+            # Independent runtime boundary: execution accepts no replacement
+            # action, policy, authority paths, or approval material.
+            self._validate_broker_args(
+                args, required={"request_id"}, optional=set(),
+            )
+            result = self._gate_broker().execute_preflight(args["request_id"])
+            return json.dumps(result, ensure_ascii=False, indent=2)
         if name == "srd_status":
             due = self.turns >= self.std
             canon = [r["text"] for r in self.c._dump("canon")][:8]
@@ -186,6 +218,49 @@ class Server:
             from .audit import SystemAudit
             return json.dumps(SystemAudit(self.m, self.c, self.t).run(devil=bool(args.get("devil", False))), ensure_ascii=False, indent=2)
         raise ValueError(f"unknown tool {name}")
+
+    @staticmethod
+    def _validate_broker_args(args, *, required, optional):
+        if not isinstance(args, dict):
+            raise ValueError("broker tool arguments must be an object")
+        keys = set(args)
+        missing = required - keys
+        unexpected = keys - required - optional
+        if missing:
+            raise ValueError("missing arguments: " + ", ".join(sorted(missing)))
+        if unexpected:
+            raise ValueError("unexpected arguments: " + ", ".join(sorted(unexpected)))
+        request_id = args.get("request_id")
+        if not isinstance(request_id, str) or not (1 <= len(request_id) <= 256):
+            raise ValueError("request_id must be a string of 1..256 characters")
+        if "argv" in args:
+            argv = args["argv"]
+            if (
+                not isinstance(argv, list) or not (1 <= len(argv) <= 256)
+                or any(not isinstance(value, str) or len(value) > 32768 for value in argv)
+            ):
+                raise ValueError("argv must be a non-empty bounded array of strings")
+        if "cwd" in args and (
+            not isinstance(args["cwd"], str)
+            or not (1 <= len(args["cwd"]) <= 32768)
+        ):
+            raise ValueError("cwd must be a bounded string")
+        if "paths" in args:
+            paths = args["paths"]
+            if (
+                not isinstance(paths, list) or len(paths) > 256
+                or any(not isinstance(value, str) or len(value) > 32768 for value in paths)
+            ):
+                raise ValueError("paths must be a bounded array of strings")
+
+    def _gate_broker(self):
+        if self._broker is None:
+            self._broker = _GateBroker(
+                db=self.db_path,
+                policy_snapshot=self.policy,
+                context_error=self._governance_context_error,
+            )
+        return self._broker
 
 def _send(obj):
     sys.stdout.write(json.dumps(obj) + "\n"); sys.stdout.flush()
