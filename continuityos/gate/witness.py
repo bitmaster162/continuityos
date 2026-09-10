@@ -289,6 +289,10 @@ class WitnessAuthority:
         self._state = _lock_state(self.lock_path)
         self._identity_guard = threading.Lock()
         self._lock_identity = None
+        # On POSIX keep the originally pinned lock inode referenced for the
+        # lifetime of this authority. Otherwise unlink/recreate can recycle
+        # the same inode number and defeat an identity tuple comparison.
+        self._anchor_fd = None
         self._parent_identities = {}
         for authority_path in (
             self.path, self.ledger_path, self.registry_path, self.lock_path
@@ -340,9 +344,30 @@ class WitnessAuthority:
             self._lock_identity = _stat_identity(os.fstat(fd))
             if _path_identity(self.lock_path) != self._lock_identity:
                 raise WitnessError("witness lock path changed during construction")
+            if os.name != "nt":
+                self._anchor_fd = fd
+                fd = None
         finally:
-            os.close(fd)
+            if fd is not None:
+                os.close(fd)
         self.bootstrap_recovery = False
+
+    def _release_anchor(self):
+        """Release the POSIX inode anchor during object finalization."""
+        with self._identity_guard:
+            fd = self._anchor_fd
+            self._anchor_fd = None
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    def __del__(self):
+        try:
+            self._release_anchor()
+        except Exception:
+            pass
 
     def _validate_stable_paths(self, *, create_witness_parent=False):
         witness_parent = _normalize_path(os.path.dirname(self.path) or ".")
@@ -378,9 +403,12 @@ class WitnessAuthority:
     def locked(self):
         state = self._state
         with state.lock:
+            # Reentrancy belongs to the shared path lock, not to a particular
+            # WitnessAuthority object. Validate this authority on every entry
+            # so a second object cannot inherit another object's validation.
+            self._validate_stable_paths(create_witness_parent=True)
             depth = getattr(state.local, "depth", 0)
             if depth == 0:
-                self._validate_stable_paths(create_witness_parent=True)
                 fd = _open_nofollow(
                     self.lock_path, os.O_RDWR | os.O_CREAT, 0o600
                 )

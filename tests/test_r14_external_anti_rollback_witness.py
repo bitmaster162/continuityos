@@ -487,6 +487,23 @@ def test_posix_lock_substitution_while_held_blocks_second_authority(tmp_path):
                 pass
 
 
+def test_nested_second_authority_still_runs_its_own_identity_validation(tmp_path, monkeypatch):
+    witness = str(tmp_path / "witness.json")
+    ledger = str(tmp_path / "ledger.db")
+    registry = str(tmp_path / "registry.db")
+    owner = WitnessAuthority(witness, ledger, registry)
+    contender = WitnessAuthority(witness, ledger, registry)
+
+    def reject(*args, **kwargs):
+        raise WitnessError("contender identity validation ran")
+
+    monkeypatch.setattr(contender, "_validate_stable_paths", reject)
+    with owner.locked():
+        with pytest.raises(WitnessError, match="contender identity validation ran"):
+            with contender.locked():
+                pass
+
+
 def test_witness_rejects_lock_file_identity_replacement(tmp_path):
     authority = WitnessAuthority(
         str(tmp_path / "witness.json"), str(tmp_path / "ledger.db"),
