@@ -14,6 +14,7 @@ import time
 from continuityos.gate import cli
 from continuityos.gate.ledger import Ledger
 from continuityos.gate.spec import ActionSpec
+from continuityos.gate.witness import WitnessAuthority
 
 
 _ACTION_FIELDS = ("tool", "command", "args", "paths", "cwd", "agent")
@@ -31,11 +32,17 @@ _STDIO_REDIRECT_LOCK = threading.RLock()
 
 class GateBroker:
     def __init__(self, registry_path=None, ledger_path=None, db=None, *,
-                 policy_snapshot=None, context_error=""):
+                 policy_snapshot=None, context_error="", witness_path=None):
         self.registry_path = registry_path or os.path.expanduser(
             "~/.continuityos/gate_broker.db"
         )
         self.ledger_path = ledger_path or cli.LEDGER
+        self.witness = None
+        if witness_path is not None:
+            self.witness = WitnessAuthority(
+                witness_path, self.ledger_path, self.registry_path
+            )
+            self.witness.bootstrap()
         self.db = db
         # Product adapters may inject the one policy snapshot loaded at their
         # startup boundary.  ``None`` preserves the R12 discovery/load path.
@@ -45,6 +52,7 @@ class GateBroker:
             os.path.dirname(os.path.abspath(self.registry_path)) or ".",
             exist_ok=True,
         )
+        registry_existed = os.path.exists(self.registry_path)
         with sqlite3.connect(self.registry_path, timeout=30) as con:
             con.execute("PRAGMA busy_timeout=30000")
             con.execute("PRAGMA synchronous=FULL")
@@ -55,8 +63,54 @@ class GateBroker:
                 "preflight_hash TEXT NOT NULL UNIQUE, "
                 "created_ts REAL NOT NULL)"
             )
+            if self.witness is not None:
+                doc = self.witness.read()
+                con.execute("""CREATE TABLE IF NOT EXISTS governance_metadata(
+                    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                    state_id TEXT NOT NULL)""")
+                row = con.execute(
+                    "SELECT state_id FROM governance_metadata WHERE singleton=1"
+                ).fetchone()
+                if row is None:
+                    if registry_existed and not getattr(
+                        self.witness, "bootstrap_recovery", False
+                    ):
+                        raise ValueError(
+                            "existing broker registry has no R14 state_id; offline migration required"
+                        )
+                    con.execute(
+                        "INSERT INTO governance_metadata(singleton,state_id) VALUES(1,?)",
+                        (doc["state_id"],),
+                    )
+                elif row[0] != doc["state_id"]:
+                    raise ValueError("broker registry state_id does not match witness")
+                con.execute("""CREATE TRIGGER IF NOT EXISTS governance_metadata_no_update
+                    BEFORE UPDATE ON governance_metadata BEGIN
+                    SELECT RAISE(ABORT, 'governance state_id is immutable'); END""")
+                con.execute("""CREATE TRIGGER IF NOT EXISTS governance_metadata_no_delete
+                    BEFORE DELETE ON governance_metadata BEGIN
+                    SELECT RAISE(ABORT, 'governance state_id is immutable'); END""")
             con.commit()
         self._lock = threading.RLock()
+        if self.witness is not None:
+            with self._ledger():
+                pass
+
+    def _ledger(self):
+        if self.witness is None:
+            return Ledger(self.ledger_path)
+        return Ledger(self.ledger_path, witness=self.witness)
+
+    def _validate_registry_state(self):
+        if self.witness is None:
+            return
+        doc = self.witness.read()
+        with sqlite3.connect(self.registry_path, timeout=30) as con:
+            row = con.execute(
+                "SELECT state_id FROM governance_metadata WHERE singleton=1"
+            ).fetchone()
+        if row is None or row[0] != doc["state_id"]:
+            raise ValueError("broker registry state_id does not match witness")
 
     @staticmethod
     def _key(request_id):
@@ -234,7 +288,7 @@ class GateBroker:
             spec.meta["context_error"] = context_error
         return policy, context
 
-    def preflight_exec(self, request_id, argv, cwd, paths=None):
+    def _preflight_exec(self, request_id, argv, cwd, paths=None):
         if not isinstance(request_id, str) or not (1 <= len(request_id) <= 256):
             return self._held(request_id, None, ["bad request_id"])
         if (
@@ -293,7 +347,7 @@ class GateBroker:
                                 preflight_hash=existing_hash,
                             )
                         try:
-                            with Ledger(self.ledger_path) as ledger:
+                            with self._ledger() as ledger:
                                 verification = ledger.verify()
                                 if not verification.get("ok"):
                                     reg.rollback()
@@ -333,7 +387,7 @@ class GateBroker:
 
                     # The registry is empty for this key. Scan the ledger while
                     # keeping the registry transaction open for orphan adoption.
-                    with Ledger(self.ledger_path) as ledger:
+                    with self._ledger() as ledger:
                         verification = ledger.verify()
                         if not verification.get("ok"):
                             reg.rollback()
@@ -450,7 +504,7 @@ class GateBroker:
                 [f"state error: {type(exc).__name__}: {exc}"],
             )
 
-    def execute_preflight(self, request_id):
+    def _execute_preflight(self, request_id):
         if not isinstance(request_id, str) or not (1 <= len(request_id) <= 256):
             return self._held(request_id, None, ["bad request_id"])
         request_key = self._key(request_id)
@@ -464,7 +518,7 @@ class GateBroker:
                 if not self._is_hash(action_digest) or not self._is_hash(preflight_hash):
                     return self._held(request_id, request_key, ["registry mapping is invalid"], preflight_hash=preflight_hash)
 
-                with Ledger(self.ledger_path) as ledger:
+                with self._ledger() as ledger:
                     if not ledger.verify().get("ok"):
                         return self._held(request_id, request_key, ["ledger hash chain verification failed"], preflight_hash)
                     event = ledger.event(preflight_hash)
@@ -526,11 +580,12 @@ class GateBroker:
                                 execution_cwd=action["cwd"], stdout=child_out,
                                 stderr=child_err, env=env,
                                 outcome=execution_outcome,
+                                witness_authority=self.witness,
                             )
                     stdout_data = self._read_sink(child_out)
                     stderr_data = self._read_sink(child_err)
 
-                with Ledger(self.ledger_path) as ledger:
+                with self._ledger() as ledger:
                     if not ledger.verify().get("ok"):
                         return self._held(request_id, request_key, ["ledger hash chain verification failed after execution"], preflight_hash)
                     row = ledger._attempt_row(preflight_hash)
@@ -589,6 +644,32 @@ class GateBroker:
                     request_id, request_key,
                     [f"execution validation error: {type(exc).__name__}: {exc}"],
                     locals().get("preflight_hash"),
+                )
+
+    def preflight_exec(self, request_id, argv, cwd, paths=None):
+        if self.witness is None:
+            return self._preflight_exec(request_id, argv, cwd, paths)
+        with self.witness.locked():
+            try:
+                self._validate_registry_state()
+                return self._preflight_exec(request_id, argv, cwd, paths)
+            except Exception as exc:
+                return self._held(
+                    request_id, self._key(request_id) if isinstance(request_id, str) else None,
+                    [f"witness validation error: {type(exc).__name__}: {exc}"],
+                )
+
+    def execute_preflight(self, request_id):
+        if self.witness is None:
+            return self._execute_preflight(request_id)
+        with self.witness.locked():
+            try:
+                self._validate_registry_state()
+                return self._execute_preflight(request_id)
+            except Exception as exc:
+                return self._held(
+                    request_id, self._key(request_id) if isinstance(request_id, str) else None,
+                    [f"witness validation error: {type(exc).__name__}: {exc}"],
                 )
 
     @staticmethod

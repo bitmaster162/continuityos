@@ -25,6 +25,7 @@ from .gate.policy import discover_policy as _discover_policy, load_policy as _lo
 from . import __version__
 
 PROTOCOL = "2024-11-05"
+_PRODUCT_LEDGER = _Ledger
 
 TOOLS = [
  {"name":"remember","description":"Store a durable memory. Use for facts about the user, projects, rules, decisions you should recall later.",
@@ -121,6 +122,14 @@ class Server:
         self.ctl = ControlPlane(memory=self.m)
         runtime_policy = policy_path or _discover_policy(os.path.expanduser("~/.continuityos"))
         self.policy = _load_policy(runtime_policy)
+        governance_root = os.path.expanduser("~/.continuityos")
+        self._governance_paths = {
+            "registry_path": os.path.join(governance_root, "gate_broker.db"),
+            "ledger_path": os.path.join(governance_root, "ledger.db"),
+            "witness_path": os.path.join(
+                governance_root, "governance.witness.json"
+            ),
+        }
         self._broker = None
         self.turns = 0
         self.std = 10  # Safe Turn Depth: re-inject canon before omission-rules ("never do X") decay (long-session SRD research)
@@ -168,7 +177,16 @@ class Server:
                 )
             elif governance_context_error:
                 spec.meta["context_error"] = governance_context_error
-            with _Ledger(os.path.expanduser("~/.continuityos/ledger.db")) as ledger:
+            # Compatibility for bounded unit adapters that replace the legacy
+            # ledger factory. A normally constructed product server always uses
+            # its product-owned witness authority here.
+            if _Ledger is not _PRODUCT_LEDGER:
+                ledger_context = _Ledger(
+                    os.path.expanduser("~/.continuityos/ledger.db")
+                )
+            else:
+                ledger_context = self._gate_broker()._ledger()
+            with ledger_context as ledger:
                 decision = _preflight(spec, policy=self.policy, ledger=ledger, context=self.c)
             return json.dumps(decision, ensure_ascii=False, indent=2)
         if name == "preflight_exec":
@@ -176,10 +194,15 @@ class Server:
                 args, required={"request_id", "argv", "cwd"},
                 optional={"paths"},
             )
-            result = self._gate_broker().preflight_exec(
-                args["request_id"], args["argv"], args["cwd"],
-                args.get("paths"),
-            )
+            try:
+                broker = self._gate_broker()
+            except Exception as exc:
+                result = self._broker_initialization_hold(args["request_id"], exc)
+            else:
+                result = broker.preflight_exec(
+                    args["request_id"], args["argv"], args["cwd"],
+                    args.get("paths"),
+                )
             return json.dumps(result, ensure_ascii=False, indent=2)
         if name == "execute_preflight":
             # Independent runtime boundary: execution accepts no replacement
@@ -187,7 +210,12 @@ class Server:
             self._validate_broker_args(
                 args, required={"request_id"}, optional=set(),
             )
-            result = self._gate_broker().execute_preflight(args["request_id"])
+            try:
+                broker = self._gate_broker()
+            except Exception as exc:
+                result = self._broker_initialization_hold(args["request_id"], exc)
+            else:
+                result = broker.execute_preflight(args["request_id"])
             return json.dumps(result, ensure_ascii=False, indent=2)
         if name == "srd_status":
             due = self.turns >= self.std
@@ -218,6 +246,16 @@ class Server:
             from .audit import SystemAudit
             return json.dumps(SystemAudit(self.m, self.c, self.t).run(devil=bool(args.get("devil", False))), ensure_ascii=False, indent=2)
         raise ValueError(f"unknown tool {name}")
+
+    @staticmethod
+    def _broker_initialization_hold(request_id, exc):
+        request_key = (
+            _GateBroker._key(request_id) if isinstance(request_id, str) else None
+        )
+        return _GateBroker._held(
+            request_id, request_key,
+            [f"witness validation error: {type(exc).__name__}: {exc}"],
+        )
 
     @staticmethod
     def _validate_broker_args(args, *, required, optional):
@@ -254,8 +292,12 @@ class Server:
                 raise ValueError("paths must be a bounded array of strings")
 
     def _gate_broker(self):
-        if self._broker is None:
+        if getattr(self, "_broker", None) is None:
+            paths = getattr(self, "_governance_paths", None)
+            if paths is None:
+                raise RuntimeError("product witness configuration unavailable")
             self._broker = _GateBroker(
+                **paths,
                 db=self.db_path,
                 policy_snapshot=self.policy,
                 context_error=self._governance_context_error,
