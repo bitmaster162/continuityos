@@ -190,11 +190,14 @@ def _patch_gate_ledger(module: ModuleType) -> None:
     class GuardedLedger(original):
         __continuityos_r27_guarded__ = True
 
-        def __init__(self, path: str = "continuity_ledger.db"):
+        def __init__(self, path: str = "continuity_ledger.db", witness=None):
             boundary = _boundary()
             state = boundary.inspect_current_session()
             if state["mode"] == boundary.MODE_LEGACY:
-                super().__init__(path)
+                if witness is None:
+                    super().__init__(path)
+                else:
+                    super().__init__(path, witness=witness)
                 self.path = path
                 self.read_only = False
                 return

@@ -1,14 +1,28 @@
 """Append-only audit ledger with a hash chain and single-attempt execution registry."""
 from __future__ import annotations
-import sqlite3, json, time, hashlib, os
+import contextlib, sqlite3, json, time, hashlib, math, os
 from typing import Dict, Any, List
 
 GENESIS = "0" * 64
 HASH_SCHEME = "sha256-prev-kind-ts6-payload-v1"
 ATTEMPT_PHASES = {"CLAIMED", "ATTEMPT_STARTED", "TERMINAL"}
+_HEX = set("0123456789abcdef")
+
+
+def _is_nonzero_sha256(value):
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and set(value) <= _HEX
+        and value != GENESIS
+    )
 
 class Ledger:
-    def __init__(self, path: str = "continuity_ledger.db"):
+    def __init__(self, path: str = "continuity_ledger.db", witness=None):
+        self.path = os.path.abspath(path)
+        self.witness = witness
+        existed = os.path.exists(self.path)
+        witness_doc = witness.read() if witness is not None else None
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         self.con = sqlite3.connect(path, timeout=30.0)
         self.con.execute("PRAGMA busy_timeout=30000")
@@ -31,7 +45,60 @@ class Ledger:
             terminal_error TEXT,
             created_ts REAL NOT NULL,
             updated_ts REAL NOT NULL)""")
+        if witness is not None:
+            self.con.execute("""CREATE TABLE IF NOT EXISTS governance_metadata(
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                state_id TEXT NOT NULL)""")
+            row = self.con.execute(
+                "SELECT state_id FROM governance_metadata WHERE singleton=1"
+            ).fetchone()
+            if row is None:
+                if existed and not getattr(witness, "bootstrap_recovery", False):
+                    self.con.close()
+                    raise ValueError("existing ledger has no R14 state_id; offline migration required")
+                self.con.execute(
+                    "INSERT INTO governance_metadata(singleton,state_id) VALUES(1,?)",
+                    (witness_doc["state_id"],),
+                )
+            self.con.execute("""CREATE TRIGGER IF NOT EXISTS governance_metadata_no_update
+                BEFORE UPDATE ON governance_metadata BEGIN
+                SELECT RAISE(ABORT, 'governance state_id is immutable'); END""")
+            self.con.execute("""CREATE TRIGGER IF NOT EXISTS governance_metadata_no_delete
+                BEFORE DELETE ON governance_metadata BEGIN
+                SELECT RAISE(ABORT, 'governance state_id is immutable'); END""")
         self.con.commit()
+        if witness is not None:
+            with witness.locked():
+                witness.reconcile_ledger(self)
+
+    def state_id(self):
+        try:
+            row = self.con.execute(
+                "SELECT state_id FROM governance_metadata WHERE singleton=1"
+            ).fetchone()
+        except sqlite3.Error:
+            return None
+        return row[0] if row else None
+
+    def frontier(self):
+        row = self.con.execute(
+            "SELECT hash FROM events ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        count = self.con.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        return {"event_count": count, "event_hash": row[0] if row else GENESIS}
+
+    @contextlib.contextmanager
+    def _witness_guard(self):
+        if self.witness is None:
+            yield
+            return
+        with self.witness.locked():
+            self.witness.reconcile_ledger(self)
+            yield
+
+    def _advance_witness(self):
+        if self.witness is not None:
+            self.witness.advance(self)
 
     def _last_hash(self) -> str:
         row = self.con.execute("SELECT hash FROM events ORDER BY id DESC LIMIT 1").fetchone()
@@ -51,14 +118,16 @@ class Ledger:
         return digest
 
     def append(self, kind: str, payload: Dict[str, Any]) -> str:
-        try:
-            self.con.execute("BEGIN IMMEDIATE")
-            digest = self._append_event_in_transaction(kind, payload)
-            self.con.commit()
-            return digest
-        except Exception:
-            self.con.rollback()
-            raise
+        with self._witness_guard():
+            try:
+                self.con.execute("BEGIN IMMEDIATE")
+                digest = self._append_event_in_transaction(kind, payload)
+                self.con.commit()
+                self._advance_witness()
+                return digest
+            except Exception:
+                self.con.rollback()
+                raise
 
     def verify(self) -> Dict[str, Any]:
         prev = GENESIS; count = 0
@@ -131,12 +200,36 @@ class Ledger:
         if row is None:
             raise ValueError("execution attempt row missing")
         data = dict(row)
+        if not _is_nonzero_sha256(data.get("preflight_hash")):
+            raise ValueError("execution attempt preflight_hash is invalid")
+        if not _is_nonzero_sha256(data.get("binding_sha256")):
+            raise ValueError("execution attempt binding_sha256 is invalid")
+        if not _is_nonzero_sha256(data.get("claim_hash")):
+            raise ValueError("execution attempt claim_hash is invalid")
+        for name in ("created_ts", "updated_ts"):
+            value = data.get(name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+            ):
+                raise ValueError(f"execution attempt {name} is invalid")
+        if data["updated_ts"] < data["created_ts"]:
+            raise ValueError("execution attempt timestamps run backward")
         if data["phase"] not in ATTEMPT_PHASES:
             raise ValueError("execution attempt has invalid phase")
+        preflight = self.event(data["preflight_hash"])
+        if preflight is None or preflight.get("kind") != "preflight":
+            raise ValueError("execution attempt preflight pointer is invalid")
+        preflight_payload = preflight["payload"]
+        if not isinstance(preflight_payload, dict):
+            raise ValueError("execution attempt preflight payload is malformed")
         claim = self.event(data["claim_hash"])
         if claim is None or claim.get("kind") != "attempt_claimed":
             raise ValueError("execution attempt claim pointer is invalid")
         claim_payload = claim["payload"]
+        if set(claim_payload) != {"preflight_hash", "binding_sha256", "phase"}:
+            raise ValueError("attempt_claimed event payload is not strict")
         if claim_payload.get("phase") != "CLAIMED":
             raise ValueError("attempt_claimed event payload phase is not CLAIMED")
         if claim_payload.get("preflight_hash") != data["preflight_hash"]:
@@ -150,6 +243,8 @@ class Ledger:
         if data["phase"] == "ATTEMPT_STARTED" and (not started_hash or terminal_hash):
             raise ValueError("ATTEMPT_STARTED attempt has impossible receipt pointers")
         if started_hash:
+            if not _is_nonzero_sha256(started_hash):
+                raise ValueError("execution_started_hash is invalid")
             started = self.event(started_hash)
             if started is None or started.get("kind") != "execution_started":
                 raise ValueError("execution_started pointer is invalid")
@@ -161,6 +256,8 @@ class Ledger:
         if data["phase"] == "TERMINAL":
             if data["terminal_kind"] not in ("execution_completed", "execution_failed"):
                 raise ValueError("TERMINAL has invalid terminal_kind")
+            if not _is_nonzero_sha256(data.get("terminal_hash")):
+                raise ValueError("terminal_hash is invalid")
             terminal = self.event(data["terminal_hash"])
             if terminal is None or terminal.get("kind") != data["terminal_kind"]:
                 raise ValueError("terminal receipt pointer is invalid")
@@ -212,7 +309,73 @@ class Ledger:
                     raise ValueError("no started_hash requires exit_code None")
         return data
 
-    def claim_execution_attempt(
+    def validate_execution_lifecycle(self) -> None:
+        """Validate every attempt row and reject every orphan lifecycle event."""
+        references = {
+            "attempt_claimed": [],
+            "execution_started": [],
+            "execution_completed": [],
+            "execution_failed": [],
+        }
+        for row in self.con.execute(
+            "SELECT * FROM execution_attempts ORDER BY preflight_hash"
+        ):
+            data = self._validate_attempt_row(row)
+            preflight = self.event(data["preflight_hash"])
+            preflight_payload = preflight["payload"]
+            started_hash = data.get("execution_started_hash")
+            if started_hash is not None:
+                started_payload = self.event(started_hash)["payload"]
+                if started_payload.get("action") != preflight_payload.get("action"):
+                    raise ValueError("execution_started action differs from preflight")
+                if not isinstance(started_payload.get("rollback_receipt"), dict):
+                    raise ValueError("execution_started rollback receipt is malformed")
+                if started_payload.get("execution_attempted") is not True:
+                    raise ValueError("execution_started must record an attempted execution")
+                if started_payload.get("executed") is not False:
+                    raise ValueError("execution_started must precede execution")
+            terminal_hash = data.get("terminal_hash")
+            if terminal_hash is not None:
+                terminal_payload = self.event(terminal_hash)["payload"]
+                if terminal_payload.get("action") != preflight_payload.get("action"):
+                    raise ValueError("terminal action differs from preflight")
+                if not isinstance(terminal_payload.get("rollback_receipt"), dict):
+                    raise ValueError("terminal rollback receipt is malformed")
+            references["attempt_claimed"].append(data["claim_hash"])
+            if data.get("execution_started_hash") is not None:
+                references["execution_started"].append(
+                    data["execution_started_hash"]
+                )
+            if data.get("terminal_hash") is not None:
+                references[data["terminal_kind"]].append(data["terminal_hash"])
+
+        for kind, hashes in references.items():
+            if len(hashes) != len(set(hashes)):
+                raise ValueError(f"duplicate {kind} lifecycle mapping")
+            rows = self.con.execute(
+                "SELECT hash,payload FROM events WHERE kind=? ORDER BY id",
+                (kind,),
+            ).fetchall()
+            actual = []
+            for row in rows:
+                event_hash, payload_blob = row[0], row[1]
+                if not _is_nonzero_sha256(event_hash):
+                    raise ValueError(f"malformed {kind} lifecycle event hash")
+                try:
+                    payload = json.loads(payload_blob)
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise ValueError(
+                        f"malformed {kind} lifecycle event payload"
+                    ) from exc
+                if not isinstance(payload, dict):
+                    raise ValueError(f"malformed {kind} lifecycle event payload")
+                actual.append(event_hash)
+            if len(actual) != len(set(actual)) or set(actual) != set(hashes):
+                raise ValueError(
+                    f"orphan or duplicate {kind} execution lifecycle event"
+                )
+
+    def _claim_execution_attempt(
         self, *, preflight_hash: str, binding_sha256: str,
         expected_action: Dict[str, Any], expected_rollback_plan: Dict[str, Any],
         expected_decision: str,
@@ -269,7 +432,7 @@ class Ledger:
             self.con.rollback()
             raise
 
-    def start_execution_attempt(
+    def _start_execution_attempt(
         self, *, preflight_hash: str, binding_sha256: str,
         payload: Dict[str, Any],
     ) -> str:
@@ -299,7 +462,7 @@ class Ledger:
             self.con.rollback()
             raise
 
-    def finish_execution_attempt(
+    def _finish_execution_attempt(
         self, *, preflight_hash: str, binding_sha256: str,
         terminal_kind: str, payload: Dict[str, Any],
     ) -> str:
@@ -357,6 +520,26 @@ class Ledger:
         except Exception:
             self.con.rollback()
             raise
+
+    def claim_execution_attempt(self, **kwargs):
+        with self._witness_guard():
+            before = self.frontier()["event_count"]
+            result = self._claim_execution_attempt(**kwargs)
+            if self.frontier()["event_count"] != before:
+                self._advance_witness()
+            return result
+
+    def start_execution_attempt(self, **kwargs):
+        with self._witness_guard():
+            result = self._start_execution_attempt(**kwargs)
+            self._advance_witness()
+            return result
+
+    def finish_execution_attempt(self, **kwargs):
+        with self._witness_guard():
+            result = self._finish_execution_attempt(**kwargs)
+            self._advance_witness()
+            return result
 
     def close(self) -> None:
         self.con.close()
