@@ -32,7 +32,8 @@ _STDIO_REDIRECT_LOCK = threading.RLock()
 
 class GateBroker:
     def __init__(self, registry_path=None, ledger_path=None, db=None, *,
-                 policy_snapshot=None, context_error="", witness_path=None):
+                 policy_snapshot=None, context_error="", witness_path=None,
+                 monotonic_anchor=None):
         self.registry_path = registry_path or os.path.expanduser(
             "~/.continuityos/gate_broker.db"
         )
@@ -43,6 +44,9 @@ class GateBroker:
                 witness_path, self.ledger_path, self.registry_path
             )
             self.witness.bootstrap()
+        self.monotonic_anchor = monotonic_anchor
+        if self.monotonic_anchor is not None and self.witness is None:
+            raise ValueError("R15 monotonic anchor requires the R14 witness authority")
         self.db = db
         # Product adapters may inject the one policy snapshot loaded at their
         # startup boundary.  ``None`` preserves the R12 discovery/load path.
@@ -93,13 +97,27 @@ class GateBroker:
             con.commit()
         self._lock = threading.RLock()
         if self.witness is not None:
-            with self._ledger():
-                pass
+            with self._ledger() as ledger:
+                self._require_monotonic_runtime(ledger)
 
     def _ledger(self):
         if self.witness is None:
             return Ledger(self.ledger_path)
         return Ledger(self.ledger_path, witness=self.witness)
+
+    @staticmethod
+    def _r15_activated(ledger):
+        return ledger.con.execute(
+            "SELECT 1 FROM events WHERE kind='monotonic_anchor' LIMIT 1"
+        ).fetchone() is not None
+
+    def _require_monotonic_runtime(self, ledger):
+        if self._r15_activated(ledger) and self.monotonic_anchor is None:
+            raise ValueError(
+                "R15-activated governance state requires the monotonic anchor"
+            )
+        if self.monotonic_anchor is not None:
+            self.monotonic_anchor.require_runtime_consistency(ledger)
 
     def _validate_registry_state(self):
         if self.witness is None:
@@ -544,6 +562,15 @@ class GateBroker:
                     )
                     row = ledger._attempt_row(preflight_hash)
                     attempt = None if row is None else ledger._validate_attempt_row(row)
+                    if (
+                        attempt is not None
+                        and attempt["phase"] == "TERMINAL"
+                        and self.monotonic_anchor is not None
+                    ):
+                        self.monotonic_anchor.require_terminal_receipt(
+                            ledger, preflight_hash=preflight_hash,
+                            binding_sha256=expected_binding, attempt=attempt,
+                        )
 
                 if attempt is not None:
                     if attempt["binding_sha256"] != expected_binding:
@@ -581,6 +608,7 @@ class GateBroker:
                                 stderr=child_err, env=env,
                                 outcome=execution_outcome,
                                 witness_authority=self.witness,
+                                monotonic_anchor=self.monotonic_anchor,
                             )
                     stdout_data = self._read_sink(child_out)
                     stderr_data = self._read_sink(child_err)
@@ -590,6 +618,15 @@ class GateBroker:
                         return self._held(request_id, request_key, ["ledger hash chain verification failed after execution"], preflight_hash)
                     row = ledger._attempt_row(preflight_hash)
                     attempt = None if row is None else ledger._validate_attempt_row(row)
+                    if (
+                        attempt is not None
+                        and attempt["phase"] == "TERMINAL"
+                        and self.monotonic_anchor is not None
+                    ):
+                        self.monotonic_anchor.require_terminal_receipt(
+                            ledger, preflight_hash=preflight_hash,
+                            binding_sha256=expected_binding, attempt=attempt,
+                        )
                 captured = self._captured_fields(
                     stdout_data, stderr_data,
                     status_out.getvalue(), status_err.getvalue(),
@@ -652,6 +689,8 @@ class GateBroker:
         with self.witness.locked():
             try:
                 self._validate_registry_state()
+                with self._ledger() as ledger:
+                    self._require_monotonic_runtime(ledger)
                 return self._preflight_exec(request_id, argv, cwd, paths)
             except Exception as exc:
                 return self._held(
@@ -665,6 +704,8 @@ class GateBroker:
         with self.witness.locked():
             try:
                 self._validate_registry_state()
+                with self._ledger() as ledger:
+                    self._require_monotonic_runtime(ledger)
                 return self._execute_preflight(request_id)
             except Exception as exc:
                 return self._held(

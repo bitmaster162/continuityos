@@ -509,7 +509,8 @@ def _execution_binding_sha256(cmd: str, mode: str, result, argv, execution_cwd=N
 
 def _execute_approved(cmd: str, mode: str, result, argv=None, ledger_path=None,
                       execution_cwd=None, stdout=None, stderr=None, env=None,
-                      outcome=None, witness_authority=None) -> int:
+                      outcome=None, witness_authority=None,
+                      monotonic_anchor=None) -> int:
     """Execute an approval and optionally expose this invocation's claim result.
 
     ``outcome`` is an internal broker channel. The integer return remains the
@@ -532,6 +533,32 @@ def _execute_approved(cmd: str, mode: str, result, argv=None, ledger_path=None,
             ledger_path if ledger_path is not None else LEDGER,
             witness_authority,
         ) as ledger:
+            r15_activated = ledger.con.execute(
+                "SELECT 1 FROM events WHERE kind='monotonic_anchor' LIMIT 1"
+            ).fetchone() is not None
+            if r15_activated and monotonic_anchor is None:
+                raise ValueError(
+                    "R15-activated governance state requires the monotonic anchor"
+                )
+            if monotonic_anchor is not None:
+                if witness_authority is None:
+                    raise ValueError(
+                        "R15 monotonic execution requires the R14 witness authority"
+                    )
+                monotonic_anchor.require_runtime_consistency(ledger)
+    except Exception as exc:
+        if outcome is not None:
+            outcome["monotonic_anchor_error"] = f"{type(exc).__name__}: {exc}"
+        print(
+            f"\n[HELD] monotonic execution state is inconsistent before claim: "
+            f"{type(exc).__name__}: {exc}; command was not executed."
+        )
+        return 1
+    try:
+        with _open_ledger(
+            ledger_path if ledger_path is not None else LEDGER,
+            witness_authority,
+        ) as ledger:
             claim = ledger.claim_execution_attempt(
                 preflight_hash=result.get("ledger_hash"),
                 binding_sha256=binding_sha256,
@@ -548,6 +575,26 @@ def _execute_approved(cmd: str, mode: str, result, argv=None, ledger_path=None,
         if claim_status == "CLAIMED_NEW":
             outcome["claim_hash"] = claim.get("claim_hash")
     if claim_status == "TERMINAL":
+        if monotonic_anchor is not None:
+            try:
+                with _open_ledger(
+                    ledger_path if ledger_path is not None else LEDGER,
+                    witness_authority,
+                ) as ledger:
+                    row = ledger._attempt_row(result.get("ledger_hash"))
+                    attempt = ledger._validate_attempt_row(row)
+                    monotonic_anchor.require_terminal_receipt(
+                        ledger, preflight_hash=result.get("ledger_hash"),
+                        binding_sha256=binding_sha256, attempt=attempt,
+                    )
+            except Exception as exc:
+                if outcome is not None:
+                    outcome["monotonic_anchor_error"] = f"{type(exc).__name__}: {exc}"
+                print(
+                    f"\n[HELD] cached terminal execution lacks a verified monotonic proof: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                return 1
         cached_exit = claim.get("terminal_exit_code")
         print("\n[CACHED] approval already has a verified terminal execution receipt; subprocess was not re-run.")
         return cached_exit if isinstance(cached_exit, int) else 1
@@ -600,6 +647,24 @@ def _execute_approved(cmd: str, mode: str, result, argv=None, ledger_path=None,
     except Exception as exc:
         print(f"\n[HELD] execution receipt could not be recorded: {type(exc).__name__}: {exc}")
         return 1
+    if monotonic_anchor is not None:
+        try:
+            with _open_ledger(
+                ledger_path if ledger_path is not None else LEDGER,
+                witness_authority,
+            ) as ledger:
+                anchor_hash = monotonic_anchor.record_execution_started(
+                    ledger, preflight_hash=result.get("ledger_hash"),
+                    binding_sha256=binding_sha256,
+                    execution_started_hash=started_hash,
+                )
+            if outcome is not None:
+                outcome["monotonic_started_anchor_hash"] = anchor_hash
+        except Exception as exc:
+            if outcome is not None:
+                outcome["monotonic_anchor_error"] = f"{type(exc).__name__}: {exc}"
+            print(f"\n[HELD] monotonic execution anchor failed before subprocess: {type(exc).__name__}: {exc}")
+            return 1
     try:
         if mode == "shell":
             exit_code = subprocess.call(cmd, shell=True, cwd=execution_cwd, stdout=stdout, stderr=stderr, env=env)
@@ -607,7 +672,7 @@ def _execute_approved(cmd: str, mode: str, result, argv=None, ledger_path=None,
             exit_code = subprocess.call(list(argv), cwd=execution_cwd, stdout=stdout, stderr=stderr, env=env)
     except Exception as exc:
         try:
-            _append_execution(
+            failed_hash = _append_execution(
                 "execution_failed", result, rollback_receipt,
                 _binding_sha256=binding_sha256,
                 executed=False, execution_attempted=True,
@@ -616,6 +681,17 @@ def _execute_approved(cmd: str, mode: str, result, argv=None, ledger_path=None,
                 ledger_path=ledger_path,
                 witness_authority=witness_authority,
             )
+            if monotonic_anchor is not None:
+                with _open_ledger(
+                    ledger_path if ledger_path is not None else LEDGER,
+                    witness_authority,
+                ) as ledger:
+                    monotonic_anchor.record_execution_terminal(
+                        ledger, preflight_hash=result.get("ledger_hash"),
+                        binding_sha256=binding_sha256,
+                        terminal_hash=failed_hash,
+                        terminal_kind="execution_failed",
+                    )
         except Exception as receipt_exc:
             return _handle_terminal_receipt_failure(
                 result, rollback_receipt, started_hash, "execution_failed", None,
@@ -625,7 +701,7 @@ def _execute_approved(cmd: str, mode: str, result, argv=None, ledger_path=None,
         return 1
     terminal_kind = "execution_completed" if exit_code == 0 else "execution_failed"
     try:
-        _append_execution(
+        terminal_hash = _append_execution(
             terminal_kind, result, rollback_receipt,
             _binding_sha256=binding_sha256,
             executed=True, execution_attempted=True,
@@ -637,6 +713,18 @@ def _execute_approved(cmd: str, mode: str, result, argv=None, ledger_path=None,
                 "error": f"process exited with status {exit_code}",
             }),
         )
+        if monotonic_anchor is not None:
+            with _open_ledger(
+                ledger_path if ledger_path is not None else LEDGER,
+                witness_authority,
+            ) as ledger:
+                completed_anchor_hash = monotonic_anchor.record_execution_terminal(
+                    ledger, preflight_hash=result.get("ledger_hash"),
+                    binding_sha256=binding_sha256, terminal_hash=terminal_hash,
+                    terminal_kind=terminal_kind,
+                )
+            if outcome is not None:
+                outcome["monotonic_terminal_anchor_hash"] = completed_anchor_hash
     except Exception as receipt_exc:
         return _handle_terminal_receipt_failure(
             result, rollback_receipt, started_hash, terminal_kind, exit_code, receipt_exc,
