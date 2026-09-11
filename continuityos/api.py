@@ -10,6 +10,7 @@ from .current_effect_boundary import CurrentEffectBoundaryError, assert_current_
 
 TOKEN_ENV = "CONTINUITYOS_TOKEN"
 ALLOW_REMOTE_ENV = "CONTINUITYOS_ALLOW_REMOTE"
+ALLOWED_ORIGINS_ENV = "CONTINUITYOS_ALLOWED_ORIGINS"
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", ""}
 
 
@@ -21,26 +22,46 @@ def _is_local_host(host: str) -> bool:
     return (host or "").strip().lower() in _LOCAL_HOSTS
 
 
-def _assert_bind_allowed(host: str) -> None:
-    """Default to local-only. Binding 0.0.0.0 requires an explicit operator opt-in."""
+def _assert_bind_allowed(host: str, token: str | None = None) -> None:
+    """Default to local-only; any remote bind also requires bearer authentication."""
     if _is_local_host(host):
         return
-    if _truthy(os.environ.get(ALLOW_REMOTE_ENV)):
-        return
-    raise RuntimeError(
-        f"refusing to bind HTTP API to non-local host {host!r}; "
-        f"set {ALLOW_REMOTE_ENV}=1 if you intentionally expose it"
-    )
+    if not _truthy(os.environ.get(ALLOW_REMOTE_ENV)):
+        raise RuntimeError(
+            f"refusing to bind HTTP API to non-local host {host!r}; "
+            f"set {ALLOW_REMOTE_ENV}=1 if you intentionally expose it"
+        )
+    if not token:
+        raise RuntimeError("remote HTTP API bind requires CONTINUITYOS_TOKEN")
 
 
-def make_handler(mem: Memory, token: str | None = None):
+def _allowed_origins(value: str | None = None) -> set[str]:
+    raw = os.environ.get(ALLOWED_ORIGINS_ENV, "") if value is None else value
+    return {item.strip() for item in str(raw or "").split(",") if item.strip()}
+
+
+def make_handler(mem: Memory, token: str | None = None, allowed_origins: set[str] | None = None):
     """Build the stdlib HTTP handler. Exposed for tests without starting serve_forever()."""
+    allowed_origins = set(allowed_origins or ())
+    if allowed_origins and not token:
+        raise RuntimeError("browser-origin HTTP API access requires a bearer token")
+
     class H(BaseHTTPRequestHandler):
+        def _origin(self) -> str:
+            return self.headers.get("Origin", "").strip()
+
+        def _origin_allowed(self) -> bool:
+            origin = self._origin()
+            return not origin or origin in allowed_origins
+
         def _j(self, code, obj, headers=None):
             b = json.dumps(obj, ensure_ascii=False).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Access-Control-Allow-Origin", "*")
+            origin = self._origin()
+            if origin and origin in allowed_origins:
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
             self.send_header("Content-Length", str(len(b)))
             for k, v in (headers or {}).items():
                 self.send_header(k, v)
@@ -78,13 +99,20 @@ def make_handler(mem: Memory, token: str | None = None):
             pass
 
         def do_OPTIONS(self):
+            if not self._origin_allowed():
+                return self._j(403, {"error": "origin not allowed"})
             self.send_response(204)
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+            origin = self._origin()
+            if origin:
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
             self.end_headers()
 
         def do_GET(self):
+            if not self._origin_allowed():
+                return self._j(403, {"error": "origin not allowed"})
             if not self._ensure_auth():
                 return
             u = urlparse(self.path); qs = parse_qs(u.query)
@@ -111,6 +139,8 @@ def make_handler(mem: Memory, token: str | None = None):
             self._j(404, {"error": "not found"})
 
         def do_POST(self):
+            if not self._origin_allowed():
+                return self._j(403, {"error": "origin not allowed"})
             if not self._ensure_auth():
                 return
             try:
@@ -163,8 +193,13 @@ def make_handler(mem: Memory, token: str | None = None):
 
 def run(db: str, host: str = "127.0.0.1", port: int = 8077):
     assert_current_effect_allowed("http_api.server_start")
-    _assert_bind_allowed(host)
-    mem = Memory(db)
     token = os.environ.get(TOKEN_ENV)
+    origins = _allowed_origins()
+    _assert_bind_allowed(host, token=token)
+    if origins and not token:
+        raise RuntimeError("browser-origin HTTP API access requires CONTINUITYOS_TOKEN")
+    mem = Memory(db)
     print(f"ContinuityOS API on http://{host}:{port}")
-    ThreadingHTTPServer((host, port), make_handler(mem, token=token)).serve_forever()
+    ThreadingHTTPServer(
+        (host, port), make_handler(mem, token=token, allowed_origins=origins)
+    ).serve_forever()

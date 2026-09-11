@@ -26,6 +26,9 @@ def broker(tmp_path, monkeypatch):
         policy["severity_decision"] = {
             key: "ALLOW" for key in policy["severity_decision"]
         }
+        policy["effect_decision"] = {
+            key: "ALLOW" for key in policy["effect_decision"]
+        }
         return policy, None
 
     monkeypatch.setattr(GateBroker, "_load_adapter", allow)
@@ -71,10 +74,17 @@ def _bound_result(ledger_path, argv, cwd):
         "agent": "test",
         "meta": {},
     }
+    from continuityos.gate.effects import classify_effects
+    from continuityos.gate.spec import ActionSpec
+    spec = ActionSpec(
+        tool=action["tool"], command=action["command"], args=action["args"],
+        paths=action["paths"], cwd=action["cwd"], agent=action["agent"], meta=action["meta"],
+    )
     with Ledger(str(ledger_path)) as ledger:
         preflight_hash = ledger.append("preflight", {
             "action": action,
             "decision": "ALLOW",
+            "effect": classify_effects(spec),
             "rollback_plan": {},
         })
     return {

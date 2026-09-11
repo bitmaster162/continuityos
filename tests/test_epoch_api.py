@@ -26,7 +26,8 @@ def test_epoch_endpoints_and_cors():
         _post(8479, "/epoch/commit", {"branch": "main", "label": "g2", "metrics": {"wr": 0.4, "gate_pass": 1}})
         r, g = _get(8479, "/epoch/graph")
         assert len(g["nodes"]) == 2 and len(g["edges"]) == 1
-        assert r.headers.get("Access-Control-Allow-Origin") == "*"   # CORS for file:// viewer
+        # Browser CORS is opt-in and authenticated; non-browser loopback responses never emit wildcard CORS.
+        assert r.headers.get("Access-Control-Allow-Origin") is None
     finally:
         h.shutdown()
 

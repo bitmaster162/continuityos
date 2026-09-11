@@ -25,9 +25,9 @@ def test_hook_blocks_rm_rf(tmp_path):
     d, code, _ = _hook({"tool_name": "Bash", "tool_input": {"command": "rm -rf /"}}, tmp_path)
     assert d == "deny" and code == 2
 
-def test_hook_allows_safe(tmp_path):
+def test_hook_asks_before_project_code_execution(tmp_path):
     d, code, _ = _hook({"tool_name": "Bash", "tool_input": {"command": "npm test"}}, tmp_path)
-    assert d == "allow" and code == 0
+    assert d == "ask" and code == 0
 
 def test_hook_asks_force_push(tmp_path):
     d, _, _ = _hook({"tool_name": "Bash", "tool_input": {"command": "git push -f"}}, tmp_path)
@@ -99,8 +99,9 @@ def test_hook_uses_valid_configured_db_without_creating_fallback(tmp_path):
         continuityos_db=str(configured),
     )
 
-    assert d == "allow" and code == 0
-    assert "ContinuityOS [ALLOW]" in reason
+    assert d == "ask" and code == 0
+    assert "ContinuityOS [REQUIRE_CONFIRMATION]" in reason
+    assert "effect DYNAMIC_CODE requires REQUIRE_CONFIRMATION" in reason
     assert not (tmp_path / ".continuityos" / "memory.db").exists()
 
 
