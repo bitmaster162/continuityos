@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import socket
 import subprocess
 import threading
 import urllib.error
@@ -171,6 +172,51 @@ def test_explicit_origin_is_echoed_never_wildcard(tmp_path):
         assert status == 200 and body["ok"] is True
         assert headers.get("Access-Control-Allow-Origin") == origin
         assert headers.get("Access-Control-Allow-Origin") != "*"
+    finally:
+        server.shutdown()
+
+
+def test_cors_allowlist_rejects_header_control_chars(tmp_path):
+    memory = Memory(str(tmp_path / "invalid-origin.db"))
+    try:
+        with pytest.raises(RuntimeError, match="invalid CORS origin"):
+            make_handler(
+                memory,
+                token="secret",
+                allowed_origins={"https://trusted.example\r\nX-Injected: yes"},
+            )
+    finally:
+        memory.store.con.close()
+
+
+def test_folded_origin_is_rejected_and_never_reflected(tmp_path):
+    server, _ = _http_server(
+        tmp_path,
+        token="secret",
+        allowed_origins={"https://trusted.example"},
+    )
+    try:
+        request = (
+            b"GET /health HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Origin: https://trusted.example\r\n"
+            b" X-Injected: yes\r\n"
+            b"Authorization: Bearer secret\r\n"
+            b"Connection: close\r\n\r\n"
+        )
+        with socket.create_connection(("127.0.0.1", server.server_port), timeout=3) as conn:
+            conn.sendall(request)
+            chunks = []
+            while True:
+                chunk = conn.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        response = b"".join(chunks)
+        header_block = response.partition(b"\r\n\r\n")[0]
+        assert response.startswith(b"HTTP/1.0 403")
+        assert b"Access-Control-Allow-Origin:" not in header_block
+        assert b"X-Injected:" not in header_block
     finally:
         server.shutdown()
 
