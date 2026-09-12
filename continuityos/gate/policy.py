@@ -11,6 +11,7 @@ import json
 import os
 from typing import Dict, Any
 
+from .effects import EFFECT_CLASSES
 from .spec import DECISIONS
 
 
@@ -18,7 +19,7 @@ class PolicyError(ValueError):
     """Raised when an explicit policy cannot be loaded or validated."""
 
 DEFAULT_POLICY: Dict[str, Any] = {
-    "version": "0.1",
+    "version": "0.2",
     "protected_paths": [".git/*", ".git", "*.env", ".env", "*.pem", "id_rsa", "*.key",
                         "/etc/*", "~/*", "secrets/*", "*.sqlite", "*.db"],
     # severity -> decision when a dangerous command is detected
@@ -27,6 +28,23 @@ DEFAULT_POLICY: Dict[str, Any] = {
         "high": "REQUIRE_CONFIRMATION",
         "medium": "REQUIRE_CONFIRMATION",
         "low": "ALLOW",
+    },
+    # effect class -> minimum decision; derived from exact action bytes, not caller authority.
+    "effect_decision": {
+        "LOCAL_READ": "ALLOW",
+        "TYPED_LOCAL_MUTATION": "ALLOW",
+        "LOCAL_MUTATION": "REQUIRE_CONFIRMATION",
+        "DYNAMIC_CODE": "REQUIRE_CONFIRMATION",
+        "NETWORK_READ": "ALLOW",
+        "NETWORK_WRITE": "REQUIRE_CONFIRMATION",
+        "PACKAGE_MUTATION": "REQUIRE_CONFIRMATION",
+        "GIT_REMOTE_MUTATION": "REQUIRE_CONFIRMATION",
+        "CLOUD_CLI": "REQUIRE_CONFIRMATION",
+        "CLOUD_MUTATION": "HOLD",
+        "INFRA_MUTATION": "HOLD",
+        "REMOTE_SHELL": "HOLD",
+        "REMOTE_ARTIFACT_MUTATION": "REQUIRE_CONFIRMATION",
+        "UNKNOWN_EXEC": "REQUIRE_CONFIRMATION",
     },
     # if a write/delete touches a protected path -> this decision (takes the stricter of the two)
     "protected_path_decision": "REQUIRE_CONFIRMATION",
@@ -99,6 +117,20 @@ def _validate_policy(policy: Dict[str, Any]) -> Dict[str, Any]:
     for level, decision in severity.items():
         if not isinstance(level, str) or decision not in DECISIONS:
             raise PolicyError(f"invalid severity decision: {level!r} -> {decision!r}")
+
+    effects = policy.get("effect_decision")
+    if not isinstance(effects, dict):
+        raise PolicyError("policy.effect_decision must be an object/mapping")
+    expected_effects = set(EFFECT_CLASSES)
+    unknown_effects = set(effects) - expected_effects
+    if unknown_effects:
+        field = sorted(unknown_effects)[0]
+        raise PolicyError(f"unknown policy field: policy.effect_decision.{field}")
+    if set(effects) != expected_effects:
+        raise PolicyError("policy.effect_decision keys must exactly match supported effect classes")
+    for effect, decision in effects.items():
+        if decision not in DECISIONS:
+            raise PolicyError(f"invalid effect decision: {effect!r} -> {decision!r}")
 
     for field in ("allowed_tools", "protected_paths"):
         values = policy.get(field)

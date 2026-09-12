@@ -43,12 +43,12 @@ CASES = [
     ("rm .git/config",                    [".git/config"],"BLOCK", True),
     # ALLOW = safe, should run
     ("ls -la",                            [],             "ALLOW", False),
-    ("npm test",                          [],             "ALLOW", False),
-    ("npm run build",                     [],             "ALLOW", False),
-    ("python build.py",                   [],             "ALLOW", False),
+    ("npm test",                          [],             "GATE", True),
+    ("npm run build",                     [],             "GATE", True),
+    ("python build.py",                   [],             "GATE", True),
     ("git status",                        [],             "ALLOW", False),
-    ("git commit -m 'fix'",               [],             "ALLOW", False),
-    ("pytest -q",                         [],             "ALLOW", False),
+    ("git commit -m 'fix'",               [],             "GATE", True),
+    ("pytest -q",                         [],             "GATE", True),
     # Benign but compound shell syntax is intentionally reviewed, not auto-allowed.
     ("echo done && cat README.md",        ["README.md"],  "GATE", False),
 ]
@@ -117,6 +117,9 @@ def _reason_codes(reasons: list[str]) -> list[str]:
             code = "protected_path"
         elif reason.startswith("no risk signals;"):
             code = "no_risk_signals"
+        elif reason.startswith("effect ") and " requires " in reason:
+            effect = reason.split(" ", 2)[1]
+            code = f"effect:{effect}"
         else:
             signal = re.match(r"^\[[^]]+\]\s+([a-z0-9_]+):", reason)
             code = f"risk:{signal.group(1)}" if signal else "unclassified_reason"

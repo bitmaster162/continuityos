@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from .spec import ActionSpec
 from .classifier import (classify, extract_candidate_paths, match_protected,
                          path_within, SEVERITY_RANK)
+from .effects import classify_effects
 from .policy import DEFAULT_POLICY, policy_fingerprint
 from .ledger import Ledger
 
@@ -98,12 +99,28 @@ def preflight(spec: ActionSpec, policy: Optional[Dict[str, Any]] = None,
         if top_sev is None or SEVERITY_RANK[s["severity"]] > SEVERITY_RANK[top_sev]:
             top_sev = s["severity"]
 
-    mutating = _is_mutating(spec) or bool(erasure_signals)
+    effect = classify_effects(spec)
+    effect_decisions = pol.get("effect_decision", DEFAULT_POLICY["effect_decision"])
+    for effect_class in effect["classes"]:
+        effect_decision = effect_decisions.get(effect_class, "HOLD")
+        decision = _stricter(decision, effect_decision)
+        if effect_decision != "ALLOW":
+            reasons.append(f"effect {effect_class} requires {effect_decision}")
+
+    mutating = (
+        _is_mutating(spec)
+        or bool(erasure_signals)
+        or "LOCAL_MUTATION" in effect["classes"]
+        or "TYPED_LOCAL_MUTATION" in effect["classes"]
+    )
     if spec.tool == "file.delete":
         reasons.append("file.delete is a destructive typed action")
         decision = _stricter(decision, sev_dec.get("high", "REQUIRE_CONFIRMATION"))
         top_sev = top_sev or "high"
-    if mutating and not effective_paths:
+    if "LOCAL_MUTATION" in effect["classes"] and not declared_paths:
+        reasons.append("local mutation has no typed rollback target paths")
+        decision = _stricter(decision, pol.get("missing_paths_decision", "REQUIRE_CONFIRMATION"))
+    elif mutating and not effective_paths:
         reasons.append("mutating action has no typed or inferable target paths")
         decision = _stricter(decision, pol.get("missing_paths_decision", "REQUIRE_CONFIRMATION"))
     relative_targets = [
@@ -199,6 +216,7 @@ def preflight(spec: ActionSpec, policy: Optional[Dict[str, Any]] = None,
         "action": spec.to_dict(),
         "assessed_paths": effective_paths,
         "rollback_plan": rollback_plan,
+        "effect": effect,
         "policy": policy_trace,
         "context": context_trace,
         "ts": time.time(),
@@ -211,6 +229,7 @@ def preflight(spec: ActionSpec, policy: Optional[Dict[str, Any]] = None,
             "decision": decision,
             "severity": top_sev,
             "reasons": reasons,
+            "effect": effect,
             "policy": policy_trace,
             "context": context_trace,
             "rollback_plan": rollback_plan,

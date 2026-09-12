@@ -29,6 +29,9 @@ def _allow(_self, _spec):
     policy["severity_decision"] = {
         key: "ALLOW" for key in policy["severity_decision"]
     }
+    policy["effect_decision"] = {
+        key: "ALLOW" for key in policy["effect_decision"]
+    }
     return policy, None
 
 

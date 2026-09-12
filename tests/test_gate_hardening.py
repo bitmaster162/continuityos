@@ -833,10 +833,16 @@ def _bound_execution_result(ledger_path, command, args, rollback_plan=None):
         "agent": "test",
         "meta": {},
     }
+    from continuityos.gate.effects import classify_effects
+    spec = ActionSpec(
+        tool=action["tool"], command=action["command"], args=action["args"],
+        paths=action["paths"], cwd=action["cwd"], agent=action["agent"], meta=action["meta"],
+    )
     with Ledger(str(ledger_path)) as ledger:
         preflight_hash = ledger.append("preflight", {
             "action": action,
             "decision": "ALLOW",
+            "effect": classify_effects(spec),
             "rollback_plan": rollback_plan,
         })
     return {

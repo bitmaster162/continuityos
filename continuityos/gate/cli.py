@@ -461,6 +461,23 @@ def _execution_binding_error(cmd: str, mode: str, result, argv, execution_cwd=No
                 return "typed action differs from the ledger-bound preflight action"
             if payload.get("rollback_plan") != (result.get("rollback_plan") or {}):
                 return "rollback plan differs from the ledger-bound preflight plan"
+            effect = payload.get("effect")
+            if effect is None:
+                row = ledger._attempt_row(preflight_hash)
+                attempt = None if row is None else ledger._validate_attempt_row(row)
+                if attempt is None or attempt.get("phase") != "TERMINAL":
+                    return "preflight has no effect classification; fresh preflight required"
+            else:
+                from .effects import classify_effects
+                expected_effect = classify_effects(ActionSpec(
+                    tool=action["tool"], command=action["command"],
+                    args=list(action.get("args") or []),
+                    paths=list(action.get("paths") or []),
+                    cwd=action["cwd"], agent=action.get("agent", "unknown"),
+                    meta=dict(action.get("meta") or {}),
+                ))
+                if effect != expected_effect:
+                    return "ledger-bound effect classification does not match exact action"
             ledger_decision = payload.get("decision")
             if result.get("decision") != ledger_decision:
                 return "result decision differs from the ledger-bound preflight decision"

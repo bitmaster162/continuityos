@@ -12,6 +12,7 @@ import threading
 import time
 
 from continuityos.gate import cli
+from continuityos.gate.effects import EFFECT_CLASSES, EFFECT_SCHEMA, classify_effects
 from continuityos.gate.ledger import Ledger
 from continuityos.gate.spec import ActionSpec
 from continuityos.gate.witness import WitnessAuthority
@@ -224,6 +225,32 @@ class GateBroker:
             return None, "broker_action_sha256 marker mismatch"
         if not isinstance(payload.get("rollback_plan"), dict):
             return None, "rollback_plan not dict"
+        effect = payload.get("effect")
+        if effect is not None:
+            if not isinstance(effect, dict):
+                return None, "effect not dict"
+            if effect.get("schema") != EFFECT_SCHEMA:
+                return None, "effect schema mismatch"
+            classes = effect.get("classes")
+            basis = effect.get("basis")
+            remote = effect.get("remote_or_irreversible")
+            if (
+                not isinstance(classes, list)
+                or not classes
+                or any(value not in EFFECT_CLASSES for value in classes)
+                or len(set(classes)) != len(classes)
+                or not isinstance(basis, list)
+                or any(not isinstance(value, str) for value in basis)
+                or not isinstance(remote, bool)
+            ):
+                return None, "effect classification invalid"
+            recomputed = classify_effects(ActionSpec(
+                tool=action["tool"], command=action["command"],
+                args=list(action["args"]), paths=list(action["paths"]),
+                cwd=action["cwd"], agent=action["agent"], meta=dict(meta),
+            ))
+            if effect != recomputed:
+                return None, "effect classification mismatch"
         decision = payload.get("decision")
         if not isinstance(decision, str):
             return None, "decision not str"

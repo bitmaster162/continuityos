@@ -35,6 +35,10 @@ def _policy(path, decision="ALLOW"):
             "medium": decision,
             "low": decision,
         },
+        "effect_decision": {
+            "DYNAMIC_CODE": decision,
+            "UNKNOWN_EXEC": decision,
+        },
     }
     path.write_text(json.dumps(body), encoding="utf-8")
 
