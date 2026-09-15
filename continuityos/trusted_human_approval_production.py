@@ -15,14 +15,25 @@ from .trusted_human_approval import HumanApprovalResult, verify_and_consume_huma
 DEFAULT_BUSY_TIMEOUT_MS = 30_000
 
 
+def _production_replay_path(value: str | Path) -> Path:
+    raw = str(value)
+    if not raw or raw == ":memory:":
+        raise ValueError("production human approval: file-backed path required")
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        raise ValueError("production human approval: absolute replay_db_path required")
+    return path.resolve()
+
+
 def build_production_replay_guard(
     *,
     replay_db_path: str | Path,
     busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
 ) -> SQLiteApprovalReplayGuard:
     """Build the only replay backend accepted by the R19 production binding."""
+    replay_path = _production_replay_path(replay_db_path)
     return SQLiteApprovalReplayGuard(
-        replay_db_path,
+        replay_path,
         busy_timeout_ms=busy_timeout_ms,
     )
 

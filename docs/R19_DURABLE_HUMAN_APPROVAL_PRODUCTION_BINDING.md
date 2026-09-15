@@ -8,14 +8,14 @@ verifier.
 ## Production path
 
 `verify_and_consume_human_approval_production(...)` requires an explicit
-`replay_db_path`. It creates `SQLiteApprovalReplayGuard` itself and then calls
+`replay_db_path`, and that path must be absolute so replay-store identity cannot drift with process CWD. It creates `SQLiteApprovalReplayGuard` itself and then calls
 R17 `verify_and_consume_human_approval(...)` with that guard.
 
 The production function deliberately does **not** accept a `replay_guard`
 parameter. A caller therefore cannot select `InMemoryApprovalReplayGuard`
 through this production API.
 
-There is no environment-variable lookup, temporary-file default, implicit
+There is no environment-variable lookup, temporary-file default, relative-path acceptance, implicit
 `:memory:` database, network backend, or hidden fallback.
 
 ## Failure model
@@ -44,7 +44,7 @@ claim SQLite as distributed replay protection.
 ## Acceptance
 
 R19 tests require the production API to have no replay-guard override and no
-implicit replay path, prove persistence across fresh binding instances, prove
+implicit or relative replay path, prove persistence across fresh binding instances, prove
 storage failure stops before verifier delegation, and statically reject new
 network/execution/fallback surfaces. The existing R17 and R18 suites continue
 to cover cryptographic approval validation and SQLite race/durability behavior.

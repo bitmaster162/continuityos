@@ -92,7 +92,7 @@ def test_storage_failure_stops_before_verifier(monkeypatch, tmp_path: Path):
     assert called is False
 
 
-def test_production_api_has_no_replay_guard_override_or_implicit_path():
+def test_production_api_has_no_replay_guard_override_or_implicit_path(tmp_path: Path):
     signature = inspect.signature(production.verify_and_consume_human_approval_production)
     assert "replay_guard" not in signature.parameters
     replay_path = signature.parameters["replay_db_path"]
@@ -100,9 +100,11 @@ def test_production_api_has_no_replay_guard_override_or_implicit_path():
 
     with pytest.raises(ValueError, match="file-backed path required"):
         production.build_production_replay_guard(replay_db_path=":memory:")
+    with pytest.raises(ValueError, match="absolute replay_db_path required"):
+        production.build_production_replay_guard(replay_db_path="relative/replay.sqlite3")
     with pytest.raises(ValueError, match="invalid busy_timeout_ms"):
         production.build_production_replay_guard(
-            replay_db_path="replay.sqlite3",
+            replay_db_path=tmp_path / "replay.sqlite3",
             busy_timeout_ms=0,
         )
 

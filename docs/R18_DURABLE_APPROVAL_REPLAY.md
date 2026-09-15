@@ -42,6 +42,6 @@ SQLite guard as cross-node replay protection.
 
 R18 intentionally defines storage semantics only. R19 binds the authenticated
 R17 approval verifier to `SQLiteApprovalReplayGuard` through an explicit
-operator-provided file path. The R19 production API does not accept a caller-
+operator-provided absolute file path. The R19 production API does not accept a caller-
 supplied replay guard and therefore cannot silently fall back to the R17
 in-memory test/dev primitive.
