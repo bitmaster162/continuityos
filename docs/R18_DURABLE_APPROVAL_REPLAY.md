@@ -37,3 +37,11 @@ R18 is a one-host durable baseline. SQLite file locking is not a distributed
 consensus protocol. Multi-node deployments must provide a shared durable CAS
 implementation of the same `consume_once` contract and must not claim R18's
 SQLite guard as cross-node replay protection.
+
+## Production binding
+
+R18 intentionally defines storage semantics only. R19 binds the authenticated
+R17 approval verifier to `SQLiteApprovalReplayGuard` through an explicit
+operator-provided file path. The R19 production API does not accept a caller-
+supplied replay guard and therefore cannot silently fall back to the R17
+in-memory test/dev primitive.
