@@ -30,7 +30,7 @@ Requires a valid PLAN receipt and a distinct coder session. Binds exact candidat
 
 ### TEST
 
-Requires a valid CODE receipt and a distinct tester session. Tests must pass. Behavior-preserving work requires `PARITY_PASS`; an intentional behavior change requires a plan-bound expected delta and `EXPECTED_DELTA_PASS`.
+Requires a valid CODE receipt and a distinct tester session. Tests must pass. Behavior-preserving work requires `PARITY_PASS` and no observed-delta digest. An intentional behavior change requires `EXPECTED_DELTA_PASS` plus an `observed_delta_sha256` that exactly equals the plan-bound `expected_delta_sha256`.
 
 ### REVIEW
 
@@ -52,11 +52,11 @@ Machine actor identity binds:
 - session ID
 - route ID
 
-Declared and attested model IDs must match. Planner, coder, tester and reviewer sessions must be distinct. A model label alone is not runtime identity.
+Declared and caller-supplied runtime model IDs must match. This pure slice does not cryptographically attest model runtime identity; a future trusted attestation boundary must bind that evidence. Planner, coder, tester and reviewer session IDs must be distinct, but this slice does not prove that those session IDs came from different physical operators.
 
 ## Drift behavior
 
-Receipts are sealed over canonical JSON. Downstream progression fails on receipt tampering. The Human gate fails if baseline commit, candidate commit or candidate tree differs from the reviewed values. `require_merge_eligible` repeats the exact-revision check immediately before any separately implemented merge boundary.
+Receipts are content-addressed with SHA-256 over canonical JSON. This detects unresealed mutation but is not an authenticity signature: a future trust boundary must provide authenticated custody before treating receipts as cross-boundary evidence. The Human gate request fails if baseline commit, candidate commit or candidate tree differs from the reviewed values. `require_human_merge_gate_request_current` repeats the exact-revision check immediately before handoff to the separately implemented trusted Human approval boundary.
 
 Any future integration that changes work-order generation, policy version, scope, acceptance tests, parity contract, candidate bytes, actor/session identity, route, or effect ceiling must invalidate downstream receipts and restart from the earliest affected stage.
 
@@ -93,3 +93,7 @@ No function in this module can mint Human approval or merge authority. A future 
 ## Non-goals
 
 R16 R1 does not wire this state machine into GateBroker, MCP execution, GitHub merge APIs, CI orchestration, TPM custody, deployment or release automation. It also intentionally does not implement authenticated Human approval. Those integrations require their own exact-candidate review and authority gates after this pure layer passes natural CI and independent review.
+
+## Trust notes
+
+`attempt_nonce` is receipt-bound entropy supplied by the caller; this pure slice does not maintain a replay registry. Cross-boundary replay prevention and authenticated receipt custody belong to the future trusted approval/attestation boundary. Human-gate requests carry test-suite, parity, observed-delta and review evidence and revalidate those invariants before handoff.

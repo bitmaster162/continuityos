@@ -21,7 +21,6 @@ DIFF = "8" * 64
 TEST_SUITE = "9" * 64
 PARITY_RESULT = "a" * 64
 REVIEW = "b" * 64
-APPROVAL = "c" * 64
 EXPECTED_DELTA = "d" * 64
 REPOSITORY = "bitmaster162/continuityos"
 
@@ -80,6 +79,7 @@ def make_tested(code_receipt: dict | None = None, *, tester_actor: dict[str, str
         test_suite_sha256=TEST_SUITE,
         parity_result=parity_result,
         parity_result_sha256=PARITY_RESULT,
+        observed_delta_sha256=(EXPECTED_DELTA if source["parity_mode"] == "INTENTIONAL_CHANGE" else None),
         attempt_nonce="nonce-test",
     )
 
@@ -167,6 +167,7 @@ def test_test_failure_never_emits_test_pass_receipt():
             test_suite_sha256=TEST_SUITE,
             parity_result="PARITY_PASS",
             parity_result_sha256=PARITY_RESULT,
+            observed_delta_sha256=None,
             attempt_nonce="nonce-test-fail",
         )
 
@@ -180,7 +181,37 @@ def test_preserve_mode_requires_parity_pass():
             test_suite_sha256=TEST_SUITE,
             parity_result="EXPECTED_DELTA_PASS",
             parity_result_sha256=PARITY_RESULT,
+            observed_delta_sha256=None,
             attempt_nonce="nonce-parity-wrong",
+        )
+
+
+def test_intentional_change_requires_observed_delta_to_match_plan():
+    code = coded(plan(parity_mode="INTENTIONAL_CHANGE"))
+    with pytest.raises(ValueError, match="observed delta does not match plan-bound expected delta"):
+        gdp.build_test_receipt(
+            code,
+            actor=actor("tester"),
+            tests_passed=True,
+            test_suite_sha256=TEST_SUITE,
+            parity_result="EXPECTED_DELTA_PASS",
+            parity_result_sha256=PARITY_RESULT,
+            observed_delta_sha256="e" * 64,
+            attempt_nonce="nonce-delta-mismatch",
+        )
+
+
+def test_preserve_mode_rejects_observed_delta():
+    with pytest.raises(ValueError, match="preserve mode cannot report observed delta"):
+        gdp.build_test_receipt(
+            coded(),
+            actor=actor("tester"),
+            tests_passed=True,
+            test_suite_sha256=TEST_SUITE,
+            parity_result="PARITY_PASS",
+            parity_result_sha256=PARITY_RESULT,
+            observed_delta_sha256=EXPECTED_DELTA,
+            attempt_nonce="nonce-unexpected-delta",
         )
 
 
@@ -193,6 +224,13 @@ def test_intentional_change_is_bound_but_waits_for_trusted_human_approval():
 
     assert intentional_plan["expected_delta_sha256"] == EXPECTED_DELTA
     assert test["parity_result"] == "EXPECTED_DELTA_PASS"
+    assert test["observed_delta_sha256"] == EXPECTED_DELTA
+    assert request["expected_delta_sha256"] == EXPECTED_DELTA
+    assert request["observed_delta_sha256"] == EXPECTED_DELTA
+    assert request["test_suite_sha256"] == TEST_SUITE
+    assert request["parity_result"] == "EXPECTED_DELTA_PASS"
+    assert request["parity_result_sha256"] == PARITY_RESULT
+    assert request["verdict"] == "PASS"
     assert request["human_delta_approval_required"] is True
     assert request["authenticated_human_approval_present"] is False
     assert request["can_merge"] is False
@@ -244,6 +282,27 @@ def test_base_head_and_tree_drift_fail_before_human_gate_request():
             review, current_base_sha=BASE_SHA, current_head_sha=CANDIDATE_SHA,
             current_tree_sha="f" * 40, attempt_nonce="nonce-tree-drift"
         )
+
+
+def test_human_gate_request_revalidates_parity_and_delta_evidence():
+    request = merge_request(reviewed(make_tested(coded(plan(parity_mode="INTENTIONAL_CHANGE")))))
+    request["observed_delta_sha256"] = "e" * 64
+    unsigned = {key: item for key, item in request.items() if key != "receipt_id"}
+    request["receipt_id"] = "gdp_" + hashlib.sha256(gdp._canonical_bytes(unsigned)).hexdigest()
+    with pytest.raises(ValueError, match="Human gate delta evidence mismatch"):
+        gdp.require_human_merge_gate_request_current(
+            request,
+            repository=REPOSITORY,
+            current_base_sha=BASE_SHA,
+            current_head_sha=CANDIDATE_SHA,
+            current_tree_sha=CANDIDATE_TREE,
+        )
+
+
+def test_authority_defaults_are_immutable_values_not_a_mutable_dict():
+    assert isinstance(gdp._SAFE_AUTHORITY_ITEMS, tuple)
+    assert dict(gdp._SAFE_AUTHORITY_ITEMS)["can_merge"] is False
+    assert dict(gdp._SAFE_AUTHORITY_ITEMS)["can_execute"] is False
 
 
 def test_drift_after_human_gate_request_invalidates_handoff():

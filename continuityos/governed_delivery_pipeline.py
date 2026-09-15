@@ -28,14 +28,18 @@ _ALLOWED_EFFECT_CEILINGS = {
 }
 _ALLOWED_PARITY_MODES = {"PRESERVE", "INTENTIONAL_CHANGE"}
 _ALLOWED_PARITY_RESULTS = {"PARITY_PASS", "EXPECTED_DELTA_PASS"}
-_SAFE_AUTHORITY = {
-    "execution_authority": "NONE",
-    "can_execute": False,
-    "deploy_permission": "DENY",
-    "can_trade": False,
-    "capital_permission": "DENY",
-    "can_merge": False,
-}
+_SAFE_AUTHORITY_ITEMS = (
+    ("execution_authority", "NONE"),
+    ("can_execute", False),
+    ("deploy_permission", "DENY"),
+    ("can_trade", False),
+    ("capital_permission", "DENY"),
+    ("can_merge", False),
+)
+
+
+def _safe_authority() -> dict[str, Any]:
+    return dict(_SAFE_AUTHORITY_ITEMS)
 
 
 def _plain_snapshot(value: Any, *, depth: int = 0) -> Any:
@@ -108,7 +112,7 @@ def _seal(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _require_safe_authority(receipt: Mapping[str, Any]) -> None:
-    for key, expected in _SAFE_AUTHORITY.items():
+    for key, expected in _SAFE_AUTHORITY_ITEMS:
         if receipt.get(key) != expected:
             raise ValueError(f"governed delivery: unsafe authority field {key}")
 
@@ -271,7 +275,7 @@ def build_plan_receipt(
             "parity_mode": mode,
             "expected_delta_sha256": expected_delta,
             "effect_ceiling": ceiling,
-            **_SAFE_AUTHORITY,
+            **_safe_authority(),
             "can_merge": False,
         }
     )
@@ -306,7 +310,7 @@ def build_code_receipt(
             "candidate_sha": _git_sha("candidate_sha", candidate_sha),
             "candidate_tree_sha": _git_sha("candidate_tree_sha", candidate_tree_sha),
             "diff_sha256": _sha256("diff_sha256", diff_sha256),
-            **_SAFE_AUTHORITY,
+            **_safe_authority(),
             "can_merge": False,
         }
     )
@@ -320,6 +324,7 @@ def build_test_receipt(
     test_suite_sha256: str,
     parity_result: str,
     parity_result_sha256: str,
+    observed_delta_sha256: str | None,
     attempt_nonce: str,
 ) -> dict[str, Any]:
     code = _require_receipt(code_receipt, stage="CODE")
@@ -339,6 +344,14 @@ def build_test_receipt(
     )
     if parity != expected:
         raise ValueError("governed delivery: parity requirement not satisfied")
+    if code["parity_mode"] == "PRESERVE":
+        if observed_delta_sha256 is not None:
+            raise ValueError("governed delivery: preserve mode cannot report observed delta")
+        observed_delta = None
+    else:
+        observed_delta = _sha256("observed_delta_sha256", observed_delta_sha256)
+        if observed_delta != code["expected_delta_sha256"]:
+            raise ValueError("governed delivery: observed delta does not match plan-bound expected delta")
 
     return _seal(
         {
@@ -361,7 +374,8 @@ def build_test_receipt(
             "parity_result_sha256": _sha256(
                 "parity_result_sha256", parity_result_sha256
             ),
-            **_SAFE_AUTHORITY,
+            "observed_delta_sha256": observed_delta,
+            **_safe_authority(),
             "can_merge": False,
         }
     )
@@ -402,9 +416,10 @@ def build_review_receipt(
             "test_suite_sha256": tested["test_suite_sha256"],
             "parity_result": tested["parity_result"],
             "parity_result_sha256": tested["parity_result_sha256"],
+            "observed_delta_sha256": tested["observed_delta_sha256"],
             "verdict": "PASS",
             "review_sha256": _sha256("review_sha256", review_sha256),
-            **_SAFE_AUTHORITY,
+            **_safe_authority(),
             "can_merge": False,
         }
     )
@@ -446,11 +461,16 @@ def build_human_merge_gate_request(
             "candidate_sha": review["candidate_sha"],
             "candidate_tree_sha": review["candidate_tree_sha"],
             "diff_sha256": review["diff_sha256"],
+            "test_suite_sha256": review["test_suite_sha256"],
+            "parity_result": review["parity_result"],
+            "parity_result_sha256": review["parity_result_sha256"],
+            "observed_delta_sha256": review["observed_delta_sha256"],
+            "verdict": review["verdict"],
             "review_sha256": review["review_sha256"],
             "human_delta_approval_required": review["parity_mode"] == "INTENTIONAL_CHANGE",
             "authenticated_human_approval_present": False,
             "approval_boundary": "TRUSTED_EXTERNAL_HUMAN_APPROVAL_REQUIRED",
-            **_SAFE_AUTHORITY,
+            **_safe_authority(),
         }
     )
 
@@ -471,6 +491,30 @@ def require_human_merge_gate_request_current(
         raise ValueError("governed delivery: pure layer cannot contain Human approval")
     if request.get("approval_boundary") != "TRUSTED_EXTERNAL_HUMAN_APPROVAL_REQUIRED":
         raise ValueError("governed delivery: Human approval boundary mismatch")
+    if request.get("verdict") != "PASS":
+        raise ValueError("governed delivery: review verdict missing from Human gate request")
+    _sha256("test_suite_sha256", request.get("test_suite_sha256"))
+    _sha256("parity_result_sha256", request.get("parity_result_sha256"))
+    parity_mode = request.get("parity_mode")
+    parity_result = request.get("parity_result")
+    if parity_mode == "PRESERVE":
+        if parity_result != "PARITY_PASS":
+            raise ValueError("governed delivery: preserve parity evidence mismatch")
+        if request.get("expected_delta_sha256") is not None or request.get("observed_delta_sha256") is not None:
+            raise ValueError("governed delivery: preserve request contains delta evidence")
+        if request.get("human_delta_approval_required") is not False:
+            raise ValueError("governed delivery: preserve request cannot require delta approval")
+    elif parity_mode == "INTENTIONAL_CHANGE":
+        if parity_result != "EXPECTED_DELTA_PASS":
+            raise ValueError("governed delivery: intentional parity evidence mismatch")
+        expected_delta = _sha256("expected_delta_sha256", request.get("expected_delta_sha256"))
+        observed_delta = _sha256("observed_delta_sha256", request.get("observed_delta_sha256"))
+        if observed_delta != expected_delta:
+            raise ValueError("governed delivery: Human gate delta evidence mismatch")
+        if request.get("human_delta_approval_required") is not True:
+            raise ValueError("governed delivery: intentional change must require Human delta approval")
+    else:
+        raise ValueError("governed delivery: unsupported parity mode in Human gate request")
     if request["repository"] != _string("repository", repository, maximum=256):
         raise ValueError("governed delivery: repository mismatch")
     if request["baseline_sha"] != _git_sha("current_base_sha", current_base_sha):
