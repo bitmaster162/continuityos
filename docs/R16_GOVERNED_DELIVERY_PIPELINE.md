@@ -1,0 +1,100 @@
+# R16 Governed Delivery Pipeline
+
+Status: candidate / source-and-test only
+
+Normative parent: `CORE_V6_4_GOVERNED_DELIVERY_RC1`, extending CORE v6.3.4 RC2.
+
+Exact starting protected baseline for this R16 candidate:
+
+- repository: `bitmaster162/continuityos`
+- master commit: `ac6e976dedd6a6c106c1d11db26e42935d0a0159`
+- master tree: `83401a6f91978bfec25175fc4a21b93e69e85323`
+
+## Purpose
+
+R16 makes the software-delivery control flow explicit and machine-checkable without expanding execution authority:
+
+`PLAN -> CODE -> TEST -> REVIEW -> HUMAN_MERGE_GATE`
+
+The first slice is a deterministic receipt/validator layer only. It does not execute commands, call providers, access the network, mutate files at runtime, merge a pull request, deploy software, provision hardware, handle secrets, trade, or move capital.
+
+## Stage guarantees
+
+### PLAN
+
+Binds the work order generation, repository, exact baseline commit/tree, scope digest, acceptance-test digest, parity specification, effect ceiling, actor identity, route identity and nonce.
+
+### CODE
+
+Requires a valid PLAN receipt and a distinct coder session. Binds exact candidate commit/tree and diff digest. One-writer remains a higher-level physical worktree invariant.
+
+### TEST
+
+Requires a valid CODE receipt and a distinct tester session. Tests must pass. Behavior-preserving work requires `PARITY_PASS`; an intentional behavior change requires a plan-bound expected delta and `EXPECTED_DELTA_PASS`.
+
+### REVIEW
+
+Requires a valid TEST receipt and a distinct reviewer session. The first R16 slice emits merge-eligible review evidence only for `PASS`. `REVISE` and `REJECT` fail closed.
+
+### HUMAN_MERGE_GATE
+
+Requires REVIEW PASS plus fresh exact base/head/tree equality. It stores only a digest of the Human approval token. For intentional behavior change the Human must explicitly approve the planned delta.
+
+The gate produces `MERGE_ELIGIBLE_EXACT_CANDIDATE_ONLY`. This is eligibility evidence, not a merge operation.
+
+## Identity boundary
+
+Machine actor identity binds:
+
+- provider
+- declared model ID
+- attested runtime model ID
+- session ID
+- route ID
+
+Declared and attested model IDs must match. Planner, coder, tester and reviewer sessions must be distinct. A model label alone is not runtime identity.
+
+## Drift behavior
+
+Receipts are sealed over canonical JSON. Downstream progression fails on receipt tampering. The Human gate fails if baseline commit, candidate commit or candidate tree differs from the reviewed values. `require_merge_eligible` repeats the exact-revision check immediately before any separately implemented merge boundary.
+
+Any future integration that changes work-order generation, policy version, scope, acceptance tests, parity contract, candidate bytes, actor/session identity, route, or effect ceiling must invalidate downstream receipts and restart from the earliest affected stage.
+
+## Authority boundary
+
+All receipts preserve:
+
+- `execution_authority=NONE`
+- `can_execute=false`
+- `deploy_permission=DENY`
+- `can_trade=false`
+- `capital_permission=DENY`
+
+Pre-Human stages also preserve `can_merge=false`.
+
+The Human gate may set only:
+
+- `can_merge=true`
+- `merge_authority=EXACT_CANDIDATE_ONLY`
+
+That state is not deploy, release, branch-deletion, CI-rerun, runtime, provisioning, trading or capital authority.
+
+## Acceptance targets for this slice
+
+- deterministic receipt IDs
+- receipt tamper detection
+- strict stage ordering
+- model/runtime identity mismatch rejection
+- planner/coder/tester/reviewer session separation
+- test failure rejection
+- parity mismatch rejection
+- intentional-delta Human approval requirement
+- review PASS requirement
+- base/head/tree drift rejection before and after Human gate
+- raw Human approval token absent from API and receipts
+- stdlib-only capability surface
+- existing no-execution/no-deploy/no-trading/no-capital defaults preserved
+
+## Non-goals
+
+R16 R1 does not yet wire this state machine into GateBroker, MCP execution, GitHub merge APIs, CI orchestration, TPM custody, deployment or release automation. Those integrations require their own exact-candidate review and authority gates after this pure layer passes natural CI and independent review.
