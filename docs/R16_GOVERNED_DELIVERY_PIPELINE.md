@@ -14,7 +14,7 @@ Exact starting protected baseline for this R16 candidate:
 
 R16 makes the software-delivery control flow explicit and machine-checkable without expanding execution authority:
 
-`PLAN -> CODE -> TEST -> REVIEW -> HUMAN_MERGE_GATE`
+`PLAN -> CODE -> TEST -> REVIEW -> HUMAN_MERGE_GATE_REQUEST`
 
 The first slice is a deterministic receipt/validator layer only. It does not execute commands, call providers, access the network, mutate files at runtime, merge a pull request, deploy software, provision hardware, handle secrets, trade, or move capital.
 
@@ -36,11 +36,11 @@ Requires a valid CODE receipt and a distinct tester session. Tests must pass. Be
 
 Requires a valid TEST receipt and a distinct reviewer session. The first R16 slice emits merge-eligible review evidence only for `PASS`. `REVISE` and `REJECT` fail closed.
 
-### HUMAN_MERGE_GATE
+### HUMAN_MERGE_GATE_REQUEST
 
-Requires REVIEW PASS plus fresh exact base/head/tree equality. It stores only a digest of the Human approval token. For intentional behavior change the Human must explicitly approve the planned delta.
+Requires REVIEW PASS plus fresh exact base/head/tree equality. This pure layer emits only an exact-candidate request for a separate trusted Human approval boundary. It does not accept `human_id`, raw approval tokens, token digests, or caller-supplied approval booleans.
 
-The gate produces `MERGE_ELIGIBLE_EXACT_CANDIDATE_ONLY`. This is eligibility evidence, not a merge operation.
+The request produces `AWAITING_HUMAN_MERGE_GATE`, always preserves `can_merge=false`, and records whether an intentional behavior delta requires explicit Human approval. Actual merge eligibility must be minted by a later authenticated Human-approval boundary that is outside this R16 slice.
 
 ## Identity boundary
 
@@ -70,14 +70,9 @@ All receipts preserve:
 - `can_trade=false`
 - `capital_permission=DENY`
 
-Pre-Human stages also preserve `can_merge=false`.
+All stages in this R16 slice preserve `can_merge=false`.
 
-The Human gate may set only:
-
-- `can_merge=true`
-- `merge_authority=EXACT_CANDIDATE_ONLY`
-
-That state is not deploy, release, branch-deletion, CI-rerun, runtime, provisioning, trading or capital authority.
+No function in this module can mint Human approval or merge authority. A future trusted approval boundary must authenticate the Human decision and re-bind it to the exact request/base/head/tree before any merge can become eligible.
 
 ## Acceptance targets for this slice
 
@@ -88,13 +83,13 @@ That state is not deploy, release, branch-deletion, CI-rerun, runtime, provision
 - planner/coder/tester/reviewer session separation
 - test failure rejection
 - parity mismatch rejection
-- intentional-delta Human approval requirement
+- intentional-delta Human-approval requirement is carried forward as an explicit external-gate requirement
 - review PASS requirement
 - base/head/tree drift rejection before and after Human gate
-- raw Human approval token absent from API and receipts
+- no Human approval minting surface; no human ID/token/token-digest inputs in this pure layer
 - stdlib-only capability surface
 - existing no-execution/no-deploy/no-trading/no-capital defaults preserved
 
 ## Non-goals
 
-R16 R1 does not yet wire this state machine into GateBroker, MCP execution, GitHub merge APIs, CI orchestration, TPM custody, deployment or release automation. Those integrations require their own exact-candidate review and authority gates after this pure layer passes natural CI and independent review.
+R16 R1 does not wire this state machine into GateBroker, MCP execution, GitHub merge APIs, CI orchestration, TPM custody, deployment or release automation. It also intentionally does not implement authenticated Human approval. Those integrations require their own exact-candidate review and authority gates after this pure layer passes natural CI and independent review.

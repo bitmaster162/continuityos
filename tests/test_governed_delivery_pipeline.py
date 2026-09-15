@@ -94,32 +94,30 @@ def reviewed(test_receipt: dict | None = None, *, reviewer_actor: dict[str, str]
     )
 
 
-def gated(review_receipt: dict | None = None, *, approve_expected_delta: bool = False) -> dict:
-    return gdp.build_human_merge_gate_receipt(
+def merge_request(review_receipt: dict | None = None) -> dict:
+    return gdp.build_human_merge_gate_request(
         review_receipt or reviewed(),
-        human_id="human:robert",
-        approval_token_sha256=APPROVAL,
         current_base_sha=BASE_SHA,
         current_head_sha=CANDIDATE_SHA,
         current_tree_sha=CANDIDATE_TREE,
-        approve_expected_delta=approve_expected_delta,
-        attempt_nonce="nonce-human",
+        attempt_nonce="nonce-human-request",
     )
 
 
-def test_full_preserve_pipeline_reaches_exact_candidate_merge_eligibility_only():
-    gate = gated()
-    validated = gdp.require_merge_eligible(
-        gate,
+def test_full_preserve_pipeline_stops_at_authenticated_human_boundary():
+    request = merge_request()
+    validated = gdp.require_human_merge_gate_request_current(
+        request,
         repository=REPOSITORY,
         current_base_sha=BASE_SHA,
         current_head_sha=CANDIDATE_SHA,
         current_tree_sha=CANDIDATE_TREE,
     )
 
-    assert validated["status"] == "MERGE_ELIGIBLE_EXACT_CANDIDATE_ONLY"
-    assert validated["merge_authority"] == "EXACT_CANDIDATE_ONLY"
-    assert validated["can_merge"] is True
+    assert validated["status"] == "AWAITING_HUMAN_MERGE_GATE"
+    assert validated["authenticated_human_approval_present"] is False
+    assert validated["approval_boundary"] == "TRUSTED_EXTERNAL_HUMAN_APPROVAL_REQUIRED"
+    assert validated["can_merge"] is False
     assert validated["execution_authority"] == "NONE"
     assert validated["can_execute"] is False
     assert validated["deploy_permission"] == "DENY"
@@ -186,29 +184,21 @@ def test_preserve_mode_requires_parity_pass():
         )
 
 
-def test_intentional_change_requires_bound_delta_and_explicit_human_approval():
+def test_intentional_change_is_bound_but_waits_for_trusted_human_approval():
     intentional_plan = plan(parity_mode="INTENTIONAL_CHANGE")
     code = coded(intentional_plan)
     test = make_tested(code)
     review = reviewed(test)
+    request = merge_request(review)
 
     assert intentional_plan["expected_delta_sha256"] == EXPECTED_DELTA
     assert test["parity_result"] == "EXPECTED_DELTA_PASS"
-
-    with pytest.raises(ValueError, match="intentional delta lacks Human approval"):
-        gated(review, approve_expected_delta=False)
-
-    gate = gated(review, approve_expected_delta=True)
-    assert gate["approve_expected_delta"] is True
-    assert gate["status"] == "MERGE_ELIGIBLE_EXACT_CANDIDATE_ONLY"
+    assert request["human_delta_approval_required"] is True
+    assert request["authenticated_human_approval_present"] is False
+    assert request["can_merge"] is False
 
 
-def test_preserve_mode_rejects_spurious_delta_approval():
-    with pytest.raises(ValueError, match="unexpected delta approval"):
-        gated(approve_expected_delta=True)
-
-
-def test_review_must_pass_before_human_gate():
+def test_review_must_pass_before_human_gate_request():
     with pytest.raises(ValueError, match="review is not merge-eligible"):
         gdp.build_review_receipt(
             make_tested(),
@@ -236,48 +226,28 @@ def test_authority_escalation_tampering_is_detected():
         make_tested(value)
 
 
-def test_base_head_and_tree_drift_fail_before_human_gate():
+def test_base_head_and_tree_drift_fail_before_human_gate_request():
     review = reviewed()
 
     with pytest.raises(ValueError, match="base drift"):
-        gdp.build_human_merge_gate_receipt(
-            review,
-            human_id="human:robert",
-            approval_token_sha256=APPROVAL,
-            current_base_sha="f" * 40,
-            current_head_sha=CANDIDATE_SHA,
-            current_tree_sha=CANDIDATE_TREE,
-            approve_expected_delta=False,
-            attempt_nonce="nonce-human-base-drift",
+        gdp.build_human_merge_gate_request(
+            review, current_base_sha="f" * 40, current_head_sha=CANDIDATE_SHA,
+            current_tree_sha=CANDIDATE_TREE, attempt_nonce="nonce-base-drift"
         )
-
     with pytest.raises(ValueError, match="candidate drift"):
-        gdp.build_human_merge_gate_receipt(
-            review,
-            human_id="human:robert",
-            approval_token_sha256=APPROVAL,
-            current_base_sha=BASE_SHA,
-            current_head_sha="f" * 40,
-            current_tree_sha=CANDIDATE_TREE,
-            approve_expected_delta=False,
-            attempt_nonce="nonce-human-head-drift",
+        gdp.build_human_merge_gate_request(
+            review, current_base_sha=BASE_SHA, current_head_sha="f" * 40,
+            current_tree_sha=CANDIDATE_TREE, attempt_nonce="nonce-head-drift"
         )
-
     with pytest.raises(ValueError, match="candidate tree drift"):
-        gdp.build_human_merge_gate_receipt(
-            review,
-            human_id="human:robert",
-            approval_token_sha256=APPROVAL,
-            current_base_sha=BASE_SHA,
-            current_head_sha=CANDIDATE_SHA,
-            current_tree_sha="f" * 40,
-            approve_expected_delta=False,
-            attempt_nonce="nonce-human-tree-drift",
+        gdp.build_human_merge_gate_request(
+            review, current_base_sha=BASE_SHA, current_head_sha=CANDIDATE_SHA,
+            current_tree_sha="f" * 40, attempt_nonce="nonce-tree-drift"
         )
 
 
-def test_drift_after_human_gate_invalidates_merge_eligibility():
-    gate = gated()
+def test_drift_after_human_gate_request_invalidates_handoff():
+    request = merge_request()
     cases = [
         {"current_base_sha": "f" * 40, "current_head_sha": CANDIDATE_SHA, "current_tree_sha": CANDIDATE_TREE, "match": "base drift"},
         {"current_base_sha": BASE_SHA, "current_head_sha": "f" * 40, "current_tree_sha": CANDIDATE_TREE, "match": "candidate drift"},
@@ -285,22 +255,27 @@ def test_drift_after_human_gate_invalidates_merge_eligibility():
     ]
     for case in cases:
         with pytest.raises(ValueError, match=case["match"]):
-            gdp.require_merge_eligible(
-                gate,
-                repository=REPOSITORY,
+            gdp.require_human_merge_gate_request_current(
+                request, repository=REPOSITORY,
                 current_base_sha=case["current_base_sha"],
                 current_head_sha=case["current_head_sha"],
                 current_tree_sha=case["current_tree_sha"],
             )
 
 
-def test_raw_human_approval_token_is_not_part_of_public_api_or_receipt():
-    signature = inspect.signature(gdp.build_human_merge_gate_receipt)
+def test_pure_r16_has_no_human_approval_minting_surface():
+    source = inspect.getsource(gdp)
+    request = merge_request()
+    signature = inspect.signature(gdp.build_human_merge_gate_request)
+
+    assert "human_id" not in signature.parameters
     assert "approval_token" not in signature.parameters
-    assert "approval_token_sha256" in signature.parameters
-    gate = gated()
-    assert "approval_token" not in gate
-    assert gate["approval_token_sha256"] == APPROVAL
+    assert "approval_token_sha256" not in signature.parameters
+    assert "build_human_merge_gate_receipt" not in gdp.__all__
+    assert "require_merge_eligible" not in gdp.__all__
+    assert request["can_merge"] is False
+    assert request["authenticated_human_approval_present"] is False
+    assert '"can_merge": True' not in source
 
 
 def test_module_is_stdlib_only_and_side_effect_free_by_capability():
@@ -330,7 +305,7 @@ def test_module_is_stdlib_only_and_side_effect_free_by_capability():
 
 
 def test_all_pre_human_stages_preserve_no_execution_no_deploy_no_capital_authority():
-    receipts = [plan(), coded(), make_tested(), reviewed()]
+    receipts = [plan(), coded(), make_tested(), reviewed(), merge_request()]
     for value in receipts:
         assert value["execution_authority"] == "NONE"
         assert value["can_execute"] is False

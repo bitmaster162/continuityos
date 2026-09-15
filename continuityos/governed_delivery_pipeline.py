@@ -3,13 +3,13 @@
 This module is intentionally side-effect free. It models and validates the delivery
 pipeline:
 
-    PLAN -> CODE -> TEST -> REVIEW -> HUMAN_MERGE_GATE
+    PLAN -> CODE -> TEST -> REVIEW -> HUMAN_MERGE_GATE_REQUEST
 
 It never executes subprocesses, touches the filesystem or network, mutates providers,
 merges code, deploys software, trades, or grants capital authority.
 
-The Human gate can make one exact reviewed candidate merge-eligible. It does not
-perform the merge and does not grant deployment/runtime authority.
+This pure layer stops before trusted Human approval. It can only emit an exact-candidate
+request for an external authenticated Human merge gate; it cannot mint merge authority.
 """
 from __future__ import annotations
 
@@ -20,8 +20,6 @@ from typing import Any, Mapping
 
 SCHEMA = "continuityos.governed_delivery_pipeline/v1"
 POLICY_VERSION = "CORE_V6_4_RC1"
-MERGE_AUTHORITY = "EXACT_CANDIDATE_ONLY"
-
 _MACHINE_ROLES = ("planner", "coder", "tester", "reviewer")
 _ALLOWED_EFFECT_CEILINGS = {
     "EVIDENCE_ONLY",
@@ -36,6 +34,7 @@ _SAFE_AUTHORITY = {
     "deploy_permission": "DENY",
     "can_trade": False,
     "capital_permission": "DENY",
+    "can_merge": False,
 }
 
 
@@ -411,17 +410,15 @@ def build_review_receipt(
     )
 
 
-def build_human_merge_gate_receipt(
+def build_human_merge_gate_request(
     review_receipt: Mapping[str, Any],
     *,
-    human_id: str,
-    approval_token_sha256: str,
     current_base_sha: str,
     current_head_sha: str,
     current_tree_sha: str,
-    approve_expected_delta: bool,
     attempt_nonce: str,
 ) -> dict[str, Any]:
+    """Create a bounded request for a separate trusted Human approval boundary."""
     review = _require_receipt(review_receipt, stage="REVIEW")
     if review["verdict"] != "PASS":
         raise ValueError("governed delivery: review verdict is not PASS")
@@ -429,85 +426,76 @@ def build_human_merge_gate_receipt(
     head = _git_sha("current_head_sha", current_head_sha)
     tree = _git_sha("current_tree_sha", current_tree_sha)
     if base != review["baseline_sha"]:
-        raise ValueError("governed delivery: base drift before Human gate")
+        raise ValueError("governed delivery: base drift before Human gate request")
     if head != review["candidate_sha"]:
-        raise ValueError("governed delivery: candidate drift before Human gate")
+        raise ValueError("governed delivery: candidate drift before Human gate request")
     if tree != review["candidate_tree_sha"]:
-        raise ValueError("governed delivery: candidate tree drift before Human gate")
-    if type(approve_expected_delta) is not bool:
-        raise ValueError("governed delivery: invalid expected-delta approval")
-    if review["parity_mode"] == "INTENTIONAL_CHANGE" and not approve_expected_delta:
-        raise ValueError("governed delivery: intentional delta lacks Human approval")
-    if review["parity_mode"] == "PRESERVE" and approve_expected_delta:
-        raise ValueError("governed delivery: unexpected delta approval in preserve mode")
+        raise ValueError("governed delivery: candidate tree drift before Human gate request")
 
-    chain = _next_chain(review)
     return _seal(
         {
             "schema": SCHEMA,
             "policy_version": POLICY_VERSION,
-            "stage": "HUMAN_MERGE_GATE",
-            "status": "MERGE_ELIGIBLE_EXACT_CANDIDATE_ONLY",
+            "stage": "HUMAN_MERGE_GATE_REQUEST",
+            "status": "AWAITING_HUMAN_MERGE_GATE",
             "previous_receipt_id": review["receipt_id"],
-            "receipt_chain": chain,
+            "receipt_chain": _next_chain(review),
             "role_sessions": review["role_sessions"],
-            "human_id": _string("human_id", human_id, maximum=256),
-            "approval_token_sha256": _sha256(
-                "approval_token_sha256", approval_token_sha256
-            ),
-            "approve_expected_delta": approve_expected_delta,
             "attempt_nonce": _string("attempt_nonce", attempt_nonce, maximum=256),
             **_shared_from_receipt(review),
             "candidate_sha": review["candidate_sha"],
             "candidate_tree_sha": review["candidate_tree_sha"],
             "diff_sha256": review["diff_sha256"],
             "review_sha256": review["review_sha256"],
-            "merge_authority": MERGE_AUTHORITY,
+            "human_delta_approval_required": review["parity_mode"] == "INTENTIONAL_CHANGE",
+            "authenticated_human_approval_present": False,
+            "approval_boundary": "TRUSTED_EXTERNAL_HUMAN_APPROVAL_REQUIRED",
             **_SAFE_AUTHORITY,
-            "can_merge": True,
         }
     )
 
 
-def require_merge_eligible(
-    gate_receipt: Mapping[str, Any],
+def require_human_merge_gate_request_current(
+    request_receipt: Mapping[str, Any],
     *,
     repository: str,
     current_base_sha: str,
     current_head_sha: str,
     current_tree_sha: str,
 ) -> dict[str, Any]:
-    gate = _require_receipt(gate_receipt, stage="HUMAN_MERGE_GATE")
-    if gate.get("status") != "MERGE_ELIGIBLE_EXACT_CANDIDATE_ONLY":
-        raise ValueError("governed delivery: gate status is not merge-eligible")
-    if gate.get("merge_authority") != MERGE_AUTHORITY or gate.get("can_merge") is not True:
-        raise ValueError("governed delivery: merge authority mismatch")
-    if gate["repository"] != _string("repository", repository, maximum=256):
+    """Revalidate the exact request before handing it to a trusted Human gate."""
+    request = _require_receipt(request_receipt, stage="HUMAN_MERGE_GATE_REQUEST")
+    if request.get("status") != "AWAITING_HUMAN_MERGE_GATE":
+        raise ValueError("governed delivery: Human gate request status mismatch")
+    if request.get("authenticated_human_approval_present") is not False:
+        raise ValueError("governed delivery: pure layer cannot contain Human approval")
+    if request.get("approval_boundary") != "TRUSTED_EXTERNAL_HUMAN_APPROVAL_REQUIRED":
+        raise ValueError("governed delivery: Human approval boundary mismatch")
+    if request["repository"] != _string("repository", repository, maximum=256):
         raise ValueError("governed delivery: repository mismatch")
-    if gate["baseline_sha"] != _git_sha("current_base_sha", current_base_sha):
-        raise ValueError("governed delivery: base drift after Human gate")
-    if gate["candidate_sha"] != _git_sha("current_head_sha", current_head_sha):
-        raise ValueError("governed delivery: candidate drift after Human gate")
-    if gate["candidate_tree_sha"] != _git_sha("current_tree_sha", current_tree_sha):
-        raise ValueError("governed delivery: tree drift after Human gate")
-    if len(gate.get("receipt_chain", [])) != 4:
+    if request["baseline_sha"] != _git_sha("current_base_sha", current_base_sha):
+        raise ValueError("governed delivery: base drift after Human gate request")
+    if request["candidate_sha"] != _git_sha("current_head_sha", current_head_sha):
+        raise ValueError("governed delivery: candidate drift after Human gate request")
+    if request["candidate_tree_sha"] != _git_sha("current_tree_sha", current_tree_sha):
+        raise ValueError("governed delivery: tree drift after Human gate request")
+    if len(request.get("receipt_chain", [])) != 4:
         raise ValueError("governed delivery: incomplete receipt chain")
-    if set(gate.get("role_sessions", {})) != set(_MACHINE_ROLES):
+    if set(request.get("role_sessions", {})) != set(_MACHINE_ROLES):
         raise ValueError("governed delivery: incomplete role/session chain")
-    if len(set(gate["role_sessions"].values())) != len(_MACHINE_ROLES):
+    if len(set(request["role_sessions"].values())) != len(_MACHINE_ROLES):
         raise ValueError("governed delivery: machine session reuse")
-    _require_safe_authority(gate)
-    return gate
+    _require_safe_authority(request)
+    return request
 
 
 __all__ = [
-    "MERGE_AUTHORITY",
     "POLICY_VERSION",
     "SCHEMA",
     "build_plan_receipt",
     "build_code_receipt",
     "build_test_receipt",
     "build_review_receipt",
-    "build_human_merge_gate_receipt",
-    "require_merge_eligible",
+    "build_human_merge_gate_request",
+    "require_human_merge_gate_request_current",
 ]
