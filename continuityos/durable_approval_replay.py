@@ -198,4 +198,3 @@ __all__ = [
     "DurableApprovalReplayError",
     "SQLiteApprovalReplayGuard",
 ]
-
