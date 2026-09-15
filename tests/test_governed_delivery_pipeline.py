@@ -66,7 +66,7 @@ def coded(plan_receipt: dict | None = None, *, coder_actor: dict[str, str] | Non
     )
 
 
-def tested(code_receipt: dict | None = None, *, tester_actor: dict[str, str] | None = None) -> dict:
+def make_tested(code_receipt: dict | None = None, *, tester_actor: dict[str, str] | None = None) -> dict:
     source = code_receipt or coded()
     parity_result = (
         "EXPECTED_DELTA_PASS"
@@ -86,7 +86,7 @@ def tested(code_receipt: dict | None = None, *, tester_actor: dict[str, str] | N
 
 def reviewed(test_receipt: dict | None = None, *, reviewer_actor: dict[str, str] | None = None) -> dict:
     return gdp.build_review_receipt(
-        test_receipt or tested(),
+        test_receipt or make_tested(),
         actor=reviewer_actor or actor("reviewer"),
         verdict="PASS",
         review_sha256=REVIEW,
@@ -128,7 +128,7 @@ def test_full_preserve_pipeline_reaches_exact_candidate_merge_eligibility_only()
     assert validated["receipt_chain"] == [
         plan()["receipt_id"],
         coded()["receipt_id"],
-        tested()["receipt_id"],
+        make_tested()["receipt_id"],
         reviewed()["receipt_id"],
     ]
     assert set(validated["role_sessions"]) == {"planner", "coder", "tester", "reviewer"}
@@ -157,7 +157,7 @@ def test_machine_session_reuse_fails_closed():
 
     code = coded()
     with pytest.raises(ValueError, match="machine session reuse"):
-        tested(code, tester_actor=actor("tester", session="session-coder"))
+        make_tested(code, tester_actor=actor("tester", session="session-coder"))
 
 
 def test_test_failure_never_emits_test_pass_receipt():
@@ -189,7 +189,7 @@ def test_preserve_mode_requires_parity_pass():
 def test_intentional_change_requires_bound_delta_and_explicit_human_approval():
     intentional_plan = plan(parity_mode="INTENTIONAL_CHANGE")
     code = coded(intentional_plan)
-    test = tested(code)
+    test = make_tested(code)
     review = reviewed(test)
 
     assert intentional_plan["expected_delta_sha256"] == EXPECTED_DELTA
@@ -211,7 +211,7 @@ def test_preserve_mode_rejects_spurious_delta_approval():
 def test_review_must_pass_before_human_gate():
     with pytest.raises(ValueError, match="review is not merge-eligible"):
         gdp.build_review_receipt(
-            tested(),
+            make_tested(),
             actor=actor("reviewer"),
             verdict="REVISE",
             review_sha256=REVIEW,
@@ -223,7 +223,7 @@ def test_receipt_tampering_is_detected_before_downstream_progression():
     value = copy.deepcopy(coded())
     value["candidate_sha"] = "e" * 40
     with pytest.raises(ValueError, match="receipt integrity mismatch"):
-        tested(value)
+        make_tested(value)
 
 
 def test_authority_escalation_tampering_is_detected():
@@ -233,7 +233,7 @@ def test_authority_escalation_tampering_is_detected():
     value["receipt_id"] = "gdp_" + hashlib.sha256(gdp._canonical_bytes(unsigned)).hexdigest()
 
     with pytest.raises(ValueError, match="unsafe authority field can_execute"):
-        tested(value)
+        make_tested(value)
 
 
 def test_base_head_and_tree_drift_fail_before_human_gate():
@@ -330,7 +330,7 @@ def test_module_is_stdlib_only_and_side_effect_free_by_capability():
 
 
 def test_all_pre_human_stages_preserve_no_execution_no_deploy_no_capital_authority():
-    receipts = [plan(), coded(), tested(), reviewed()]
+    receipts = [plan(), coded(), make_tested(), reviewed()]
     for value in receipts:
         assert value["execution_authority"] == "NONE"
         assert value["can_execute"] is False
