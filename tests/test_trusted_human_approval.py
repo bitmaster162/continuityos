@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+import continuityos.trusted_human_approval as trusted_human_approval_module
 from continuityos.governed_delivery_pipeline import (
     build_code_receipt,
     build_human_merge_gate_request,
@@ -324,7 +325,7 @@ def test_eligibility_expiry_and_revision_drift_fail_closed():
 def test_module_has_no_private_key_signer_or_merge_execution_surface():
     import ast
     from pathlib import Path
-    source = Path("continuityos/trusted_human_approval.py").read_text(encoding="utf-8")
+    source = Path(trusted_human_approval_module.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)
     banned = {"subprocess", "socket", "requests", "urllib", "github", "git"}
     imported = set()
