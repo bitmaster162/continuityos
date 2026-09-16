@@ -16,7 +16,7 @@ from .trusted_human_approval import require_merge_eligibility_current
 
 SCHEMA = "continuityos.trusted_merge_handoff/v1"
 STATUS = "DUAL_CONTROL_MERGE_HANDOFF_READY"
-OUTCOME = "EXACT_R19_R63_SUBJECT_MATCH"
+OUTCOME = "R19_REVISION_R63_PR_SCOPE_INTERSECTION"
 MERGE_METHOD = "MERGE_COMMIT"
 AUTH_STATUS = "MERGE_AUTHORIZATION_PASS"
 AUTH_OUTCOME = "MERGE_EXECUTION_MAY_BE_REQUESTED_ONCE"
@@ -232,6 +232,10 @@ def build_dual_control_merge_handoff(
         "stage": "MERGE_HANDOFF_COMPATIBILITY",
         "status": STATUS,
         "outcome": OUTCOME,
+        "r19_scope": "EXACT_REPOSITORY_REVISION",
+        "r63_scope": "EXACT_PR_BRANCH_REVISION",
+        "pr_identity_source": "R63_AUTHORIZATION",
+        "r63_lifetime": "ONE_TIME_UNTIL_CONSUMED",
         "repository": eligibility["repository"],
         "base_branch": base_branch_value,
         "candidate_branch": candidate_branch_value,
@@ -288,6 +292,15 @@ def require_dual_control_merge_handoff_current(
         raise ValueError("trusted merge handoff: receipt contract mismatch")
     if receipt.get("outcome") != OUTCOME or receipt.get("effect") != "VERIFY_ONLY_NO_MERGE":
         raise ValueError("trusted merge handoff: outcome/effect mismatch")
+    expected_scope = {
+        "r19_scope": "EXACT_REPOSITORY_REVISION",
+        "r63_scope": "EXACT_PR_BRANCH_REVISION",
+        "pr_identity_source": "R63_AUTHORIZATION",
+        "r63_lifetime": "ONE_TIME_UNTIL_CONSUMED",
+    }
+    for key, expected in expected_scope.items():
+        if receipt.get(key) != expected:
+            raise ValueError(f"trusted merge handoff: scope contract mismatch for {key}")
     for key, expected in _SAFE_AUTHORITY_ITEMS:
         if receipt.get(key) != expected:
             raise ValueError(f"trusted merge handoff: unsafe authority field {key}")

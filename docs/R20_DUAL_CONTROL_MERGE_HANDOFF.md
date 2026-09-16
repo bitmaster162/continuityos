@@ -5,10 +5,14 @@ merge-authorization control plane without creating a second merge executor.
 
 The handoff is deliberately verification-only:
 
-`R19 MERGE_ELIGIBLE + R63 MERGE_AUTHORIZATION_PASS -> DUAL_CONTROL_MERGE_HANDOFF_READY`
+`R19 revision-scoped MERGE_ELIGIBLE + R63 PR-scoped MERGE_AUTHORIZATION_PASS -> DUAL_CONTROL_MERGE_HANDOFF_READY`
 
-Both control systems must describe the same repository, base branch/head/tree,
-candidate branch/head/tree, pull request, and `MERGE_COMMIT` method.
+R19 and R63 intersect on the same repository and exact base/candidate revision
+(head/tree). R19 is intentionally revision-scoped and does not bind pull-request or
+branch identity. R63 is the authoritative source for base branch, candidate branch,
+pull-request number, and `MERGE_COMMIT` method. Therefore reusing the same R19
+revision approval with a different PR does not bypass R63: that PR still requires its
+own separately pinned R63 authorization for the exact same revision.
 
 ## Trust inputs
 
@@ -36,6 +40,12 @@ R20 has no GitHub client, network client, subprocess runner, merge implementatio
 deployment path, trading path, wallet access, or capital authority. Its output
 keeps `can_merge=false`, `can_execute=false`, `deploy_permission=DENY`,
 `can_trade=false`, and `capital_permission=DENY`.
+
+R63 validates Human-decision expiry and `max_decision_age_seconds` when it issues
+`MERGE_EXECUTION_MAY_BE_REQUESTED_ONCE`. That authorization is a one-time capability,
+not a TTL receipt: replay is closed by the existing authorization-consumption contract
+(`use_count=1`, `reused=false`). R20 does not invent a second TTL from
+`generated_at_utc`.
 
 Actual merge execution remains external and must continue to satisfy the existing
 R63 merge-execution contract and provider-side expected-head protections. R20 does

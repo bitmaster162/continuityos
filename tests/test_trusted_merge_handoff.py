@@ -132,6 +132,10 @@ def test_exact_dual_control_handoff_passes_and_is_current():
     receipt, registry, registry_pin, authorization_pin = _build()
     assert receipt["status"] == STATUS
     assert receipt["outcome"] == OUTCOME
+    assert receipt["r19_scope"] == "EXACT_REPOSITORY_REVISION"
+    assert receipt["r63_scope"] == "EXACT_PR_BRANCH_REVISION"
+    assert receipt["pr_identity_source"] == "R63_AUTHORIZATION"
+    assert receipt["r63_lifetime"] == "ONE_TIME_UNTIL_CONSUMED"
     assert receipt["can_merge"] is False
     assert receipt["can_execute"] is False
     assert receipt["merge_executed"] is False
@@ -229,6 +233,32 @@ def test_outer_receipt_reseal_cannot_change_pr_subject():
     with pytest.raises(ValueError, match="reconstruction mismatch"):
         _validate(tampered, registry, registry_pin, authorization_pin)
 
+
+
+def test_pr_identity_is_r63_scoped_and_requires_matching_pinned_authorization():
+    eligibility, registry, registry_pin, authorization, _ = _fixture()
+    other_pr = PR_NUMBER + 1
+    authorization["binding"]["pull_request_number"] = other_pr
+    other_pin = _pin(authorization)
+    receipt = build_dual_control_merge_handoff(
+        eligibility_receipt=eligibility, merge_authorization_receipt=authorization,
+        pinned_merge_authorization_sha256=other_pin, trusted_key_registry=registry,
+        pinned_registry_sha256=registry_pin, repository=R17.REPOSITORY,
+        current_base_sha=R17.BASE, current_head_sha=R17.HEAD, current_tree_sha=R17.TREE,
+        now_unix=R17.NOW, base_branch=BASE_BRANCH, candidate_branch=CANDIDATE_BRANCH,
+        pull_request_number=other_pr,
+    )
+    assert receipt["pr_identity_source"] == "R63_AUTHORIZATION"
+    assert receipt["pull_request_number"] == other_pr
+    with pytest.raises(ValueError, match="subject mismatch for pull_request_number"):
+        build_dual_control_merge_handoff(
+            eligibility_receipt=eligibility, merge_authorization_receipt=authorization,
+            pinned_merge_authorization_sha256=other_pin, trusted_key_registry=registry,
+            pinned_registry_sha256=registry_pin, repository=R17.REPOSITORY,
+            current_base_sha=R17.BASE, current_head_sha=R17.HEAD, current_tree_sha=R17.TREE,
+            now_unix=R17.NOW, base_branch=BASE_BRANCH, candidate_branch=CANDIDATE_BRANCH,
+            pull_request_number=PR_NUMBER,
+        )
 
 def test_only_merge_commit_is_supported():
     eligibility, registry, registry_pin, authorization, authorization_pin = _fixture()
