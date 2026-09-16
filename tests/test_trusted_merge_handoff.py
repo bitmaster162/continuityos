@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import continuityos.trusted_merge_handoff as trusted_merge_handoff_module
 from continuityos.trusted_merge_handoff import (
     OUTCOME,
     STATUS,
@@ -251,7 +252,7 @@ def test_only_merge_commit_is_supported():
 
 
 def test_module_has_no_network_execution_or_github_surface():
-    source_path = Path(__file__).parents[1] / "continuityos" / "trusted_merge_handoff.py"
+    source_path = Path(trusted_merge_handoff_module.__file__).resolve()
     tree = ast.parse(source_path.read_text(encoding="utf-8"))
     banned_roots = {"subprocess", "socket", "requests", "httpx", "urllib", "github"}
     imports = set()
