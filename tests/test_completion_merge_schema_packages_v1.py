@@ -45,6 +45,10 @@ SCHEMA_PACKAGES = {
         "merge_execution_merge_commit_readback_v1.schema.json",
         "merge_execution_pull_request_readback_v1.schema.json",
         "merge_execution_request_v1.schema.json",
+        "merge_execution_authorization_consumption_v2.schema.json",
+        "merge_execution_evaluation_v2.schema.json",
+        "merge_execution_host_receipt_v2.schema.json",
+        "merge_execution_request_v2.schema.json",
     },
 }
 
@@ -52,6 +56,7 @@ POLICY_RESOURCES = {
     "completion_claim_policy_v1.json",
     "merge_authorization_policy_v1.json",
     "merge_execution_policy_v1.json",
+    "merge_execution_policy_v2.json",
     "work_ledger_review_binding_policy_v1.json",
 }
 
@@ -77,7 +82,7 @@ def test_new_schema_packages_are_shipped_parseable_and_strict() -> None:
             assert value["type"] == "object"
             assert value.get("additionalProperties") in {False, True}
             assert isinstance(value.get("required"), list) and value["required"]
-    assert observed_count == 19
+    assert observed_count == 23
 
 
 def test_machine_readable_gate_policies_are_shipped_and_match_code() -> None:
@@ -134,10 +139,11 @@ def test_machine_readable_gate_policies_are_shipped_and_match_code() -> None:
     assert authorization["effects"] == fixed_effects()
 
     execution = load_policy("merge_execution")
-    assert execution["schema"] == "continuityos.merge_execution.policy/v1"
+    assert execution["schema"] == "continuityos.merge_execution.policy/v2"
     assert execution["required_upstream"] == {
         "merge_authorization": merge_authorization.PASS,
         "authorization_outcome": merge_authorization.PASS_OUTCOME,
+        "dual_control_handoff": "DUAL_CONTROL_MERGE_HANDOFF_READY",
     }
     assert execution["supported_merge_method"] == merge_execution.MERGE_METHOD
     assert execution["verified_terminal"] == merge_execution.VERIFIED
@@ -181,7 +187,7 @@ def test_source_docs_match_packaged_policy_when_docs_are_present() -> None:
     completion_path = ROOT / "docs" / "COMPLETION_CLAIM_GATE_V1.md"
     binding_path = ROOT / "docs" / "WORK_LEDGER_REVIEW_BINDING_GATE_V1.md"
     authorization_path = ROOT / "docs" / "MERGE_AUTHORIZATION_GATE_V1.md"
-    execution_path = ROOT / "docs" / "MERGE_EXECUTION_RECEIPT_GATE_V1.md"
+    execution_path = ROOT / "docs" / "MERGE_EXECUTION_RECEIPT_GATE_V2.md"
     if not all(
         path.is_file()
         for path in (completion_path, binding_path, authorization_path, execution_path)
@@ -209,3 +215,4 @@ def test_source_docs_match_packaged_policy_when_docs_are_present() -> None:
     assert execution_policy["verified_terminal"] in execution_doc
     assert execution_policy["verified_outcome"] in execution_doc
     assert "never calls GitHub" in execution_doc
+    assert "DUAL_CONTROL_MERGE_HANDOFF_READY" in execution_doc

@@ -1136,6 +1136,15 @@ def main(argv=None):
         "--authorization-receipt", dest="me_authorization", required=True
     )
     me.add_argument(
+        "--dual-control-handoff", dest="me_dual_control_handoff", required=True
+    )
+    me.add_argument(
+        "--trusted-key-registry", dest="me_trusted_key_registry", required=True
+    )
+    me.add_argument(
+        "--pinned-registry-sha256", dest="me_pinned_registry_sha256", required=True
+    )
+    me.add_argument(
         "--host-execution-receipt", dest="me_host_execution", required=True
     )
     me.add_argument(
@@ -1422,12 +1431,15 @@ def main(argv=None):
             receipt = evaluate_merge_execution(
                 Path(a.me_request).expanduser(),
                 Path(a.me_authorization).expanduser(),
+                Path(a.me_dual_control_handoff).expanduser(),
+                Path(a.me_trusted_key_registry).expanduser(),
                 Path(a.me_host_execution).expanduser(),
                 Path(a.me_pr_readback).expanduser(),
                 Path(a.me_commit_readback).expanduser(),
                 Path(a.me_base_readback).expanduser(),
                 Path(a.me_protection_readback).expanduser(),
                 Path(a.me_consumption).expanduser(),
+                pinned_registry_sha256=a.me_pinned_registry_sha256,
             )
             print(merge_execution_json_text(receipt), end="")
             return exit_code_for_merge_execution(receipt)
