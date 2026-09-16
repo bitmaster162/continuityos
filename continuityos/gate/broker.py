@@ -16,6 +16,7 @@ from continuityos.gate.effects import EFFECT_CLASSES, EFFECT_SCHEMA, classify_ef
 from continuityos.gate.ledger import Ledger
 from continuityos.gate.spec import ActionSpec
 from continuityos.gate.witness import WitnessAuthority
+from continuityos.persistent_governance_store import require_persistent_governance_store_path
 
 
 _ACTION_FIELDS = ("tool", "command", "args", "paths", "cwd", "agent")
@@ -35,10 +36,13 @@ class GateBroker:
     def __init__(self, registry_path=None, ledger_path=None, db=None, *,
                  policy_snapshot=None, context_error="", witness_path=None,
                  monotonic_anchor=None):
-        self.registry_path = registry_path or os.path.expanduser(
-            "~/.continuityos/gate_broker.db"
-        )
-        self.ledger_path = ledger_path or cli.LEDGER
+        self.registry_path = str(require_persistent_governance_store_path(
+            registry_path or os.path.expanduser("~/.continuityos/gate_broker.db"),
+            label="gate broker registry",
+        ))
+        self.ledger_path = str(require_persistent_governance_store_path(
+            ledger_path or cli.LEDGER, label="gate broker ledger"
+        ))
         self.witness = None
         if witness_path is not None:
             self.witness = WitnessAuthority(

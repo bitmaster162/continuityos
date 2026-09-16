@@ -16,6 +16,8 @@ import stat
 import threading
 import uuid
 
+from continuityos.persistent_governance_store import require_persistent_governance_store_path
+
 from .ledger import GENESIS, HASH_SCHEME
 
 SCHEMA = "continuityos.external-anti-rollback-witness.v1"
@@ -278,9 +280,15 @@ class WitnessAuthority:
     """One external witness bound to one ledger and one broker registry."""
 
     def __init__(self, path, ledger_path, registry_path):
-        self.path = _normalize_path(path)
-        self.ledger_path = _normalize_path(ledger_path)
-        self.registry_path = _normalize_path(registry_path)
+        self.path = _normalize_path(require_persistent_governance_store_path(
+            path, label="governance witness"
+        ))
+        self.ledger_path = _normalize_path(require_persistent_governance_store_path(
+            ledger_path, label="governance witness ledger"
+        ))
+        self.registry_path = _normalize_path(require_persistent_governance_store_path(
+            registry_path, label="governance witness registry"
+        ))
         self.lock_path = self.path + ".lock"
         if len({self.path, self.ledger_path, self.registry_path, self.lock_path}) != 4:
             raise WitnessError(
