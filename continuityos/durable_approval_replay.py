@@ -37,6 +37,8 @@ def _busy_timeout(value: object) -> int:
 class SQLiteApprovalReplayGuard:
     """File-backed R17 replay guard for one-host multi-process deployments."""
 
+    replay_scope = "SINGLE_HOST"
+
     def __init__(
         self,
         path: str | Path,
