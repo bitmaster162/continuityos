@@ -1,10 +1,10 @@
 """Governed Remote Commander extension for the ContinuityOS MCP server.
 
-R1 intentionally adds only bounded read-only host inspection. Mutating command
-execution is not reimplemented here: callers must use the inherited
+R1 adds bounded read-only host inspection. Mutation-capable command execution is
+not reimplemented here: callers must use the inherited
 ``preflight_exec`` -> ``execute_preflight`` GateBroker path.
 
-The remote surface is fail-closed. Enable it explicitly with
+The host surface is fail-closed. Enable it explicitly with
 ``CONTINUITYOS_REMOTE_ENABLED=1`` or ``--enable-remote`` and scope filesystem
 access with ``CONTINUITYOS_REMOTE_ROOTS`` or one or more ``--remote-root``
 arguments.
@@ -27,16 +27,25 @@ from .mcp_server import PROTOCOL, TOOLS as BASE_TOOLS, Server as BaseServer
 MAX_READ_BYTES = 256 * 1024
 MAX_LIST_ENTRIES = 500
 
+# Defense in depth only. Narrow allow-roots remain the primary boundary.
 _SENSITIVE_DIRS = {
+    ".git",
     ".ssh",
     ".gnupg",
     ".aws",
     ".azure",
     ".kube",
+    ".docker",
+    ".terraform.d",
 }
 _SENSITIVE_FILE_PATTERNS = (
     ".env",
     ".env.*",
+    ".netrc",
+    "_netrc",
+    ".npmrc",
+    ".pypirc",
+    ".git-credentials",
     "*.pem",
     "*.key",
     "*.p12",
@@ -58,7 +67,11 @@ REMOTE_TOOLS = [
             "Report the ContinuityOS Remote Commander capability boundary: "
             "enabled state, allowed roots, read limits, and governed execution path."
         ),
-        "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {},
+        },
     },
     {
         "name": "system_info",
@@ -66,7 +79,11 @@ REMOTE_TOOLS = [
             "Read-only host identity and runtime information. Does not return environment "
             "variables, credentials, or process contents."
         ),
-        "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {},
+        },
     },
     {
         "name": "fs_list",
@@ -79,7 +96,12 @@ REMOTE_TOOLS = [
             "additionalProperties": False,
             "properties": {
                 "path": {"type": "string", "default": "."},
-                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIST_ENTRIES, "default": 200},
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_LIST_ENTRIES,
+                    "default": 200,
+                },
             },
         },
     },
@@ -113,7 +135,9 @@ def _env_enabled(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _canonical_roots(values: Iterable[str | os.PathLike[str]] | None) -> list[Path]:
+def _canonical_roots(
+    values: Iterable[str | os.PathLike[str]] | None,
+) -> list[Path]:
     raw = list(values or [])
     if not raw:
         configured = os.environ.get("CONTINUITYOS_REMOTE_ROOTS", "")
@@ -134,14 +158,24 @@ def _canonical_roots(values: Iterable[str | os.PathLike[str]] | None) -> list[Pa
 class RemoteSurface:
     """Fail-closed read-only host surface with root containment and secret denial."""
 
-    def __init__(self, *, enabled: bool | None = None, roots: Iterable[str | os.PathLike[str]] | None = None):
-        self.enabled = _env_enabled(os.environ.get("CONTINUITYOS_REMOTE_ENABLED")) if enabled is None else bool(enabled)
+    def __init__(
+        self,
+        *,
+        enabled: bool | None = None,
+        roots: Iterable[str | os.PathLike[str]] | None = None,
+    ):
+        self.enabled = (
+            _env_enabled(os.environ.get("CONTINUITYOS_REMOTE_ENABLED"))
+            if enabled is None
+            else bool(enabled)
+        )
         self.roots = _canonical_roots(roots)
 
     def _require_enabled(self) -> None:
         if not self.enabled:
             raise PermissionError(
-                "remote commander disabled; set CONTINUITYOS_REMOTE_ENABLED=1 or pass --enable-remote"
+                "remote commander disabled; set CONTINUITYOS_REMOTE_ENABLED=1 "
+                "or pass --enable-remote"
             )
 
     @staticmethod
@@ -162,7 +196,10 @@ class RemoteSurface:
         if not candidate.is_absolute():
             candidate = self.roots[0] / candidate
         resolved = candidate.resolve(strict=True)
-        if not any(resolved == root or resolved.is_relative_to(root) for root in self.roots):
+        if not any(
+            resolved == root or resolved.is_relative_to(root)
+            for root in self.roots
+        ):
             raise PermissionError("path is outside configured remote roots")
         reason = self._sensitive_reason(resolved)
         if reason:
@@ -181,7 +218,9 @@ class RemoteSurface:
                 "path": ["preflight_exec", "execute_preflight"],
                 "governor": "ContinuityOS GateBroker",
             },
-            "secret_policy": "deny known credential/key files and sensitive credential directories",
+            "secret_policy": (
+                "deny known credential/key files and sensitive credential directories"
+            ),
         }
 
     def system_info(self) -> dict:
@@ -199,12 +238,20 @@ class RemoteSurface:
         directory = self._resolve(path)
         if not directory.is_dir():
             raise NotADirectoryError(str(directory))
-        if not isinstance(limit, int) or isinstance(limit, bool) or not (1 <= limit <= MAX_LIST_ENTRIES):
-            raise ValueError(f"limit must be an integer in 1..{MAX_LIST_ENTRIES}")
+        if (
+            not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or not (1 <= limit <= MAX_LIST_ENTRIES)
+        ):
+            raise ValueError(
+                f"limit must be an integer in 1..{MAX_LIST_ENTRIES}"
+            )
 
         entries = []
         omitted_sensitive = 0
-        for child in sorted(directory.iterdir(), key=lambda item: item.name.lower()):
+        for child in sorted(
+            directory.iterdir(), key=lambda item: item.name.lower()
+        ):
             if self._sensitive_reason(child):
                 omitted_sensitive += 1
                 continue
@@ -219,7 +266,9 @@ class RemoteSurface:
                 kind = "file"
             else:
                 kind = "other"
-            entries.append({"name": child.name, "type": kind, "size": stat.st_size})
+            entries.append(
+                {"name": child.name, "type": kind, "size": stat.st_size}
+            )
         return {
             "path": str(directory),
             "entries": entries,
@@ -232,8 +281,14 @@ class RemoteSurface:
         target = self._resolve(path)
         if not target.is_file():
             raise FileNotFoundError(f"not a regular file: {target}")
-        if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or not (1 <= max_bytes <= MAX_READ_BYTES):
-            raise ValueError(f"max_bytes must be an integer in 1..{MAX_READ_BYTES}")
+        if (
+            not isinstance(max_bytes, int)
+            or isinstance(max_bytes, bool)
+            or not (1 <= max_bytes <= MAX_READ_BYTES)
+        ):
+            raise ValueError(
+                f"max_bytes must be an integer in 1..{MAX_READ_BYTES}"
+            )
 
         with target.open("rb") as handle:
             data = handle.read(max_bytes + 1)
@@ -254,28 +309,49 @@ class RemoteSurface:
 
 
 class RemoteServer(BaseServer):
-    def __init__(self, db=None, policy_path: str = "", db_source: str = "", *, remote_enabled: bool | None = None, remote_roots=None):
+    def __init__(
+        self,
+        db=None,
+        policy_path: str = "",
+        db_source: str = "",
+        *,
+        remote_enabled: bool | None = None,
+        remote_roots=None,
+    ):
         super().__init__(db, policy_path, db_source)
-        self.remote = RemoteSurface(enabled=remote_enabled, roots=remote_roots)
+        self.remote = RemoteSurface(
+            enabled=remote_enabled,
+            roots=remote_roots,
+        )
 
     def call(self, name, args):
         if name == "capability_status":
             self.turns += 1
-            return json.dumps(self.remote.status(), ensure_ascii=False, indent=2)
+            return json.dumps(
+                self.remote.status(), ensure_ascii=False, indent=2
+            )
         if name == "system_info":
             self.turns += 1
-            return json.dumps(self.remote.system_info(), ensure_ascii=False, indent=2)
+            return json.dumps(
+                self.remote.system_info(), ensure_ascii=False, indent=2
+            )
         if name == "fs_list":
             self.turns += 1
             return json.dumps(
-                self.remote.list_dir(args.get("path", "."), limit=args.get("limit", 200)),
+                self.remote.list_dir(
+                    args.get("path", "."),
+                    limit=args.get("limit", 200),
+                ),
                 ensure_ascii=False,
                 indent=2,
             )
         if name == "fs_read":
             self.turns += 1
             return json.dumps(
-                self.remote.read_text(args["path"], max_bytes=args.get("max_bytes", 65536)),
+                self.remote.read_text(
+                    args["path"],
+                    max_bytes=args.get("max_bytes", 65536),
+                ),
                 ensure_ascii=False,
                 indent=2,
             )
@@ -290,7 +366,11 @@ def _send(obj) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", default=None)
-    parser.add_argument("--policy", default="", help="Path to one JSON policy, or YAML when PyYAML is installed")
+    parser.add_argument(
+        "--policy",
+        default="",
+        help="Path to one JSON policy, or YAML when PyYAML is installed",
+    )
     parser.add_argument("--enable-remote", action="store_true", default=None)
     parser.add_argument(
         "--remote-root",
@@ -324,23 +404,39 @@ def main() -> None:
                     "result": {
                         "protocolVersion": PROTOCOL,
                         "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "continuityos-remote", "version": __version__},
+                        "serverInfo": {
+                            "name": "continuityos-remote",
+                            "version": __version__,
+                        },
                     },
                 }
             )
         elif method == "notifications/initialized":
             continue
         elif method == "tools/list":
-            _send({"jsonrpc": "2.0", "id": message_id, "result": {"tools": TOOLS}})
+            _send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": message_id,
+                    "result": {"tools": TOOLS},
+                }
+            )
         elif method == "tools/call":
             params = request.get("params", {}) or {}
             try:
-                output = server.call(params.get("name"), params.get("arguments", {}) or {})
+                output = server.call(
+                    params.get("name"),
+                    params.get("arguments", {}) or {},
+                )
                 _send(
                     {
                         "jsonrpc": "2.0",
                         "id": message_id,
-                        "result": {"content": [{"type": "text", "text": str(output)}]},
+                        "result": {
+                            "content": [
+                                {"type": "text", "text": str(output)}
+                            ]
+                        },
                     }
                 )
             except Exception as exc:
@@ -350,7 +446,9 @@ def main() -> None:
                         "id": message_id,
                         "result": {
                             "isError": True,
-                            "content": [{"type": "text", "text": f"error: {exc}"}],
+                            "content": [
+                                {"type": "text", "text": f"error: {exc}"}
+                            ],
                         },
                     }
                 )
@@ -361,7 +459,10 @@ def main() -> None:
                 {
                     "jsonrpc": "2.0",
                     "id": message_id,
-                    "error": {"code": -32601, "message": f"method not found: {method}"},
+                    "error": {
+                        "code": -32601,
+                        "message": f"method not found: {method}",
+                    },
                 }
             )
 
