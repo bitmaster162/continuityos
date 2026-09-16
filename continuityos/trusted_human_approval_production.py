@@ -10,19 +10,16 @@ from pathlib import Path
 from typing import Any
 
 from .durable_approval_replay import SQLiteApprovalReplayGuard
+from .persistent_governance_store import resolve_persistent_governance_store_path
 from .trusted_human_approval import HumanApprovalResult, verify_and_consume_human_approval
 
 DEFAULT_BUSY_TIMEOUT_MS = 30_000
 
 
 def _production_replay_path(value: str | Path) -> Path:
-    raw = str(value)
-    if not raw or raw == ":memory:":
-        raise ValueError("production human approval: file-backed path required")
-    path = Path(raw).expanduser()
-    if not path.is_absolute():
-        raise ValueError("production human approval: absolute replay_db_path required")
-    return path.resolve()
+    return resolve_persistent_governance_store_path(
+        value, label="production human approval", field="replay_db_path"
+    )
 
 
 def build_production_replay_guard(

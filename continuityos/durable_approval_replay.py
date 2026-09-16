@@ -11,6 +11,8 @@ import sqlite3
 from pathlib import Path
 from typing import Final
 
+from .persistent_governance_store import resolve_persistent_governance_store_path
+
 SCHEMA = "continuityos.durable_approval_replay/v1"
 _APPROVAL_ID_RE: Final = re.compile(r"^hap_[0-9a-f]{64}$")
 _DEFAULT_BUSY_TIMEOUT_MS: Final = 30_000
@@ -41,10 +43,9 @@ class SQLiteApprovalReplayGuard:
         *,
         busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
     ) -> None:
-        raw = str(path)
-        if not raw or raw == ":memory:":
-            raise ValueError("durable approval replay: file-backed path required")
-        self.path = str(Path(raw).expanduser().resolve())
+        self.path = str(resolve_persistent_governance_store_path(
+            path, label="durable approval replay"
+        ))
         self.busy_timeout_ms = _busy_timeout(busy_timeout_ms)
         try:
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)

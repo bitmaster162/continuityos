@@ -3,6 +3,8 @@ from __future__ import annotations
 import contextlib, sqlite3, json, time, hashlib, math, os
 from typing import Dict, Any, List
 
+from continuityos.persistent_governance_store import require_persistent_governance_store_path
+
 GENESIS = "0" * 64
 HASH_SCHEME = "sha256-prev-kind-ts6-payload-v1"
 ATTEMPT_PHASES = {"CLAIMED", "ATTEMPT_STARTED", "TERMINAL"}
@@ -18,13 +20,16 @@ def _is_nonzero_sha256(value):
     )
 
 class Ledger:
-    def __init__(self, path: str = "continuity_ledger.db", witness=None):
-        self.path = os.path.abspath(path)
+    def __init__(self, path=None, witness=None):
+        ledger_path = require_persistent_governance_store_path(
+            path, label="execution ledger"
+        )
+        self.path = str(ledger_path)
         self.witness = witness
         existed = os.path.exists(self.path)
         witness_doc = witness.read() if witness is not None else None
-        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        self.con = sqlite3.connect(path, timeout=30.0)
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        self.con = sqlite3.connect(self.path, timeout=30.0)
         self.con.execute("PRAGMA busy_timeout=30000")
         self.con.execute("PRAGMA journal_mode=WAL")
         self.con.execute("PRAGMA synchronous=FULL")
