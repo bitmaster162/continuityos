@@ -30,6 +30,8 @@ from importlib.machinery import PathFinder
 from types import ModuleType
 from typing import Any
 
+from .persistent_governance_store import require_persistent_governance_store_path
+
 _OPERATIONAL_MEMORY = "continuityos.operational_memory"
 _GATE_ENGINE = "continuityos.gate.engine"
 _GATE_LEDGER = "continuityos.gate.ledger"
@@ -190,15 +192,18 @@ def _patch_gate_ledger(module: ModuleType) -> None:
     class GuardedLedger(original):
         __continuityos_r27_guarded__ = True
 
-        def __init__(self, path: str = "continuity_ledger.db", witness=None):
+        def __init__(self, path=None, witness=None):
+            store_path = require_persistent_governance_store_path(
+                path, label="guarded execution ledger"
+            )
             boundary = _boundary()
             state = boundary.inspect_current_session()
             if state["mode"] == boundary.MODE_LEGACY:
                 if witness is None:
-                    super().__init__(path)
+                    super().__init__(store_path)
                 else:
-                    super().__init__(path, witness=witness)
-                self.path = path
+                    super().__init__(store_path, witness=witness)
+                self.path = str(store_path)
                 self.read_only = False
                 return
             if state["mode"] != boundary.MODE_CURRENT:
@@ -206,9 +211,7 @@ def _patch_gate_ledger(module: ModuleType) -> None:
 
             # A direct historical Ledger import may inspect an existing ledger in
             # current mode, but it must not create a path, WAL, table or event.
-            normalized = os.path.normcase(
-                os.path.realpath(os.path.abspath(os.path.expanduser(path)))
-            )
+            normalized = os.path.normcase(os.path.realpath(str(store_path)))
             if not os.path.isfile(normalized):
                 raise FileNotFoundError(normalized)
             self.path = normalized
