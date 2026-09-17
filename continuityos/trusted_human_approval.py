@@ -68,6 +68,33 @@ def _sha256_json(value: Mapping[str, Any]) -> str:
     return _sha256_bytes(_canonical_bytes(value))
 
 
+def _require_rich_replay_claim_current(
+    claim: Any, *, approval_id: str, subject: dict[str, Any], nonce: str, digest_sha256: str
+) -> dict[str, Any]:
+    if type(claim) is not dict:
+        raise ValueError("trusted human approval: replay claim contract invalid")
+    value = dict(claim)
+    receipt_id = value.pop("receipt_id", None)
+    if receipt_id != "mrc_" + _sha256_json(value):
+        raise ValueError("trusted human approval: replay claim receipt tampered")
+    value["receipt_id"] = receipt_id
+    expected = {
+        "schema": "continuityos.multi_host_replay_claim/v1",
+        "replay_scope": "MULTI_HOST",
+        "approval_id": approval_id,
+        "subject": subject,
+        "subject_sha256": _sha256_json(subject),
+        "nonce": nonce,
+        "digest_sha256": digest_sha256,
+    }
+    for key, expected_value in expected.items():
+        if value.get(key) != expected_value:
+            raise ValueError(f"trusted human approval: replay claim binding mismatch for {key}")
+    if value.get("status") not in {"CLAIMED", "ALREADY_CONSUMED", "CONFLICT"}:
+        raise ValueError("trusted human approval: replay claim contract invalid")
+    return value
+
+
 def _string(name: str, value: Any, *, maximum: int = 256) -> str:
     if type(value) is not str or not value or len(value) > maximum or any(ord(ch) < 32 for ch in value):
         raise ValueError(f"trusted human approval: invalid {name}")
@@ -167,6 +194,7 @@ def approval_signing_message(envelope_without_signature: Mapping[str, Any]) -> b
 class HumanApprovalResult:
     eligibility_receipt: dict[str, Any]
     approval_id: str
+    replay_claim_receipt: dict[str, Any] | None = None
 
 
 def verify_and_consume_human_approval(
@@ -275,12 +303,43 @@ def verify_and_consume_human_approval(
         **_safe_authority(),
     }
     eligibility["receipt_id"] = "hme_" + _sha256_json(eligibility)
-    consume_once = getattr(replay_guard, "consume_once", None)
-    if not callable(consume_once):
-        raise ValueError("trusted human approval: replay guard contract invalid")
-    if consume_once(approval_id) is not True:
-        raise ValueError("trusted human approval: approval replay detected")
-    return HumanApprovalResult(dict(eligibility), approval_id)
+    replay_claim_receipt = None
+    claim_once = getattr(replay_guard, "claim_once", None)
+    if callable(claim_once):
+        claim_subject = {
+            "request_receipt_id": request["receipt_id"],
+            "repository": request["repository"],
+            "baseline_sha": request["baseline_sha"],
+            "candidate_sha": request["candidate_sha"],
+            "candidate_tree_sha": request["candidate_tree_sha"],
+        }
+        claim_digest = _sha256_json(envelope)
+        claim = claim_once(
+            approval_id=approval_id,
+            subject=claim_subject,
+            nonce=nonce,
+            digest_sha256=claim_digest,
+        )
+        validated_claim = _require_rich_replay_claim_current(
+            claim, approval_id=approval_id, subject=claim_subject,
+            nonce=nonce, digest_sha256=claim_digest,
+        )
+        status = validated_claim["status"]
+        if status == "CLAIMED":
+            replay_claim_receipt = dict(validated_claim)
+        elif status == "ALREADY_CONSUMED":
+            raise ValueError("trusted human approval: approval replay detected")
+        elif status == "CONFLICT":
+            raise ValueError("trusted human approval: replay binding conflict")
+        else:
+            raise ValueError("trusted human approval: replay claim contract invalid")
+    else:
+        consume_once = getattr(replay_guard, "consume_once", None)
+        if not callable(consume_once):
+            raise ValueError("trusted human approval: replay guard contract invalid")
+        if consume_once(approval_id) is not True:
+            raise ValueError("trusted human approval: approval replay detected")
+    return HumanApprovalResult(dict(eligibility), approval_id, replay_claim_receipt)
 
 
 def require_merge_eligibility_current(
