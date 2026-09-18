@@ -232,7 +232,7 @@ def test_offline_provisioner_requires_exact_token_and_orders_custody_before_defi
 
     provisioner = OfflineWindowsTpmNvProvisioner(
         transport=transport,
-        handle_reader=lambda: [],
+        handle_reader=lambda: [plan.nv_index] if transport.defined else [],
         public_reader=public_reader,
         owner_auth_loader=lambda: bytearray(b"o" * 20),
         runtime_backend_factory=lambda secret_store: FakePostPrimerBackend(
@@ -296,3 +296,316 @@ def test_plan_public_document_contains_no_secret_material() -> None:
     assert plan.hardware_write_authorization_token.startswith(
         "APPROVE_CONTINUITYOS_R15B_HARDWARE_PROVISION_"
     )
+
+
+class CrashAwareTransport(FakeProvisioningTransport):
+    def __init__(self, store, *, fail_after_define=False, fail_after_primer=False):
+        super().__init__(store)
+        self.fail_after_define = fail_after_define
+        self.fail_after_primer = fail_after_primer
+        self.define_attempts = 0
+        self.primer_attempts = 0
+
+    def define_space(self, *, owner_auth, index_auth, plan) -> None:
+        self.define_attempts += 1
+        super().define_space(
+            owner_auth=owner_auth, index_auth=index_auth, plan=plan
+        )
+        if self.fail_after_define:
+            self.fail_after_define = False
+            raise RuntimeError("lost response after define")
+
+    def primer_extend(self, *, index_auth, plan) -> None:
+        self.primer_attempts += 1
+        super().primer_extend(index_auth=index_auth, plan=plan)
+        if self.fail_after_primer:
+            self.fail_after_primer = False
+            raise RuntimeError("lost response after primer")
+
+
+def recovery_fixture(*, state: str, fail_after_define=False, fail_after_primer=False):
+    from continuityos.gate.windows_tpm_provisioning import (
+        STATE_CUSTODY_ONLY,
+        STATE_DEFINED_UNPRIMED,
+        STATE_EMPTY,
+        STATE_PRIMED_VERIFIED,
+    )
+
+    plan = build_reviewed_plan(ek_public_sha256=EK_SHA256)
+    store = FakeProvisioningSecretStore()
+    transport = CrashAwareTransport(
+        store,
+        fail_after_define=fail_after_define,
+        fail_after_primer=fail_after_primer,
+    )
+
+    if state != STATE_EMPTY:
+        store.stored = b"s" * 32
+    if state in {STATE_DEFINED_UNPRIMED, STATE_PRIMED_VERIFIED}:
+        transport.defined = True
+    if state == STATE_PRIMED_VERIFIED:
+        transport.primed = True
+
+    def handles():
+        return [plan.nv_index] if transport.defined else []
+
+    def public_reader(_handle):
+        assert transport.defined
+        return public_record(plan, active=transport.primed)
+
+    provisioner = OfflineWindowsTpmNvProvisioner(
+        transport=transport,
+        handle_reader=handles,
+        public_reader=public_reader,
+        owner_auth_loader=lambda: bytearray(b"o" * 20),
+        runtime_backend_factory=lambda secret_store: FakePostPrimerBackend(
+            plan, secret_store
+        ),
+        secret_generator=lambda: bytearray(b"s" * 32),
+    )
+    return plan, store, transport, provisioner
+
+
+def test_resume_from_custody_only_reuses_secret_and_never_regenerates() -> None:
+    from continuityos.gate.windows_tpm_provisioning import STATE_CUSTODY_ONLY
+
+    plan, store, transport, provisioner = recovery_fixture(
+        state=STATE_CUSTODY_ONLY
+    )
+    original = store.stored
+    result = provisioner.resume_provisioning(
+        plan=plan,
+        secret_store=store,
+        authorization_token=plan.hardware_write_authorization_token,
+    )
+    assert result["provisioning_state"] == "PRIMED_VERIFIED"
+    assert store.stored == original
+    assert transport.define_attempts == 1
+    assert transport.primer_attempts == 1
+
+
+def test_resume_from_defined_unprimed_never_redefines() -> None:
+    from continuityos.gate.windows_tpm_provisioning import STATE_DEFINED_UNPRIMED
+
+    plan, store, transport, provisioner = recovery_fixture(
+        state=STATE_DEFINED_UNPRIMED
+    )
+    result = provisioner.resume_provisioning(
+        plan=plan,
+        secret_store=store,
+        authorization_token=plan.hardware_write_authorization_token,
+    )
+    assert result["provisioning_state"] == "PRIMED_VERIFIED"
+    assert transport.define_attempts == 0
+    assert transport.primer_attempts == 1
+
+
+def test_resume_from_primed_verified_performs_no_tpm_mutation() -> None:
+    from continuityos.gate.windows_tpm_provisioning import STATE_PRIMED_VERIFIED
+
+    plan, store, transport, provisioner = recovery_fixture(
+        state=STATE_PRIMED_VERIFIED
+    )
+    result = provisioner.resume_provisioning(
+        plan=plan,
+        secret_store=store,
+        authorization_token=plan.hardware_write_authorization_token,
+    )
+    assert result["result"] == "PRIMED_PROFILE_READY"
+    assert transport.define_attempts == 0
+    assert transport.primer_attempts == 0
+
+
+def test_lost_define_response_resumes_without_second_define() -> None:
+    from continuityos.gate.windows_tpm_provisioning import STATE_EMPTY
+
+    plan, store, transport, provisioner = recovery_fixture(
+        state=STATE_EMPTY, fail_after_define=True
+    )
+    with pytest.raises(RuntimeError, match="lost response after define"):
+        provisioner.resume_provisioning(
+            plan=plan,
+            secret_store=store,
+            authorization_token=plan.hardware_write_authorization_token,
+        )
+    assert store.exists()
+    assert transport.defined
+    assert transport.define_attempts == 1
+    assert transport.primer_attempts == 0
+
+    result = provisioner.resume_provisioning(
+        plan=plan,
+        secret_store=store,
+        authorization_token=plan.hardware_write_authorization_token,
+    )
+    assert result["provisioning_state"] == "PRIMED_VERIFIED"
+    assert transport.define_attempts == 1
+    assert transport.primer_attempts == 1
+
+
+def test_lost_primer_response_resumes_without_second_primer() -> None:
+    from continuityos.gate.windows_tpm_provisioning import STATE_EMPTY
+
+    plan, store, transport, provisioner = recovery_fixture(
+        state=STATE_EMPTY, fail_after_primer=True
+    )
+    with pytest.raises(RuntimeError, match="lost response after primer"):
+        provisioner.resume_provisioning(
+            plan=plan,
+            secret_store=store,
+            authorization_token=plan.hardware_write_authorization_token,
+        )
+    assert transport.defined
+    assert transport.primed
+    assert transport.define_attempts == 1
+    assert transport.primer_attempts == 1
+
+    result = provisioner.resume_provisioning(
+        plan=plan,
+        secret_store=store,
+        authorization_token=plan.hardware_write_authorization_token,
+    )
+    assert result["provisioning_state"] == "PRIMED_VERIFIED"
+    assert transport.define_attempts == 1
+    assert transport.primer_attempts == 1
+
+
+def test_existing_handle_without_custody_is_hard_hold() -> None:
+    plan = build_reviewed_plan(ek_public_sha256=EK_SHA256)
+    store = FakeProvisioningSecretStore()
+    transport = FakeProvisioningTransport(store)
+    transport.defined = True
+    provisioner = OfflineWindowsTpmNvProvisioner(
+        transport=transport,
+        handle_reader=lambda: [plan.nv_index],
+        public_reader=lambda handle: public_record(plan, active=False),
+        owner_auth_loader=lambda: bytearray(b"o" * 20),
+        runtime_backend_factory=lambda secret_store: FakePostPrimerBackend(
+            plan, secret_store
+        ),
+        secret_generator=lambda: bytearray(b"s" * 32),
+    )
+    with pytest.raises(
+        WindowsTpmProvisioningError, match="exists without matching DPAPI custody"
+    ):
+        provisioner.resume_provisioning(
+            plan=plan,
+            secret_store=store,
+            authorization_token=plan.hardware_write_authorization_token,
+        )
+    assert transport.calls == []
+
+
+def test_unreviewed_existing_public_identity_is_hard_hold() -> None:
+    plan, store, transport, _ = recovery_fixture(state="DEFINED_UNPRIMED")
+    bad = public_record(plan, active=False)
+    bad["tpma_nv_mask"] ^= 0x1
+    provisioner = OfflineWindowsTpmNvProvisioner(
+        transport=transport,
+        handle_reader=lambda: [plan.nv_index],
+        public_reader=lambda handle: bad,
+        owner_auth_loader=lambda: bytearray(b"o" * 20),
+        runtime_backend_factory=lambda secret_store: FakePostPrimerBackend(
+            plan, secret_store
+        ),
+        secret_generator=lambda: bytearray(b"s" * 32),
+    )
+    with pytest.raises(
+        WindowsTpmProvisioningError,
+        match="outside reviewed provisioning states",
+    ):
+        provisioner.resume_provisioning(
+            plan=plan,
+            secret_store=store,
+            authorization_token=plan.hardware_write_authorization_token,
+        )
+    assert transport.calls == []
+
+
+def test_active_wrong_digest_is_hard_hold_without_repeat_primer() -> None:
+    from continuityos.gate.windows_tpm_provisioning import STATE_PRIMED_VERIFIED
+
+    plan, store, transport, _ = recovery_fixture(
+        state=STATE_PRIMED_VERIFIED
+    )
+
+    class WrongDigestBackend:
+        def read_snapshot(self, *, profile):
+            return {"observed_nv_extend_digest": "11" * 32}
+
+    provisioner = OfflineWindowsTpmNvProvisioner(
+        transport=transport,
+        handle_reader=lambda: [plan.nv_index],
+        public_reader=lambda handle: public_record(plan, active=True),
+        owner_auth_loader=lambda: bytearray(b"o" * 20),
+        runtime_backend_factory=lambda secret_store: WrongDigestBackend(),
+        secret_generator=lambda: bytearray(b"s" * 32),
+    )
+    with pytest.raises(
+        WindowsTpmProvisioningError, match="differs from reviewed primed genesis"
+    ):
+        provisioner.resume_provisioning(
+            plan=plan,
+            secret_store=store,
+            authorization_token=plan.hardware_write_authorization_token,
+        )
+    assert transport.define_attempts == 0
+    assert transport.primer_attempts == 0
+
+
+def test_primed_unverified_retries_verification_only() -> None:
+    from continuityos.gate.windows_tpm_provisioning import STATE_PRIMED_VERIFIED
+
+    plan, store, transport, _ = recovery_fixture(
+        state=STATE_PRIMED_VERIFIED
+    )
+    calls = {"count": 0}
+
+    class FlakyBackend:
+        def read_snapshot(self, *, profile):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise RuntimeError("transient read failure")
+            return {"observed_nv_extend_digest": plan.primed_genesis_digest}
+
+    provisioner = OfflineWindowsTpmNvProvisioner(
+        transport=transport,
+        handle_reader=lambda: [plan.nv_index],
+            secret_store=store,
+            authorization_token=plan.hardware_write_authorization_token,
+        )
+    assert transport.define_attempts == 0
+    assert transport.primer_attempts == 0
+
+
+def test_primed_unverified_retries_verification_only() -> None:
+    from continuityos.gate.windows_tpm_provisioning import STATE_PRIMED_VERIFIED
+
+    plan, store, transport, _ = recovery_fixture(
+        state=STATE_PRIMED_VERIFIED
+    )
+    calls = {"count": 0}
+    class FlakyBackend:
+        def read_snapshot(self, *, profile):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise RuntimeError("transient read failure")
+            return {"observed_nv_extend_digest": plan.primed_genesis_digest}
+
+    provisioner = OfflineWindowsTpmNvProvisioner(
+        transport=transport,
+        handle_reader=lambda: [plan.nv_index],
+        public_reader=lambda handle: public_record(plan, active=True),
+        owner_auth_loader=lambda: bytearray(b"o" * 20),
+        runtime_backend_factory=lambda secret_store: FlakyBackend(),
+        secret_generator=lambda: bytearray(b"s" * 32),
+    )
+    result = provisioner.resume_provisioning(
+        plan=plan,
+        secret_store=store,
+        authorization_token=plan.hardware_write_authorization_token,
+    )
+    assert result["provisioning_state"] == "PRIMED_VERIFIED"
+    assert calls["count"] == 2
+    assert transport.define_attempts == 0
+    assert transport.primer_attempts == 0

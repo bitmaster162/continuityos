@@ -106,3 +106,31 @@ Reviewed plan fingerprint:
 
 Generated future hardware-write token:
 APPROVE_CONTINUITYOS_R15B_HARDWARE_PROVISION_5ECAE1FC79CF17F3
+
+
+## Crash-resumable forward-only state machine
+
+Provisioning recovery is derived from durable DPAPI custody plus current TPM
+public state. It does not trust a local progress marker.
+
+The only resumable states are:
+
+- EMPTY: no custody and reviewed handle absent;
+- CUSTODY_ONLY: custody exists and handle absent;
+- DEFINED_UNPRIMED: custody exists and exact definition public area is present;
+- PRIMED_UNVERIFIED: exact active WRITTEN public area is present but authorized
+  digest verification did not complete;
+- PRIMED_VERIFIED: exact active public area and reviewed primed genesis digest
+  are both verified.
+
+Forward transitions are bounded to:
+EMPTY -> CUSTODY_ONLY -> DEFINED_UNPRIMED -> PRIMED_UNVERIFIED/PRIMED_VERIFIED.
+
+A lost response after NV_DefineSpace is recovered by observing the exact
+definition public area and continuing with primer; NV_DefineSpace is not
+repeated. A lost response after primer is recovered by observing the exact
+WRITTEN public area and performing verification only; primer is not repeated.
+
+A handle without custody, an unreviewed public area, or an active digest that
+differs from the reviewed primed genesis is a hard HOLD. Recovery never invokes
+NV_UndefineSpace, TPM Clear, deletion, rollback, or automatic re-enrollment.

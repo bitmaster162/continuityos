@@ -66,6 +66,31 @@ class WindowsTpmProvisioningError(RuntimeError):
     """Offline provisioning failed closed."""
 
 
+STATE_EMPTY = "EMPTY"
+STATE_CUSTODY_ONLY = "CUSTODY_ONLY"
+STATE_DEFINED_UNPRIMED = "DEFINED_UNPRIMED"
+STATE_PRIMED_UNVERIFIED = "PRIMED_UNVERIFIED"
+STATE_PRIMED_VERIFIED = "PRIMED_VERIFIED"
+
+
+@dataclass(frozen=True)
+class ProvisioningState:
+    state: str
+    custody_present: bool
+    handle_present: bool
+    public_phase: str | None
+    digest_verified: bool
+
+    def public_receipt(self) -> dict[str, Any]:
+        return {
+            "state": self.state,
+            "custody_present": self.custody_present,
+            "handle_present": self.handle_present,
+            "public_phase": self.public_phase,
+            "digest_verified": self.digest_verified,
+        }
+
+
 def _canonical(value: Any) -> bytes:
     return json.dumps(
         value, sort_keys=True, ensure_ascii=True, separators=(",", ":")
@@ -435,7 +460,7 @@ def _require_public(
 
 
 class OfflineWindowsTpmNvProvisioner:
-    """Effectful offline ceremony. Never instantiate from normal runtime."""
+    """Crash-resumable forward-only offline provisioning ceremony."""
 
     def __init__(
         self,
@@ -456,24 +481,94 @@ class OfflineWindowsTpmNvProvisioner:
         )
         self._secret_generator = secret_generator or _generate_index_auth_windows
 
-    def provision_once(
+    def _active_digest(
         self,
         *,
         plan: WindowsTpmNvProvisioningPlan,
         secret_store: DpapiIndexAuthStore,
-        authorization_token: str,
-    ) -> dict[str, Any]:
-        if authorization_token != plan.hardware_write_authorization_token:
+    ) -> str:
+        backend = self._runtime_backend_factory(secret_store)
+        snapshot = backend.read_snapshot(profile=plan.active_profile)
+        digest = snapshot.get("observed_nv_extend_digest")
+        if type(digest) is not str:
             raise WindowsTpmProvisioningError(
-                "hardware provisioning authorization token mismatch"
+                "active NV digest verification returned an invalid snapshot"
             )
-        if plan.nv_index in self._handle_reader():
-            raise WindowsTpmProvisioningError("reviewed NV index is already defined")
-        if secret_store.exists():
+        return digest
+
+    def inspect_state(
+        self,
+        *,
+        plan: WindowsTpmNvProvisioningPlan,
+        secret_store: DpapiIndexAuthStore,
+    ) -> ProvisioningState:
+        """Classify durable custody plus TPM public state without mutation."""
+        custody = secret_store.exists()
+        handles = self._handle_reader()
+        if type(handles) is not list or any(type(item) is not int for item in handles):
             raise WindowsTpmProvisioningError(
-                "DPAPI index auth custody already exists"
+                "provisioning handle inventory is invalid"
+            )
+        present = plan.nv_index in handles
+        if not present:
+            return ProvisioningState(
+                state=STATE_CUSTODY_ONLY if custody else STATE_EMPTY,
+                custody_present=custody,
+                handle_present=False,
+                public_phase=None,
+                digest_verified=False,
+            )
+        if not custody:
+            raise WindowsTpmProvisioningError(
+                "reviewed NV index exists without matching DPAPI custody"
             )
 
+        public = self._public_reader(plan.nv_index)
+        try:
+            _require_public(public, plan=plan, active=False)
+        except WindowsTpmProvisioningError:
+            pass
+        else:
+            return ProvisioningState(
+                state=STATE_DEFINED_UNPRIMED,
+                custody_present=True,
+                handle_present=True,
+                public_phase="DEFINITION",
+                digest_verified=False,
+            )
+
+        try:
+            _require_public(public, plan=plan, active=True)
+        except WindowsTpmProvisioningError as exc:
+            raise WindowsTpmProvisioningError(
+                "existing NV public identity is outside reviewed provisioning states"
+            ) from exc
+
+        try:
+            digest = self._active_digest(plan=plan, secret_store=secret_store)
+        except Exception:
+            return ProvisioningState(
+                state=STATE_PRIMED_UNVERIFIED,
+                custody_present=True,
+                handle_present=True,
+                public_phase="ACTIVE",
+                digest_verified=False,
+            )
+        if digest != plan.primed_genesis_digest:
+            raise WindowsTpmProvisioningError(
+                "active NV digest differs from reviewed primed genesis"
+            )
+        return ProvisioningState(
+            state=STATE_PRIMED_VERIFIED,
+            custody_present=True,
+            handle_present=True,
+            public_phase="ACTIVE",
+            digest_verified=True,
+        )
+
+    def _create_custody(
+        self, *, secret_store: DpapiIndexAuthStore
+    ) -> None:
         index_auth = self._secret_generator()
         if type(index_auth) is not bytearray or len(index_auth) != 32:
             raise WindowsTpmProvisioningError(
@@ -481,6 +576,17 @@ class OfflineWindowsTpmNvProvisioner:
             )
         try:
             secret_store.store_once(index_auth)
+        finally:
+            zeroize(index_auth)
+
+    def _define_from_custody(
+        self,
+        *,
+        plan: WindowsTpmNvProvisioningPlan,
+        secret_store: DpapiIndexAuthStore,
+    ) -> None:
+        index_auth = secret_store.load()
+        try:
             owner_auth = self._owner_auth_loader()
             try:
                 self._transport.define_space(
@@ -490,25 +596,89 @@ class OfflineWindowsTpmNvProvisioner:
                 )
             finally:
                 zeroize(owner_auth)
+        finally:
+            zeroize(index_auth)
 
-            defined = self._public_reader(plan.nv_index)
-            _require_public(defined, plan=plan, active=False)
+    def _primer_from_custody(
+        self,
+        *,
+        plan: WindowsTpmNvProvisioningPlan,
+        secret_store: DpapiIndexAuthStore,
+    ) -> None:
+        index_auth = secret_store.load()
+        try:
             self._transport.primer_extend(
                 index_auth=index_auth, plan=plan
             )
         finally:
             zeroize(index_auth)
 
-        active = self._public_reader(plan.nv_index)
-        _require_public(active, plan=plan, active=True)
-        runtime_backend = self._runtime_backend_factory(secret_store)
-        snapshot = runtime_backend.read_snapshot(profile=plan.active_profile)
-        if snapshot["observed_nv_extend_digest"] != plan.primed_genesis_digest:
-            raise WindowsTpmProvisioningError(
-                "primed NV digest differs from reviewed genesis"
-            )
+    def _verified_receipt(
+        self, *, plan: WindowsTpmNvProvisioningPlan
+    ) -> dict[str, Any]:
         return {
             **plan.public_document(),
             "plan_fingerprint": plan.fingerprint,
+            "provisioning_state": STATE_PRIMED_VERIFIED,
             "result": "PRIMED_PROFILE_READY",
         }
+
+    def resume_provisioning(
+        self,
+        *,
+        plan: WindowsTpmNvProvisioningPlan,
+        secret_store: DpapiIndexAuthStore,
+        authorization_token: str,
+    ) -> dict[str, Any]:
+        """Resume only forward from durable facts; never rollback or repeat a step."""
+        if authorization_token != plan.hardware_write_authorization_token:
+            raise WindowsTpmProvisioningError(
+                "hardware provisioning authorization token mismatch"
+            )
+
+        for _ in range(4):
+            state = self.inspect_state(plan=plan, secret_store=secret_store)
+            if state.state == STATE_PRIMED_VERIFIED:
+                return self._verified_receipt(plan=plan)
+            if state.state == STATE_PRIMED_UNVERIFIED:
+                digest = self._active_digest(
+                    plan=plan, secret_store=secret_store
+                )
+                if digest != plan.primed_genesis_digest:
+                    raise WindowsTpmProvisioningError(
+                        "active NV digest differs from reviewed primed genesis"
+                    )
+                return self._verified_receipt(plan=plan)
+            if state.state == STATE_EMPTY:
+                self._create_custody(secret_store=secret_store)
+                continue
+            if state.state == STATE_CUSTODY_ONLY:
+                self._define_from_custody(
+                    plan=plan, secret_store=secret_store
+                )
+                continue
+            if state.state == STATE_DEFINED_UNPRIMED:
+                self._primer_from_custody(
+                    plan=plan, secret_store=secret_store
+                )
+                continue
+            raise WindowsTpmProvisioningError(
+                "provisioning state is not resumable"
+            )
+        raise WindowsTpmProvisioningError(
+            "provisioning did not converge within bounded transitions"
+        )
+
+    def provision_once(
+        self,
+        *,
+        plan: WindowsTpmNvProvisioningPlan,
+        secret_store: DpapiIndexAuthStore,
+        authorization_token: str,
+    ) -> dict[str, Any]:
+        """Compatibility alias for the crash-resumable forward-only ceremony."""
+        return self.resume_provisioning(
+            plan=plan,
+            secret_store=secret_store,
+            authorization_token=authorization_token,
+        )
