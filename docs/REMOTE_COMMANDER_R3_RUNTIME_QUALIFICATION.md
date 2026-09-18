@@ -2,9 +2,13 @@
 
 ## Baseline
 
-R3 starts from merged `master`:
+R3 originally started from merged `master` `5a72da36f104421010718da96681c3304fc48fe1`.
 
-`5a72da36f104421010718da96681c3304fc48fe1`
+After R24 / PR #199 merged, R3 was synchronized by a normal merge commit from new `master`:
+
+`5e6887a3109590e190d5427a3205c3f99e9b5a3f`
+
+No rebase or force-push was used.
 
 Qualification was performed from a separate clean Windows checkout so the parallel R24 / PR #199 worktree and branch were not modified.
 
@@ -43,11 +47,11 @@ The real Windows stdio MCP process was then exercised over JSON-RPC. It advertis
 
 A bounded `fs_read` of a benign repository file succeeded. A direct call to hidden write tool `remember` was rejected by the server-side profile boundary.
 
-Observed local state on R3 head `8987f3f5feef5770493493ddf69615121837c767`:
+Observed local state after the R24 synchronization:
 
 `LOCAL_READONLY_RUNTIME_GREEN`
 
-Related Windows regression set: `21 passed`.
+The post-sync Windows regression set covering R3 Remote Commander plus the merged R24 witnessed-replay tests passed: `44 passed`.
 
 ## Fail-closed credential gate
 
@@ -86,4 +90,4 @@ Until those values exist at runtime, `live_tunnel_qualified=false`.
 
 ## Parallel branch isolation
 
-At the time R23 was merged, R24 / PR #199 changed only replay/tamper-protection files and had no file overlap with R23 Remote Commander. R3 continues on its own branch and does not rebase, force-push, merge, or otherwise modify PR #199.
+R24 / PR #199 merged independently into master before R3. Its file set had zero overlap with the R3 Remote Commander files. R3 then synchronized from that merged master with a normal merge commit; R3 did not modify the historical R24 branch, rebase it, or force-push it.
