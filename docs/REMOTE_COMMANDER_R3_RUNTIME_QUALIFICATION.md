@@ -43,9 +43,11 @@ The real Windows stdio MCP process was then exercised over JSON-RPC. It advertis
 
 A bounded `fs_read` of a benign repository file succeeded. A direct call to hidden write tool `remember` was rejected by the server-side profile boundary.
 
-Observed local state:
+Observed local state on R3 head `8987f3f5feef5770493493ddf69615121837c767`:
 
 `LOCAL_READONLY_RUNTIME_GREEN`
+
+Related Windows regression set: `21 passed`.
 
 ## Fail-closed credential gate
 
