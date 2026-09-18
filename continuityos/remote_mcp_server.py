@@ -386,6 +386,15 @@ class RemoteServer(BaseServer):
             status = self.remote.status()
             status["tool_profile"] = self.tool_profile
             status["advertised_tools"] = [tool["name"] for tool in self.tools]
+            if self.tool_profile == TOOL_PROFILE_CHATGPT_PRO_READONLY:
+                status["mode"] = "read_only_host_surface"
+                status["mutating_execution"] = {
+                    "available": False,
+                    "direct_shell": False,
+                    "reason": "hidden_by_tool_profile",
+                }
+            else:
+                status["mutating_execution"]["available"] = True
             return json.dumps(status, ensure_ascii=False, indent=2)
         if name == "system_info":
             self.turns += 1
