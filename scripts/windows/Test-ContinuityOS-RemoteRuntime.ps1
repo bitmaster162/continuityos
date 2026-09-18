@@ -11,6 +11,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
+    $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\\..")).Path
+}
+
 function Require-Command {
     param([Parameter(Mandatory = $true)][string]$Name)
     $resolved = Get-Command $Name -ErrorAction Stop
