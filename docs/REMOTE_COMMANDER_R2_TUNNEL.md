@@ -2,10 +2,9 @@
 
 ## Baseline
 
-R2 is a dependent change based on R1 head
-`84cf11c679f63db853cf3aa14996a811d01d1bc2`.
-R1 itself is based on current `master`
-`2c701b2463f62f8e43374a8f40cdb289d0bc1bad`.
+R1 is merged to `master` as
+`c184ff7280a6e310cdaa2b6903b45209bfc4e8f0`.
+R2 is synchronized on top of that merged baseline.
 
 R2 does not require ChatGPT Pro to build or validate locally.
 
@@ -93,8 +92,8 @@ R2 is code-complete only when:
 1. R1 review-gates are green on its synchronized head;
 2. R2 unit/static tests pass on Linux and Windows CI;
 3. R2 CodeQL and P0 checks are green;
-4. a later local Windows test proves `Plan` without credentials;
+4. Windows CI proves credential-free `Plan` mode and loopback-only listener settings;
 5. once tunnel credentials are available, `Init -> Doctor -> Run` is tested with
    the official OpenAI tunnel-client.
 
-The last step is runtime qualification and cannot be claimed from CI alone.
+The final step is runtime qualification and cannot be claimed from CI alone.
