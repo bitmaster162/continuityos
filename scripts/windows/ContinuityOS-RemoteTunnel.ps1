@@ -75,7 +75,9 @@ $plan = [ordered]@{
     python = $pythonExe
     mcp_transport = "stdio"
     mcp_tool_profile = "chatgpt-pro-readonly"
-    inbound_listener = $false
+    public_mcp_listener = $false
+    health_listener = "127.0.0.1:8080"
+    health_listener_scope = "loopback"
     direct_shell = $false
 }
 
@@ -94,6 +96,7 @@ switch ($Mode) {
             --sample sample_mcp_stdio_local `
             --profile $Profile `
             --tunnel-id $TunnelId `
+            --health-listen-addr 127.0.0.1:8080 `
             --mcp-command $mcpCommand
         if ($LASTEXITCODE -ne 0) {
             throw "tunnel-client init failed with exit code $LASTEXITCODE"
