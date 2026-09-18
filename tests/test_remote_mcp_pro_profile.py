@@ -30,6 +30,16 @@ def test_pro_profile_advertises_only_bounded_host_read_tools(tmp_path: Path):
     ]
 
 
+def test_pro_profile_tools_are_annotated_read_only(tmp_path: Path):
+    server = _server(tmp_path)
+    assert server.tools
+    for tool in server.tools:
+        annotations = tool["annotations"]
+        assert annotations["readOnlyHint"] is True
+        assert annotations["destructiveHint"] is False
+        assert annotations["idempotentHint"] is True
+        assert annotations["openWorldHint"] is False
+
 @pytest.mark.parametrize(
     "name,args",
     [
