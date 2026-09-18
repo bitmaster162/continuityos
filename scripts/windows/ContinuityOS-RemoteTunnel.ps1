@@ -41,7 +41,12 @@ function Validate-TunnelId {
 if (
     [string]::IsNullOrWhiteSpace($Profile) -or
     $Profile.Length -gt 64 -or
-    $Profile -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*
+    $Profile -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$'
+) {
+    throw "Profile has an invalid format."
+}
+
+$pythonExe = Require-Command -Name $Python
 $root = (Resolve-Path -LiteralPath $RemoteRoot).Path
 if (-not (Test-Path -LiteralPath $root -PathType Container)) {
     throw "RemoteRoot must be an existing directory."
