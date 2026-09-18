@@ -549,45 +549,6 @@ print(json.dumps({{"package_path": str(package_path), "purelib": str(purelib),
     return 0 if passed else 1
 
 
-
-def preserve_wheel(args: argparse.Namespace) -> int:
-    wheel_dir = Path(args.wheel_dir).resolve()
-    artifact_dir = Path(args.artifact_dir).resolve()
-    output = Path(args.output).resolve()
-    wheels = sorted(wheel_dir.glob("*.whl"))
-    if len(wheels) != 1:
-        raise SystemExit(
-            f"expected exactly one wheel in {wheel_dir}, found {len(wheels)}"
-        )
-    if artifact_dir == wheel_dir:
-        raise SystemExit("wheel artifact directory must be distinct from wheel directory")
-    if artifact_dir.exists() and any(artifact_dir.iterdir()):
-        raise SystemExit(f"wheel artifact directory is not empty: {artifact_dir}")
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-
-    source = wheels[0]
-    destination = artifact_dir / source.name
-    source_sha256 = _sha256_file(source)
-    shutil.copy2(source, destination)
-    destination_sha256 = _sha256_file(destination)
-    if source_sha256 != destination_sha256:
-        destination.unlink(missing_ok=True)
-        raise SystemExit("preserved wheel SHA-256 mismatch")
-
-    payload = {
-        "schema": "continuityos-preserved-wheel-receipt-v1",
-        "filename": source.name,
-        "size": source.stat().st_size,
-        "sha256": source_sha256,
-        "source_directory_sha256": _normalized_path_sha256(wheel_dir),
-        "artifact_directory_sha256": _normalized_path_sha256(artifact_dir),
-        "status": "PASS",
-    }
-    _write_json(output, payload)
-    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-    return 0
-
-
 def _workflow_step_block(text: str, name: str) -> str:
     match = re.search(
         rf"(?ms)^\s*- name: {re.escape(name)}\s*$.*?(?=^\s*- name: |\Z)",
@@ -706,12 +667,6 @@ def build_parser() -> argparse.ArgumentParser:
     wheel.add_argument("--source-root", default=".")
     wheel.add_argument("--output", required=True)
     wheel.set_defaults(func=wheel_test)
-
-    preserve = commands.add_parser("preserve-wheel")
-    preserve.add_argument("--wheel-dir", required=True)
-    preserve.add_argument("--artifact-dir", required=True)
-    preserve.add_argument("--output", required=True)
-    preserve.set_defaults(func=preserve_wheel)
 
     policy = commands.add_parser("validate-workflow")
     policy.add_argument("--workflow", required=True)
