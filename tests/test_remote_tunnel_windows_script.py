@@ -35,3 +35,9 @@ def test_windows_tunnel_launcher_accepts_no_arbitrary_mcp_command():
     assert "[string]$McpCommand" not in source
     assert "[string]$Command" not in source
     assert "The child MCP is deliberately fixed" in source
+
+
+def test_windows_tunnel_launcher_bounds_profile_identifier():
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "Profile has an invalid format." in source
+    assert "^[A-Za-z0-9][A-Za-z0-9._-]*$" in source
