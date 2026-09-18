@@ -67,6 +67,12 @@ REMOTE_TOOLS = [
             "Report the ContinuityOS Remote Commander capability boundary: "
             "enabled state, allowed roots, read limits, and governed execution path."
         ),
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
@@ -79,6 +85,12 @@ REMOTE_TOOLS = [
             "Read-only host identity and runtime information. Does not return environment "
             "variables, credentials, or process contents."
         ),
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
@@ -91,6 +103,12 @@ REMOTE_TOOLS = [
             "List one directory inside an explicitly allowed remote root. Sensitive files "
             "and credential directories are omitted. Read-only."
         ),
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
@@ -111,6 +129,12 @@ REMOTE_TOOLS = [
             "Read a bounded UTF-8 text file inside an explicitly allowed remote root. "
             "Known credential/key paths are denied. Read-only."
         ),
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
