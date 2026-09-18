@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path,
+    [string]$RepoRoot = "",
     [string]$RemoteRoot = "",
     [string]$ProbeRelativePath = "README.md",
     [string]$TunnelClient = "tunnel-client",
@@ -12,7 +12,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
-    $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\\..")).Path
+    $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 }
 
 function Require-Command {
