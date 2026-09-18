@@ -71,6 +71,9 @@ $env:CONTROL_PLANE_TUNNEL_ID = "<tunnel-id>"
 The launcher passes no API key or bearer token on the command line. The official
 `tunnel-client` inherits the runtime key from the environment.
 
+`CONTROL_PLANE_TUNNEL_ID` must match `tunnel_` plus exactly 32 lowercase hex
+characters. The runtime API key should be restricted to Tunnels Read + Use;
+
 ## Security invariants
 
 - no inbound listener is created by ContinuityOS;
