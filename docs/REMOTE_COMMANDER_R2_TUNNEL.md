@@ -76,8 +76,9 @@ characters. The runtime API key should be restricted to Tunnels Read + Use;
 
 ## Security invariants
 
-- no inbound listener is created by ContinuityOS;
+- no public MCP listener is created by ContinuityOS;
 - no public MCP endpoint is required;
+- tunnel-client health/UI is explicitly pinned to loopback `127.0.0.1:8080`;
 - no arbitrary `--mcp-command` input is accepted by the launcher;
 - the MCP child command is fixed to `continuityos.remote_mcp_server`;
 - the remote root must already exist;
