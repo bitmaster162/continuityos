@@ -108,8 +108,13 @@ def _require_pw_response(data: bytes) -> bytes:
     nonce_size = int.from_bytes(auth[0:2], "big")
     attrs = auth[2]
     hmac_size = int.from_bytes(auth[3:5], "big")
-    if nonce_size != 0 or attrs != 0 or hmac_size != 0:
-        raise WindowsTpmRuntimeError("TPM password response auth is not empty")
+    # TPM 2.0 requires continueSession (bit 0) SET in the response for
+    # password authorization, even though the bit has no password-session
+    # lifetime semantics. No other session attribute is valid here.
+    if nonce_size != 0 or attrs != 0x01 or hmac_size != 0:
+        raise WindowsTpmRuntimeError(
+            "TPM password response auth area is invalid"
+        )
     return parameters
 
 

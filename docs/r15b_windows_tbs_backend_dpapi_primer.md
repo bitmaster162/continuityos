@@ -134,3 +134,16 @@ WRITTEN public area and performing verification only; primer is not repeated.
 A handle without custody, an unreviewed public area, or an active digest that
 differs from the reviewed primed genesis is a hard HOLD. Recovery never invokes
 NV_UndefineSpace, TPM Clear, deletion, rollback, or automatic re-enrollment.
+
+
+## Password authorization response parsing
+
+TPM password authorization responses are expected to contain an empty nonce,
+sessionAttributes equal to 0x01 (continueSession), and an empty HMAC. The TPM
+2.0 specification requires continueSession to be SET in a response associated
+with password authorization even though it has no password-session lifetime
+semantics.
+
+The parser therefore accepts exactly 0x01 for the response attributes and
+rejects 0x00 or any additional session-attribute bits. This matches the
+observed hardware response auth area 0000010000.

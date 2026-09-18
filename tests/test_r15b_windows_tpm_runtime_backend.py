@@ -23,6 +23,52 @@ from continuityos.gate.windows_tpm_provisioning import (
 EK_SHA256 = "d4493341ea776e196234af9547d2a22118767eea3a0312d00e445fa497f6469c"
 
 
+def _password_response(parameters: bytes, *, attrs: int = 0x01) -> bytes:
+    auth = b"\x00\x00" + bytes([attrs]) + b"\x00\x00"
+    size = 14 + len(parameters) + len(auth)
+    return (
+        b"\x80\x02"
+        + size.to_bytes(4, "big")
+        + b"\x00\x00\x00\x00"
+        + len(parameters).to_bytes(4, "big")
+        + parameters
+        + auth
+    )
+
+
+def test_password_response_accepts_continue_session_from_real_tpm_shape() -> None:
+    parameters = b"\x00\x20" + bytes.fromhex("54" * 32)
+    response = _password_response(parameters, attrs=0x01)
+    assert runtime._require_pw_response(response) == parameters
+
+
+@pytest.mark.parametrize("attrs", [0x00, 0x02, 0x20, 0x41, 0xFF])
+def test_password_response_rejects_noncanonical_session_attributes(attrs: int) -> None:
+    response = _password_response(b"", attrs=attrs)
+    with pytest.raises(runtime.WindowsTpmRuntimeError, match="auth area is invalid"):
+        runtime._require_pw_response(response)
+
+
+def test_password_response_rejects_nonce_or_hmac_material() -> None:
+    nonce_auth = b"\x00\x01X\x01\x00\x00"
+    nonce_size = 14 + len(nonce_auth)
+    nonce_response = (
+        b"\x80\x02" + nonce_size.to_bytes(4, "big")
+        + b"\x00\x00\x00\x00" + b"\x00\x00\x00\x00" + nonce_auth
+    )
+    with pytest.raises(runtime.WindowsTpmRuntimeError, match="auth area is invalid"):
+        runtime._require_pw_response(nonce_response)
+
+    hmac_auth = b"\x00\x00\x01\x00\x01X"
+    hmac_size = 14 + len(hmac_auth)
+    hmac_response = (
+        b"\x80\x02" + hmac_size.to_bytes(4, "big")
+        + b"\x00\x00\x00\x00" + b"\x00\x00\x00\x00" + hmac_auth
+    )
+    with pytest.raises(runtime.WindowsTpmRuntimeError, match="auth area is invalid"):
+        runtime._require_pw_response(hmac_response)
+
+
 class FakeProtector:
     def protect(self, plaintext: bytearray, *, entropy: bytes) -> bytes:
         assert len(entropy) == 32
