@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
+import subprocess
+
+import pytest
 
 
 SCRIPT = (
@@ -41,3 +46,36 @@ def test_windows_tunnel_launcher_bounds_profile_identifier():
     source = SCRIPT.read_text(encoding="utf-8")
     assert "Profile has an invalid format." in source
     assert "^[A-Za-z0-9][A-Za-z0-9._-]*$" in source
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell smoke test")
+def test_windows_tunnel_launcher_plan_executes_without_credentials(tmp_path: Path):
+    env = os.environ.copy()
+    env.pop("CONTROL_PLANE_API_KEY", None)
+    env.pop("CONTROL_PLANE_TUNNEL_ID", None)
+    completed = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(SCRIPT),
+            "-Mode",
+            "Plan",
+            "-RemoteRoot",
+            str(tmp_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr
+    plan = json.loads(completed.stdout)
+    assert plan["mcp_transport"] == "stdio"
+    assert plan["mcp_tool_profile"] == "chatgpt-pro-readonly"
+    assert plan["inbound_listener"] is False
+    assert plan["direct_shell"] is False
+    assert plan["control_plane_key_present"] is False
