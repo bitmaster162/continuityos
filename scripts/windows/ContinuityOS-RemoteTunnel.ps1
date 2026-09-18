@@ -33,7 +33,7 @@ function Validate-TunnelId {
     if ([string]::IsNullOrWhiteSpace($Value)) {
         throw "TunnelId is required for Init."
     }
-    if ($Value.Length -gt 256 -or $Value -notmatch '^tunnel_[A-Za-z0-9_-]+$') {
+    if ($Value -notmatch '^tunnel_[0-9a-f]{32}$') {
         throw "TunnelId has an invalid format."
     }
 }
