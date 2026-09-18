@@ -130,6 +130,21 @@ REMOTE_TOOLS = [
 
 TOOLS = [*BASE_TOOLS, *REMOTE_TOOLS]
 
+TOOL_PROFILE_FULL = "full"
+TOOL_PROFILE_CHATGPT_PRO_READONLY = "chatgpt-pro-readonly"
+_REMOTE_TOOL_NAMES = frozenset(tool["name"] for tool in REMOTE_TOOLS)
+_TOOL_PROFILES = {
+    TOOL_PROFILE_FULL: None,
+    TOOL_PROFILE_CHATGPT_PRO_READONLY: _REMOTE_TOOL_NAMES,
+}
+
+
+def _tool_profile(value: str | None) -> str:
+    profile = (value or TOOL_PROFILE_FULL).strip().lower()
+    if profile not in _TOOL_PROFILES:
+        raise ValueError(f"unknown remote tool profile: {profile}")
+    return profile
+
 
 def _env_enabled(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -317,19 +332,37 @@ class RemoteServer(BaseServer):
         *,
         remote_enabled: bool | None = None,
         remote_roots=None,
+        tool_profile: str = TOOL_PROFILE_FULL,
     ):
         super().__init__(db, policy_path, db_source)
         self.remote = RemoteSurface(
             enabled=remote_enabled,
             roots=remote_roots,
         )
+        self.tool_profile = _tool_profile(tool_profile)
+
+    @property
+    def tools(self) -> list[dict]:
+        allowed = _TOOL_PROFILES[self.tool_profile]
+        if allowed is None:
+            return list(TOOLS)
+        return [tool for tool in TOOLS if tool["name"] in allowed]
+
+    def _require_tool_visible(self, name: str) -> None:
+        allowed = _TOOL_PROFILES[self.tool_profile]
+        if allowed is not None and name not in allowed:
+            raise PermissionError(
+                f"tool hidden by remote tool profile {self.tool_profile}: {name}"
+            )
 
     def call(self, name, args):
+        self._require_tool_visible(name)
         if name == "capability_status":
             self.turns += 1
-            return json.dumps(
-                self.remote.status(), ensure_ascii=False, indent=2
-            )
+            status = self.remote.status()
+            status["tool_profile"] = self.tool_profile
+            status["advertised_tools"] = [tool["name"] for tool in self.tools]
+            return json.dumps(status, ensure_ascii=False, indent=2)
         if name == "system_info":
             self.turns += 1
             return json.dumps(
@@ -373,6 +406,17 @@ def main() -> None:
     )
     parser.add_argument("--enable-remote", action="store_true", default=None)
     parser.add_argument(
+        "--tool-profile",
+        choices=[TOOL_PROFILE_FULL, TOOL_PROFILE_CHATGPT_PRO_READONLY],
+        default=os.environ.get(
+            "CONTINUITYOS_REMOTE_TOOL_PROFILE", TOOL_PROFILE_FULL
+        ),
+        help=(
+            "Advertised/callable tool surface. chatgpt-pro-readonly exposes "
+            "only bounded read-only Remote Commander tools."
+        ),
+    )
+    parser.add_argument(
         "--remote-root",
         action="append",
         default=None,
@@ -384,6 +428,7 @@ def main() -> None:
         args.policy,
         remote_enabled=args.enable_remote,
         remote_roots=args.remote_root,
+        tool_profile=args.tool_profile,
     )
 
     for line in sys.stdin:
@@ -418,7 +463,7 @@ def main() -> None:
                 {
                     "jsonrpc": "2.0",
                     "id": message_id,
-                    "result": {"tools": TOOLS},
+                    "result": {"tools": server.tools},
                 }
             )
         elif method == "tools/call":
