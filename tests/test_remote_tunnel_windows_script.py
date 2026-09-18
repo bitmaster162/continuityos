@@ -79,3 +79,9 @@ def test_windows_tunnel_launcher_plan_executes_without_credentials(tmp_path: Pat
     assert plan["inbound_listener"] is False
     assert plan["direct_shell"] is False
     assert plan["control_plane_key_present"] is False
+
+
+def test_windows_tunnel_launcher_binds_official_tunnel_id_format():
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "^tunnel_[0-9a-f]{32}$" in source
+    assert "TunnelId has an invalid format." in source
