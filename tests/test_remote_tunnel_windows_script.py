@@ -38,7 +38,9 @@ def test_windows_tunnel_launcher_uses_stdio_and_pro_readonly_profile():
     assert "--enable-remote" in source
     assert "--tool-profile chatgpt-pro-readonly" in source
     assert 'mcp_transport = "stdio"' in source
-    assert "inbound_listener = $false" in source
+    assert 'public_mcp_listener = $false' in source
+    assert 'health_listener = "127.0.0.1:8080"' in source
+    assert 'health_listener_scope = "loopback"' in source
 
 
 def test_windows_tunnel_launcher_accepts_no_arbitrary_mcp_command():
@@ -84,7 +86,9 @@ def test_windows_tunnel_launcher_plan_executes_without_credentials(tmp_path: Pat
     plan = json.loads(completed.stdout)
     assert plan["mcp_transport"] == "stdio"
     assert plan["mcp_tool_profile"] == "chatgpt-pro-readonly"
-    assert plan["inbound_listener"] is False
+    assert plan["public_mcp_listener"] is False
+    assert plan["health_listener"] == "127.0.0.1:8080"
+    assert plan["health_listener_scope"] == "loopback"
     assert plan["direct_shell"] is False
     assert plan["control_plane_key_present"] is False
 
@@ -93,3 +97,9 @@ def test_windows_tunnel_launcher_binds_official_tunnel_id_format():
     source = _source()
     assert "^tunnel_[0-9a-f]{32}$" in source
     assert "TunnelId has an invalid format." in source
+
+
+def test_windows_tunnel_launcher_pins_health_listener_to_loopback():
+    source = _source()
+    assert "--health-listen-addr 127.0.0.1:8080" in source
+    assert "--allow-remote-ui" not in source
