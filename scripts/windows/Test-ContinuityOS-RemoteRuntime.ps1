@@ -115,7 +115,8 @@ try {
     if ($status.mode -ne "read_only_host_surface" -or $status.mutating_execution.available -ne $false) {
         throw "Capability status does not report a read-only host surface."
     }
-    if ($readResponse.result.isError -eq $true) {
+    $readHasError = $readResponse.result.PSObject.Properties.Name -contains "isError"
+    if ($readHasError -and $readResponse.result.isError -eq $true) {
         throw "Benign fs_read probe failed."
     }
     $hiddenWriteDenied = (
