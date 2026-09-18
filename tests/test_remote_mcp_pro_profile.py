@@ -71,7 +71,12 @@ def test_capability_status_reports_effective_profile(tmp_path: Path):
         "fs_list",
         "fs_read",
     ]
-    assert value["mutating_execution"]["direct_shell"] is False
+    assert value["mode"] == "read_only_host_surface"
+    assert value["mutating_execution"] == {
+        "available": False,
+        "direct_shell": False,
+        "reason": "hidden_by_tool_profile",
+    }
 
 
 def test_unknown_profile_fails_closed(tmp_path: Path):
