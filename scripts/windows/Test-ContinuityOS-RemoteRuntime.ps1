@@ -55,13 +55,10 @@ try {
         throw "Git HEAD does not match ExpectedHead."
     }
 
-    $planArgs = @(
-        "-Mode", "Plan",
-        "-RemoteRoot", $root,
-        "-TunnelClient", $tunnelExe,
-        "-Python", $pythonExe
-    )
-    $plan = (& $launcher @planArgs | Out-String) | ConvertFrom-Json
+    $plan = (
+        & $launcher -Mode Plan -RemoteRoot $root -TunnelClient $tunnelExe -Python $pythonExe |
+            Out-String
+    ) | ConvertFrom-Json
 
     if ($plan.schema -ne "continuityos.remote_tunnel_plan/v1") {
         throw "Unexpected launcher plan schema."
