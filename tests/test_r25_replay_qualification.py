@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -143,3 +144,67 @@ def test_qualification_witness_health_declares_not_production_ready():
     ).read_text(encoding="utf-8")
     assert '"production_ready": False' in source
     assert 'durability": "jsonl_fsync"' in source
+
+def test_qualification_witness_reload_rejects_tampered_record_hash(tmp_path):
+    namespace = "r25-witness-reload-tamper"
+    path = tmp_path / "witness.jsonl"
+    record = _record(namespace)
+    store = _store(path)
+    ok, _ = store.append(
+        namespace=namespace,
+        expected_generation=0,
+        expected_head_sha256=replay._genesis_head(namespace),
+        record=record,
+    )
+    assert ok is True
+
+    item = json.loads(path.read_text(encoding="utf-8").strip())
+    item["record"]["digest_sha256"] = "f" * 64
+    path.write_text(
+        witness_service._canonical_json(item) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="invalid witness record hash"):
+        _store(path)
+
+
+def test_qualification_witness_reload_rejects_generation_gap(tmp_path):
+    namespace = "r25-witness-generation-gap"
+    path = tmp_path / "witness.jsonl"
+    record = _record(namespace)
+    store = _store(path)
+    ok, _ = store.append(
+        namespace=namespace,
+        expected_generation=0,
+        expected_head_sha256=replay._genesis_head(namespace),
+        record=record,
+    )
+    assert ok is True
+
+    item = json.loads(path.read_text(encoding="utf-8").strip())
+    item["record"]["generation"] = 2
+    path.write_text(
+        witness_service._canonical_json(item) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="invalid witness generation sequence"):
+        _store(path)
+
+
+def test_qualification_witness_append_rejects_invalid_record_before_write(tmp_path):
+    namespace = "r25-witness-append-tamper"
+    path = tmp_path / "witness.jsonl"
+    record = _record(namespace)
+    record["subject"]["case"] = "tampered-without-rehash"
+    store = _store(path)
+
+    with pytest.raises(RuntimeError, match="invalid witness subject hash"):
+        store.append(
+            namespace=namespace,
+            expected_generation=0,
+            expected_head_sha256=replay._genesis_head(namespace),
+            record=record,
+        )
+    assert not path.exists() or path.read_bytes() == b""

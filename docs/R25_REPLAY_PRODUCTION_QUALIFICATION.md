@@ -33,7 +33,9 @@ The local qualification harness uses:
 
 The witness fixture persists canonical JSONL records and fsyncs each append
 before acknowledging it. It implements compare-and-set against exact
-generation and head SHA-256. A deterministic post-fsync barrier allows the
+generation and head SHA-256. On startup it revalidates each stored record's
+schema, namespace, generation sequence, previous-head link, subject hash,
+record hash, and record ID before admitting the log into memory. A deterministic post-fsync barrier allows the
 controller to kill a worker in the crash window after witness durability but
 before PostgreSQL reconciliation.
 

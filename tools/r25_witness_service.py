@@ -18,6 +18,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 STATE_SCHEMA = "continuityos.replay_witness_state/v1"
+RECORD_SCHEMA = "continuityos.replay_witness_record/v1"
 GENESIS_DOMAIN = "continuityos.replay_witness_genesis/v1"
 
 
@@ -44,6 +45,44 @@ def _state(namespace: str, generation: int, head_sha256: str) -> dict:
         "generation": generation,
         "head_sha256": head_sha256,
     }
+
+
+def _validate_record(
+    record: dict,
+    *,
+    namespace: str,
+    expected_generation: int,
+    expected_previous_head: str,
+) -> dict:
+    expected_keys = {
+        "schema", "namespace", "generation", "previous_head_sha256",
+        "approval_id", "subject", "subject_sha256", "nonce",
+        "digest_sha256", "head_sha256", "record_id",
+    }
+    if type(record) is not dict or set(record) != expected_keys:
+        raise RuntimeError("invalid witness record shape")
+    if record["schema"] != RECORD_SCHEMA or record["namespace"] != namespace:
+        raise RuntimeError("invalid witness record identity")
+    if record["generation"] != expected_generation:
+        raise RuntimeError("invalid witness generation sequence")
+    if record["previous_head_sha256"] != expected_previous_head:
+        raise RuntimeError("invalid witness previous-head chain")
+    if type(record["subject"]) is not dict:
+        raise RuntimeError("invalid witness subject")
+    subject_sha = _sha256_text(_canonical_json(record["subject"]))
+    if record["subject_sha256"] != subject_sha:
+        raise RuntimeError("invalid witness subject hash")
+    core = {
+        key: record[key]
+        for key in expected_keys
+        if key not in {"head_sha256", "record_id"}
+    }
+    head = _sha256_text(_canonical_json(core))
+    if record["head_sha256"] != head:
+        raise RuntimeError("invalid witness record hash")
+    if record["record_id"] != "rwr_" + head:
+        raise RuntimeError("invalid witness record id")
+    return json.loads(_canonical_json(record))
 
 
 class Store:
@@ -83,9 +122,20 @@ class Store:
                         raise RuntimeError(
                             f"invalid witness log entry at line {lineno}"
                         )
-                    self.records.setdefault(item["namespace"], []).append(
-                        item["record"]
+                    namespace = item["namespace"]
+                    rows = self.records.setdefault(namespace, [])
+                    previous_head = (
+                        _genesis_head(namespace)
+                        if not rows
+                        else str(rows[-1]["head_sha256"])
                     )
+                    validated = _validate_record(
+                        item["record"],
+                        namespace=namespace,
+                        expected_generation=len(rows) + 1,
+                        expected_previous_head=previous_head,
+                    )
+                    rows.append(validated)
 
     def current_state(self, namespace: str) -> dict:
         with self.lock:
@@ -119,33 +169,31 @@ class Store:
                 or current["head_sha256"] != expected_head_sha256
             ):
                 return False, current
-            if (
-                record.get("namespace") != namespace
-                or record.get("generation") != expected_generation + 1
-                or record.get("previous_head_sha256") != expected_head_sha256
-            ):
-                raise ValueError("record does not extend expected witness state")
+            validated_record = _validate_record(
+                record,
+                namespace=namespace,
+                expected_generation=expected_generation + 1,
+                expected_previous_head=expected_head_sha256,
+            )
 
-            item = {"namespace": namespace, "record": record}
+            item = {"namespace": namespace, "record": validated_record}
             encoded = (_canonical_json(item) + "\n").encode("ascii")
             with self.path.open("ab", buffering=0) as handle:
                 handle.write(encoded)
                 os.fsync(handle.fileno())
-            self.records.setdefault(namespace, []).append(
-                json.loads(_canonical_json(record))
-            )
+            self.records.setdefault(namespace, []).append(validated_record)
 
             should_pause = (
                 not self._pause_used
                 and self.pause_namespace == namespace
-                and self.pause_generation == record.get("generation")
+                and self.pause_generation == validated_record.get("generation")
             )
             if should_pause:
                 self._pause_used = True
                 if self.pause_marker is not None:
                     self.pause_marker.parent.mkdir(parents=True, exist_ok=True)
                     self.pause_marker.write_text(
-                        str(record.get("record_id", "")), encoding="utf-8"
+                        str(validated_record["record_id"]), encoding="utf-8"
                     )
 
         if should_pause:
@@ -155,7 +203,7 @@ class Store:
                     break
                 time.sleep(0.05)
 
-        return True, json.loads(_canonical_json(record))
+        return True, json.loads(_canonical_json(validated_record))
 
 
 class Handler(BaseHTTPRequestHandler):
