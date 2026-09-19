@@ -23,6 +23,14 @@ SUBJECT = {
 }
 
 
+class RetryableTransactionError(RuntimeError):
+    sqlstate = "40001"
+
+
+class DeadlockTransactionError(RuntimeError):
+    sqlstate = "40P01"
+
+
 class DbState:
     def __init__(self) -> None:
         self.lock = threading.RLock()
@@ -31,6 +39,7 @@ class DbState:
         self.states: dict[str, tuple[int, str]] = {}
         self.journal: dict[tuple[str, int], tuple[str, str, str, str, str, str, str]] = {}
         self.fail_next_commit = False
+        self.retryable_commit_failures = 0
         self.active_transactions = 0
 
 
@@ -55,6 +64,10 @@ class FakeConnection:
         return FakeCursor(self)
 
     def commit(self) -> None:
+        if self.state.retryable_commit_failures > 0:
+            self.state.retryable_commit_failures -= 1
+            self._release()
+            raise RetryableTransactionError("simulated serialization failure")
         if self.state.fail_next_commit:
             self.state.fail_next_commit = False
             self._release()
@@ -632,3 +645,28 @@ def test_namespaces_are_isolated():
     assert claim(right)["status"] == CLAIMED
     assert witness.current_state("human-approval-a")["generation"] == 1
     assert witness.current_state("human-approval-b")["generation"] == 1
+
+
+def test_retryable_transaction_error_detection_is_sqlstate_scoped():
+    assert replay._is_retryable_transaction_error(
+        RetryableTransactionError("serialization")
+    )
+    assert replay._is_retryable_transaction_error(
+        DeadlockTransactionError("deadlock")
+    )
+    outer = RuntimeError("wrapper")
+    outer.__cause__ = RetryableTransactionError("nested serialization")
+    assert replay._is_retryable_transaction_error(outer)
+    assert not replay._is_retryable_transaction_error(
+        RuntimeError("ordinary failure")
+    )
+
+
+def test_snapshot_retries_retryable_serialization_failure():
+    db = DbState()
+    witness = FakeWitness(db)
+    guard = authority(db, witness)
+    db.retryable_commit_failures = 1
+    state = guard.synchronize()
+    assert state["generation"] == 0
+    assert db.retryable_commit_failures == 0

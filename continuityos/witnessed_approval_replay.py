@@ -2,8 +2,10 @@
 
 R24 composes PostgreSQL replay state with an external append-only witness.  The
 witness is authoritative for monotonic claim history; PostgreSQL can be rebuilt
-from witnessed records after a database snapshot rollback.  No witness backend
-is silently substituted or auto-provisioned.
+from witnessed records after a database snapshot rollback.  R25 adds bounded
+retry hardening for PostgreSQL serialization/deadlock aborts discovered by the
+real qualification harness.  No witness backend is silently substituted or
+auto-provisioned.
 """
 from __future__ import annotations
 
@@ -35,6 +37,23 @@ RECORD_SCHEMA = "continuityos.replay_witness_record/v1"
 ROLLBACK_PROTECTION = "EXTERNAL_APPEND_ONLY_WITNESS"
 WITNESS_SCOPE = "EXTERNAL_APPEND_ONLY"
 GENESIS_DOMAIN = "continuityos.replay_witness_genesis/v1"
+_RETRYABLE_TRANSACTION_SQLSTATES = frozenset({"40001", "40P01"})
+
+
+def _is_retryable_transaction_error(exc: BaseException) -> bool:
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    for _depth in range(8):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        sqlstate = getattr(current, "sqlstate", None)
+        if sqlstate is None:
+            sqlstate = getattr(current, "pgcode", None)
+        if sqlstate in _RETRYABLE_TRANSACTION_SQLSTATES:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _generation(value: object) -> int:
@@ -540,67 +559,81 @@ class PostgresWitnessedApprovalReplayAuthority:
             )
 
     def _snapshot_database(self) -> dict[str, Any]:
-        con = self._open()
-        cur = None
-        try:
-            cur = con.cursor()
-            cur.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
-            self._require_schema_meta(cur)
-            value = self._read_state_for_update(cur)
-            self._audit_database(cur, value)
-            con.commit()
-            return dict(value)
-        except MultiHostApprovalReplayError:
+        for _attempt in range(8):
+            con = self._open()
+            cur = None
             try:
-                con.rollback()
-            except Exception:
-                pass
-            raise
-        except Exception as exc:
-            try:
-                con.rollback()
-            except Exception:
-                pass
-            raise MultiHostApprovalReplayError(
-                "witnessed replay: database snapshot failed"
-            ) from exc
-        finally:
-            _close_quietly(cur)
-            _close_quietly(con)
+                cur = con.cursor()
+                cur.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+                self._require_schema_meta(cur)
+                value = self._read_state_for_update(cur)
+                self._audit_database(cur, value)
+                con.commit()
+                return dict(value)
+            except MultiHostApprovalReplayError:
+                try:
+                    con.rollback()
+                except Exception:
+                    pass
+                raise
+            except Exception as exc:
+                try:
+                    con.rollback()
+                except Exception:
+                    pass
+                if _is_retryable_transaction_error(exc):
+                    continue
+                raise MultiHostApprovalReplayError(
+                    "witnessed replay: database snapshot failed"
+                ) from exc
+            finally:
+                _close_quietly(cur)
+                _close_quietly(con)
+        raise MultiHostApprovalReplayError(
+            "witnessed replay: database snapshot contention"
+        )
 
-    def _read_claim_row(self, approval_id: str) -> tuple[str, str, str, str] | None:
-        con = self._open()
-        cur = None
-        try:
-            cur = con.cursor()
-            cur.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
-            self._require_schema_meta(cur)
-            cur.execute(
-                "SELECT subject_json, subject_sha256, nonce, digest_sha256 "
-                "FROM continuityos_approval_claims "
-                "WHERE namespace=%s AND approval_id=%s",
-                (self.namespace, approval_id),
-            )
-            row = cur.fetchone()
-            con.commit()
-            return None if row is None else tuple(row)
-        except MultiHostApprovalReplayError:
+    def _read_claim_row(
+        self, approval_id: str
+    ) -> tuple[str, str, str, str] | None:
+        for _attempt in range(8):
+            con = self._open()
+            cur = None
             try:
-                con.rollback()
-            except Exception:
-                pass
-            raise
-        except Exception as exc:
-            try:
-                con.rollback()
-            except Exception:
-                pass
-            raise MultiHostApprovalReplayError(
-                "witnessed replay: claim read failed"
-            ) from exc
-        finally:
-            _close_quietly(cur)
-            _close_quietly(con)
+                cur = con.cursor()
+                cur.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+                self._require_schema_meta(cur)
+                cur.execute(
+                    "SELECT subject_json, subject_sha256, nonce, digest_sha256 "
+                    "FROM continuityos_approval_claims "
+                    "WHERE namespace=%s AND approval_id=%s",
+                    (self.namespace, approval_id),
+                )
+                row = cur.fetchone()
+                con.commit()
+                return None if row is None else tuple(row)
+            except MultiHostApprovalReplayError:
+                try:
+                    con.rollback()
+                except Exception:
+                    pass
+                raise
+            except Exception as exc:
+                try:
+                    con.rollback()
+                except Exception:
+                    pass
+                if _is_retryable_transaction_error(exc):
+                    continue
+                raise MultiHostApprovalReplayError(
+                    "witnessed replay: claim read failed"
+                ) from exc
+            finally:
+                _close_quietly(cur)
+                _close_quietly(con)
+        raise MultiHostApprovalReplayError(
+            "witnessed replay: claim read contention"
+        )
 
     def _receipt_for_existing(
         self,
@@ -708,6 +741,8 @@ class PostgresWitnessedApprovalReplayAuthority:
                     con.rollback()
                 except Exception:
                     pass
+                if _is_retryable_transaction_error(exc):
+                    continue
                 raise MultiHostApprovalReplayError(
                     "witnessed replay: synchronization failed"
                 ) from exc
