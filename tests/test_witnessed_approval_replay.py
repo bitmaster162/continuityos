@@ -665,17 +665,26 @@ def test_retryable_transaction_error_detection_is_sqlstate_scoped():
     )
 
 
-def test_snapshot_retry_budget_is_shared_across_calls():
+def test_snapshot_retry_budget_counts_failures_not_successful_calls():
     db = DbState()
     witness = FakeWitness(db)
     guard = authority(db, witness)
     budget = replay._RetryBudget(2)
+
+    for _ in range(replay._LOGICAL_CONTENTION_LIMIT + 1):
+        state = guard._snapshot_database(retry_budget=budget)
+        assert state["generation"] == 0
+    assert budget.remaining == 2
+
     db.retryable_commit_failures = 1
     state = guard._snapshot_database(retry_budget=budget)
     assert state["generation"] == 0
-    assert budget.remaining == 0
+    assert budget.remaining == 1
+
+    db.retryable_commit_failures = 2
     with pytest.raises(MultiHostApprovalReplayError, match="database snapshot contention"):
         guard._snapshot_database(retry_budget=budget)
+    assert budget.remaining == 0
 
 
 def test_snapshot_retries_retryable_serialization_failure():

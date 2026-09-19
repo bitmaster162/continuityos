@@ -577,8 +577,11 @@ class PostgresWitnessedApprovalReplayAuthority:
     def _snapshot_database(
         self, *, retry_budget: _RetryBudget | None = None
     ) -> dict[str, Any]:
-        budget = retry_budget or _RetryBudget(_DB_TRANSACTION_RETRY_LIMIT)
-        while budget.take():
+        # The limit historically means at most 8 total transaction attempts:
+        # one initial attempt plus up to 7 retryable failures. Successful
+        # snapshots must not consume the shared retry budget.
+        budget = retry_budget or _RetryBudget(_DB_TRANSACTION_RETRY_LIMIT - 1)
+        while True:
             con = self._open()
             cur = None
             try:
@@ -601,18 +604,17 @@ class PostgresWitnessedApprovalReplayAuthority:
                 except Exception:
                     pass
                 if _is_retryable_transaction_error(exc):
-                    continue
+                    if budget.take():
+                        continue
+                    raise MultiHostApprovalReplayError(
+                        "witnessed replay: database snapshot contention"
+                    ) from exc
                 raise MultiHostApprovalReplayError(
                     "witnessed replay: database snapshot failed"
                 ) from exc
             finally:
                 _close_quietly(cur)
                 _close_quietly(con)
-        # Exhausting the DB transaction budget is terminal fail-closed for
-        # this call. Do not multiply it by re-entering an outer logical loop.
-        raise MultiHostApprovalReplayError(
-            "witnessed replay: database snapshot contention"
-        )
 
     def _read_claim_row(
         self, approval_id: str
@@ -683,9 +685,9 @@ class PostgresWitnessedApprovalReplayAuthority:
         )
 
     def synchronize(self) -> dict[str, Any]:
-        # Share one snapshot retry budget across the whole logical operation so
-        # near-exhaustion cannot reset on every outer contention attempt.
-        snapshot_retry_budget = _RetryBudget(_DB_TRANSACTION_RETRY_LIMIT)
+        # Share one retryable-failure budget across the whole logical
+        # operation. Successful snapshot calls do not consume it.
+        snapshot_retry_budget = _RetryBudget(_DB_TRANSACTION_RETRY_LIMIT - 1)
         for _attempt in range(_LOGICAL_CONTENTION_LIMIT):
             db_snapshot = self._snapshot_database(
                 retry_budget=snapshot_retry_budget
