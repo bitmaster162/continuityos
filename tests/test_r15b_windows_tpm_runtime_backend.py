@@ -5,6 +5,7 @@ import base64
 import hashlib
 import inspect
 import json
+import struct
 
 import pytest
 
@@ -609,3 +610,69 @@ def test_primed_unverified_retries_verification_only() -> None:
     assert calls["count"] == 2
     assert transport.define_attempts == 0
     assert transport.primer_attempts == 0
+
+
+def _pw_response(*, parameters: bytes, attrs: int) -> bytes:
+    auth = b"\x00\x00" + bytes([attrs]) + b"\x00\x00"
+    total = 10 + 4 + len(parameters) + len(auth)
+    return (
+        struct.pack(">HII", runtime.TPM_ST_SESSIONS, total, 0)
+        + struct.pack(">I", len(parameters))
+        + parameters
+        + auth
+    )
+
+
+def test_pw_response_accepts_observed_continue_session_attribute() -> None:
+    parameters = b"\x00\x20" + bytes.fromhex("54d69bcdee19684366afcc77cf894482b81fc0864e9b43d769adc020632147e4")
+    raw = _pw_response(
+        parameters=parameters,
+        attrs=runtime.TPMA_SESSION_CONTINUESESSION,
+    )
+    assert raw[-5:].hex() == "0000010000"
+    assert runtime._require_pw_response(raw) == parameters
+
+
+def test_pw_response_accepts_zero_session_attribute() -> None:
+    parameters = b"ok"
+    raw = _pw_response(parameters=parameters, attrs=0)
+    assert runtime._require_pw_response(raw) == parameters
+
+
+@pytest.mark.parametrize("attrs", [0x02, 0x20, 0x80, 0xFF])
+def test_pw_response_rejects_unreviewed_session_attribute_bits(attrs: int) -> None:
+    raw = _pw_response(parameters=b"", attrs=attrs)
+    with pytest.raises(
+        runtime.WindowsTpmRuntimeError,
+        match="password response auth area is invalid",
+    ):
+        runtime._require_pw_response(raw)
+
+
+def test_pw_response_rejects_nonempty_nonce_or_hmac() -> None:
+    parameters = b""
+    nonce_auth = b"\x00\x01x\x01\x00\x00"
+    total = 10 + 4 + len(nonce_auth)
+    raw = (
+        struct.pack(">HII", runtime.TPM_ST_SESSIONS, total, 0)
+        + struct.pack(">I", 0)
+        + nonce_auth
+    )
+    with pytest.raises(
+        runtime.WindowsTpmRuntimeError,
+        match="password response auth area is invalid",
+    ):
+        runtime._require_pw_response(raw)
+
+    hmac_auth = b"\x00\x00\x01\x00\x01x"
+    total = 10 + 4 + len(hmac_auth)
+    raw = (
+        struct.pack(">HII", runtime.TPM_ST_SESSIONS, total, 0)
+        + struct.pack(">I", 0)
+        + hmac_auth
+    )
+    with pytest.raises(
+        runtime.WindowsTpmRuntimeError,
+        match="password response auth area is invalid",
+    ):
+        runtime._require_pw_response(raw)

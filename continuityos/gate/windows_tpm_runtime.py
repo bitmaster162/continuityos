@@ -31,6 +31,7 @@ TPM_ST_SESSIONS = 0x8002
 TPM_RS_PW = 0x40000009
 TPM_CC_NV_EXTEND = 0x00000136
 TPM_CC_NV_READ = 0x0000014E
+TPMA_SESSION_CONTINUESESSION = 0x01
 
 _ALLOWED_RUNTIME_COMMANDS = frozenset({TPM_CC_NV_READ, TPM_CC_NV_EXTEND})
 
@@ -108,8 +109,14 @@ def _require_pw_response(data: bytes) -> bytes:
     nonce_size = int.from_bytes(auth[0:2], "big")
     attrs = auth[2]
     hmac_size = int.from_bytes(auth[3:5], "big")
-    if nonce_size != 0 or attrs != 0 or hmac_size != 0:
-        raise WindowsTpmRuntimeError("TPM password response auth is not empty")
+    if (
+        nonce_size != 0
+        or attrs not in (0, TPMA_SESSION_CONTINUESESSION)
+        or hmac_size != 0
+    ):
+        raise WindowsTpmRuntimeError(
+            "TPM password response auth area is invalid"
+        )
     return parameters
 
 
