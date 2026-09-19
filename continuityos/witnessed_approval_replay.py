@@ -38,12 +38,15 @@ ROLLBACK_PROTECTION = "EXTERNAL_APPEND_ONLY_WITNESS"
 WITNESS_SCOPE = "EXTERNAL_APPEND_ONLY"
 GENESIS_DOMAIN = "continuityos.replay_witness_genesis/v1"
 _RETRYABLE_TRANSACTION_SQLSTATES = frozenset({"40001", "40P01"})
+_DB_TRANSACTION_RETRY_LIMIT = 8
+_LOGICAL_CONTENTION_LIMIT = 8
+_EXCEPTION_CHAIN_LIMIT = 8
 
 
 def _is_retryable_transaction_error(exc: BaseException) -> bool:
     current: BaseException | None = exc
     seen: set[int] = set()
-    for _depth in range(8):
+    for _depth in range(_EXCEPTION_CHAIN_LIMIT):
         if current is None or id(current) in seen:
             break
         seen.add(id(current))
@@ -559,7 +562,7 @@ class PostgresWitnessedApprovalReplayAuthority:
             )
 
     def _snapshot_database(self) -> dict[str, Any]:
-        for _attempt in range(8):
+        for _attempt in range(_DB_TRANSACTION_RETRY_LIMIT):
             con = self._open()
             cur = None
             try:
@@ -589,6 +592,8 @@ class PostgresWitnessedApprovalReplayAuthority:
             finally:
                 _close_quietly(cur)
                 _close_quietly(con)
+        # Exhausting the DB transaction budget is terminal fail-closed for
+        # this call. Do not multiply it by re-entering an outer logical loop.
         raise MultiHostApprovalReplayError(
             "witnessed replay: database snapshot contention"
         )
@@ -596,7 +601,7 @@ class PostgresWitnessedApprovalReplayAuthority:
     def _read_claim_row(
         self, approval_id: str
     ) -> tuple[str, str, str, str] | None:
-        for _attempt in range(8):
+        for _attempt in range(_DB_TRANSACTION_RETRY_LIMIT):
             con = self._open()
             cur = None
             try:
@@ -631,6 +636,8 @@ class PostgresWitnessedApprovalReplayAuthority:
             finally:
                 _close_quietly(cur)
                 _close_quietly(con)
+        # Exhausting the DB transaction budget is terminal fail-closed for
+        # this call. The caller must not turn this into another retry budget.
         raise MultiHostApprovalReplayError(
             "witnessed replay: claim read contention"
         )
@@ -660,7 +667,7 @@ class PostgresWitnessedApprovalReplayAuthority:
         )
 
     def synchronize(self) -> dict[str, Any]:
-        for _attempt in range(8):
+        for _attempt in range(_LOGICAL_CONTENTION_LIMIT):
             db_snapshot = self._snapshot_database()
 
             # External witness I/O is deliberately outside every PostgreSQL
@@ -770,7 +777,7 @@ class PostgresWitnessedApprovalReplayAuthority:
         digest_value = _hex64("digest_sha256", digest_sha256)
 
         last_append_error: MultiHostApprovalReplayError | None = None
-        for _attempt in range(8):
+        for _attempt in range(_LOGICAL_CONTENTION_LIMIT):
             state_value = self.synchronize()
             existing = self._read_claim_row(identifier)
             if existing is not None:
