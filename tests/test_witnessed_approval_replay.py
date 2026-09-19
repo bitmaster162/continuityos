@@ -664,6 +664,22 @@ def test_retryable_transaction_error_detection_is_sqlstate_scoped():
         RuntimeError("ordinary failure")
     )
 
+    # The explicit cause-chain ceiling is a fail-closed safety boundary:
+    # a reviewed SQLSTATE inside the ceiling is retryable; one beyond it is not.
+    inside = RetryableTransactionError("inside bounded cause chain")
+    for _ in range(replay._EXCEPTION_CHAIN_LIMIT - 1):
+        wrapper = RuntimeError("wrapper")
+        wrapper.__cause__ = inside
+        inside = wrapper
+    assert replay._is_retryable_transaction_error(inside)
+
+    outside = RetryableTransactionError("outside bounded cause chain")
+    for _ in range(replay._EXCEPTION_CHAIN_LIMIT):
+        wrapper = RuntimeError("wrapper")
+        wrapper.__cause__ = outside
+        outside = wrapper
+    assert not replay._is_retryable_transaction_error(outside)
+
 
 def test_snapshot_retry_budget_counts_failures_not_successful_calls():
     db = DbState()

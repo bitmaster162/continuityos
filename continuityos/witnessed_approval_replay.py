@@ -38,6 +38,8 @@ ROLLBACK_PROTECTION = "EXTERNAL_APPEND_ONLY_WITNESS"
 WITNESS_SCOPE = "EXTERNAL_APPEND_ONLY"
 GENESIS_DOMAIN = "continuityos.replay_witness_genesis/v1"
 _RETRYABLE_TRANSACTION_SQLSTATES = frozenset({"40001", "40P01"})
+# Review-frozen safety ceilings. These are intentionally not runtime
+# configurable: the reviewed worst-case retry/inspection work stays bounded.
 _DB_TRANSACTION_RETRY_LIMIT = 8
 _LOGICAL_CONTENTION_LIMIT = 8
 _EXCEPTION_CHAIN_LIMIT = 8
@@ -55,6 +57,12 @@ class _RetryBudget:
 
 
 def _is_retryable_transaction_error(exc: BaseException) -> bool:
+    """Recognize reviewed SQLSTATEs within the bounded explicit cause chain.
+
+    A matching cause deeper than the review-frozen chain ceiling is
+    intentionally treated as non-retryable. That fails closed on availability
+    rather than allowing unbounded or attacker-shaped exception traversal.
+    """
     current: BaseException | None = exc
     seen: set[int] = set()
     for _depth in range(_EXCEPTION_CHAIN_LIMIT):
@@ -577,6 +585,7 @@ class PostgresWitnessedApprovalReplayAuthority:
     def _snapshot_database(
         self, *, retry_budget: _RetryBudget | None = None
     ) -> dict[str, Any]:
+        """Read one serializable snapshot under the bounded retry budget."""
         # The limit historically means at most 8 total transaction attempts:
         # one initial attempt plus up to 7 retryable failures. Successful
         # snapshots must not consume the shared retry budget.
@@ -619,6 +628,7 @@ class PostgresWitnessedApprovalReplayAuthority:
     def _read_claim_row(
         self, approval_id: str
     ) -> tuple[str, str, str, str] | None:
+        """Read a claim with the same review-frozen transaction ceiling."""
         for _attempt in range(_DB_TRANSACTION_RETRY_LIMIT):
             con = self._open()
             cur = None
@@ -685,6 +695,7 @@ class PostgresWitnessedApprovalReplayAuthority:
         )
 
     def synchronize(self) -> dict[str, Any]:
+        """Reconcile PostgreSQL with the witness under bounded contention."""
         # Share one retryable-failure budget across the whole logical
         # operation. Successful snapshot calls do not consume it.
         snapshot_retry_budget = _RetryBudget(_DB_TRANSACTION_RETRY_LIMIT - 1)
