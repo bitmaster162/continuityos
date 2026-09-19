@@ -225,6 +225,11 @@ class WindowsTpmNvProvisioningPlan:
 
     @property
     def hardware_write_authorization_token(self) -> str:
+        """Return the reviewed-plan confirmation token.
+
+        This deterministic value is not a secret or an authentication
+        credential. Human execution authority remains external to this module.
+        """
         return (
             "APPROVE_CONTINUITYOS_R15B_HARDWARE_PROVISION_"
             + self.fingerprint[:16].upper()
@@ -650,13 +655,20 @@ class OfflineWindowsTpmNvProvisioner:
                     )
                 return self._verified_receipt(plan=plan)
             if state.state == STATE_EMPTY:
+                # Custody-only is intentionally not resumable across
+                # invocations: after an external TPM Clear/deletion it is
+                # indistinguishable from a crash immediately after custody
+                # creation. Create custody and attempt Define only within the
+                # same explicitly authorized invocation.
                 self._create_custody(secret_store=secret_store)
-                continue
-            if state.state == STATE_CUSTODY_ONLY:
                 self._define_from_custody(
                     plan=plan, secret_store=secret_store
                 )
                 continue
+            if state.state == STATE_CUSTODY_ONLY:
+                raise WindowsTpmProvisioningError(
+                    "custody-only state requires fresh explicit recovery authority"
+                )
             if state.state == STATE_DEFINED_UNPRIMED:
                 self._primer_from_custody(
                     plan=plan, secret_store=secret_store

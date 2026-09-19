@@ -104,8 +104,12 @@ trading, or capital action is authorized by this patch gate.
 Reviewed plan fingerprint:
 5ecae1fc79cf17f30862aa6f4678439e76d4e1c12a85ad47f3d7347f8b83aad1
 
-Generated future hardware-write token:
+Generated future plan-bound hardware-write confirmation token:
 APPROVE_CONTINUITYOS_R15B_HARDWARE_PROVISION_5ECAE1FC79CF17F3
+
+This deterministic token is not a secret and is not an authentication
+credential. It binds a call to the reviewed plan. Human execution authority is
+external and must be granted separately for the exact operation/state.
 
 
 ## Crash-resumable forward-only state machine
@@ -113,27 +117,36 @@ APPROVE_CONTINUITYOS_R15B_HARDWARE_PROVISION_5ECAE1FC79CF17F3
 Provisioning recovery is derived from durable DPAPI custody plus current TPM
 public state. It does not trust a local progress marker.
 
-The only resumable states are:
+Observed states are:
 
 - EMPTY: no custody and reviewed handle absent;
-- CUSTODY_ONLY: custody exists and handle absent;
+- CUSTODY_ONLY: custody exists and handle absent; this is a hard HOLD across
+  invocations because it is indistinguishable from external TPM Clear/deletion;
 - DEFINED_UNPRIMED: custody exists and exact definition public area is present;
 - PRIMED_UNVERIFIED: exact active WRITTEN public area is present but authorized
   digest verification did not complete;
 - PRIMED_VERIFIED: exact active public area and reviewed primed genesis digest
   are both verified.
 
-Forward transitions are bounded to:
-EMPTY -> CUSTODY_ONLY -> DEFINED_UNPRIMED -> PRIMED_UNVERIFIED/PRIMED_VERIFIED.
+The initial explicitly authorized invocation may advance:
+EMPTY -> create custody -> Define -> DEFINED_UNPRIMED -> PRIMED_UNVERIFIED/
+PRIMED_VERIFIED.
+
+CUSTODY_ONLY is deliberately not an automatic resume edge. If execution stops
+after custody creation but before a verifiable Define, a later invocation must
+HOLD for fresh explicit recovery/enrollment authority. This is the same
+fail-closed treatment used when an external TPM Clear/deletion leaves stale
+custody behind.
 
 A lost response after NV_DefineSpace is recovered by observing the exact
 definition public area and continuing with primer; NV_DefineSpace is not
 repeated. A lost response after primer is recovered by observing the exact
 WRITTEN public area and performing verification only; primer is not repeated.
 
-A handle without custody, an unreviewed public area, or an active digest that
-differs from the reviewed primed genesis is a hard HOLD. Recovery never invokes
-NV_UndefineSpace, TPM Clear, deletion, rollback, or automatic re-enrollment.
+A custody-only state, a handle without custody, an unreviewed public area, or an
+active digest that differs from the reviewed primed genesis is a hard HOLD.
+Recovery never invokes NV_UndefineSpace, TPM Clear, deletion, rollback, or
+automatic re-enrollment.
 
 
 ## Password authorization response parsing

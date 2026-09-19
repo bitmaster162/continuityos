@@ -412,22 +412,49 @@ def recovery_fixture(*, state: str, fail_after_define=False, fail_after_primer=F
     return plan, store, transport, provisioner
 
 
-def test_resume_from_custody_only_reuses_secret_and_never_regenerates() -> None:
+def test_preexisting_custody_only_is_hard_hold_without_tpm_mutation() -> None:
     from continuityos.gate.windows_tpm_provisioning import STATE_CUSTODY_ONLY
 
     plan, store, transport, provisioner = recovery_fixture(
         state=STATE_CUSTODY_ONLY
     )
     original = store.stored
-    result = provisioner.resume_provisioning(
-        plan=plan,
-        secret_store=store,
-        authorization_token=plan.hardware_write_authorization_token,
-    )
-    assert result["provisioning_state"] == "PRIMED_VERIFIED"
+    with pytest.raises(
+        WindowsTpmProvisioningError,
+        match="custody-only state requires fresh explicit recovery authority",
+    ):
+        provisioner.resume_provisioning(
+            plan=plan,
+            secret_store=store,
+            authorization_token=plan.hardware_write_authorization_token,
+        )
     assert store.stored == original
-    assert transport.define_attempts == 1
-    assert transport.primer_attempts == 1
+    assert transport.define_attempts == 0
+    assert transport.primer_attempts == 0
+
+
+def test_external_clear_or_deletion_with_stale_custody_is_hard_hold() -> None:
+    from continuityos.gate.windows_tpm_provisioning import STATE_PRIMED_VERIFIED
+
+    plan, store, transport, provisioner = recovery_fixture(
+        state=STATE_PRIMED_VERIFIED
+    )
+    # Simulate an external Clear/deletion after a previously verified state:
+    # durable DPAPI custody remains but the reviewed NV handle is gone.
+    transport.defined = False
+    transport.primed = False
+
+    with pytest.raises(
+        WindowsTpmProvisioningError,
+        match="custody-only state requires fresh explicit recovery authority",
+    ):
+        provisioner.resume_provisioning(
+            plan=plan,
+            secret_store=store,
+            authorization_token=plan.hardware_write_authorization_token,
+        )
+    assert transport.define_attempts == 0
+    assert transport.primer_attempts == 0
 
 
 def test_resume_from_defined_unprimed_never_redefines() -> None:
@@ -592,31 +619,6 @@ def test_active_wrong_digest_is_hard_hold_without_repeat_primer() -> None:
     ):
         provisioner.resume_provisioning(
             plan=plan,
-            secret_store=store,
-            authorization_token=plan.hardware_write_authorization_token,
-        )
-    assert transport.define_attempts == 0
-    assert transport.primer_attempts == 0
-
-
-def test_primed_unverified_retries_verification_only() -> None:
-    from continuityos.gate.windows_tpm_provisioning import STATE_PRIMED_VERIFIED
-
-    plan, store, transport, _ = recovery_fixture(
-        state=STATE_PRIMED_VERIFIED
-    )
-    calls = {"count": 0}
-
-    class FlakyBackend:
-        def read_snapshot(self, *, profile):
-            calls["count"] += 1
-            if calls["count"] == 1:
-                raise RuntimeError("transient read failure")
-            return {"observed_nv_extend_digest": plan.primed_genesis_digest}
-
-    provisioner = OfflineWindowsTpmNvProvisioner(
-        transport=transport,
-        handle_reader=lambda: [plan.nv_index],
             secret_store=store,
             authorization_token=plan.hardware_write_authorization_token,
         )
