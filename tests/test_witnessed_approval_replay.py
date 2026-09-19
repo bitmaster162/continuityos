@@ -657,9 +657,25 @@ def test_retryable_transaction_error_detection_is_sqlstate_scoped():
     outer = RuntimeError("wrapper")
     outer.__cause__ = RetryableTransactionError("nested serialization")
     assert replay._is_retryable_transaction_error(outer)
+    contextual = RuntimeError("ordinary wrapper")
+    contextual.__context__ = RetryableTransactionError("implicit serialization context")
+    assert not replay._is_retryable_transaction_error(contextual)
     assert not replay._is_retryable_transaction_error(
         RuntimeError("ordinary failure")
     )
+
+
+def test_snapshot_retry_budget_is_shared_across_calls():
+    db = DbState()
+    witness = FakeWitness(db)
+    guard = authority(db, witness)
+    budget = replay._RetryBudget(2)
+    db.retryable_commit_failures = 1
+    state = guard._snapshot_database(retry_budget=budget)
+    assert state["generation"] == 0
+    assert budget.remaining == 0
+    with pytest.raises(MultiHostApprovalReplayError, match="database snapshot contention"):
+        guard._snapshot_database(retry_budget=budget)
 
 
 def test_snapshot_retries_retryable_serialization_failure():

@@ -43,6 +43,17 @@ _LOGICAL_CONTENTION_LIMIT = 8
 _EXCEPTION_CHAIN_LIMIT = 8
 
 
+class _RetryBudget:
+    def __init__(self, limit: int) -> None:
+        self.remaining = limit
+
+    def take(self) -> bool:
+        if self.remaining <= 0:
+            return False
+        self.remaining -= 1
+        return True
+
+
 def _is_retryable_transaction_error(exc: BaseException) -> bool:
     current: BaseException | None = exc
     seen: set[int] = set()
@@ -55,7 +66,9 @@ def _is_retryable_transaction_error(exc: BaseException) -> bool:
             sqlstate = getattr(current, "pgcode", None)
         if sqlstate in _RETRYABLE_TRANSACTION_SQLSTATES:
             return True
-        current = current.__cause__ or current.__context__
+        # Retry only through an explicit causal chain. Implicit __context__
+        # can contain an unrelated prior serialization/deadlock exception.
+        current = current.__cause__
     return False
 
 
@@ -561,8 +574,11 @@ class PostgresWitnessedApprovalReplayAuthority:
                 "witnessed replay: database state CAS failed"
             )
 
-    def _snapshot_database(self) -> dict[str, Any]:
-        for _attempt in range(_DB_TRANSACTION_RETRY_LIMIT):
+    def _snapshot_database(
+        self, *, retry_budget: _RetryBudget | None = None
+    ) -> dict[str, Any]:
+        budget = retry_budget or _RetryBudget(_DB_TRANSACTION_RETRY_LIMIT)
+        while budget.take():
             con = self._open()
             cur = None
             try:
@@ -667,8 +683,13 @@ class PostgresWitnessedApprovalReplayAuthority:
         )
 
     def synchronize(self) -> dict[str, Any]:
+        # Share one snapshot retry budget across the whole logical operation so
+        # near-exhaustion cannot reset on every outer contention attempt.
+        snapshot_retry_budget = _RetryBudget(_DB_TRANSACTION_RETRY_LIMIT)
         for _attempt in range(_LOGICAL_CONTENTION_LIMIT):
-            db_snapshot = self._snapshot_database()
+            db_snapshot = self._snapshot_database(
+                retry_budget=snapshot_retry_budget
+            )
 
             # External witness I/O is deliberately outside every PostgreSQL
             # transaction/row lock. The witness CAS is the global monotonic
