@@ -465,14 +465,24 @@ class GateBroker:
                                     ["malformed matching candidate event"],
                                 )
                             action = payload.get("action")
-                            meta = action.get("meta") if isinstance(action, dict) else None
+                            # Pre-broker legacy preflights have no action/meta
+                            # request identity. They cannot be orphan candidates
+                            # for a broker request and must not block adoption.
+                            if not isinstance(action, dict):
+                                continue
+                            meta = action.get("meta")
+                            if meta is None:
+                                continue
                             if not isinstance(meta, dict):
                                 reg.rollback()
                                 return self._held(
                                     request_id, request_key,
                                     ["malformed matching candidate event"],
                                 )
-                            if meta.get("broker_request_key") == request_key:
+                            candidate_key = meta.get("broker_request_key")
+                            if candidate_key is None:
+                                continue
+                            if candidate_key == request_key:
                                 matching.append(
                                     (event_hash, payload, action, meta)
                                 )

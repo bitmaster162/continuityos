@@ -418,3 +418,48 @@ def test_orphaned_claim_is_held_through_broker(broker, tmp_path):
     assert "no verified terminal state" in result["reasons"][0]
     assert "orphaned prior claim" in result["status_stdout"]
     assert not (tmp_path / "effect.txt").exists()
+
+
+def test_legacy_preflight_without_broker_identity_does_not_block_new_request(
+    broker, tmp_path
+):
+    with Ledger(broker.ledger_path) as ledger:
+        legacy_hash = ledger.append("preflight", {
+            "action": None,
+            "decision": "ALLOW",
+            "rollback_plan": {},
+        })
+
+    script = _script(tmp_path)
+    result = broker.preflight_exec(
+        "after-legacy", [sys.executable, str(script)], str(tmp_path)
+    )
+
+    assert result["state"] == "PREFLIGHTED"
+    assert result["preflight_hash"] != legacy_hash
+    assert result["decision"] in ("ALLOW", "WARN", "REQUIRE_CONFIRMATION")
+
+
+def test_matching_broker_orphan_with_malformed_action_still_fails_closed(
+    broker, tmp_path
+):
+    request_id = "matching-malformed"
+    request_key = broker._key(request_id)
+    with Ledger(broker.ledger_path) as ledger:
+        malformed_hash = ledger.append("preflight", {
+            "action": {
+                "tool": "exec",
+                "meta": {"broker_request_key": request_key},
+            },
+            "decision": "ALLOW",
+            "rollback_plan": {},
+        })
+
+    script = _script(tmp_path)
+    result = broker.preflight_exec(
+        request_id, [sys.executable, str(script)], str(tmp_path)
+    )
+
+    assert result["state"] == "HELD"
+    assert result["preflight_hash"] == malformed_hash
+    assert result["reasons"] == ["action is incomplete"]
