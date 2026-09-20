@@ -1,6 +1,7 @@
 """R15 hardware-free TPM2 monotonic execution-anchor acceptance tests."""
 from __future__ import annotations
 
+from pathlib import Path
 import hashlib
 import json
 import os
@@ -806,3 +807,231 @@ def test_terminal_anchor_replay_is_rejected_without_second_extend(r15):
             )
     assert provider.extend_calls == before
     assert (tmp_path / "effect.txt").read_text() == "x"
+
+
+def test_r15e_started_fail_before_plans_one_extend_then_requires_outcome_evidence(r15):
+    broker = r15["broker"]
+    provider = r15["provider"]
+    tmp_path = r15["tmp_path"]
+    pre = _preflight(broker, tmp_path, "r15e-start-before")
+    provider.fail_before.add(2)
+    first = broker.execute_preflight("r15e-start-before")
+    assert first["state"] == "HELD", first
+    assert provider.extend_calls == 1
+    assert not (tmp_path / "effect.txt").exists()
+    provider.fail_before.clear()
+
+    with broker._ledger() as ledger:
+        plan = r15["anchor"].plan_offline_reconciliation(
+            ledger, preflight_hash=pre["preflight_hash"]
+        )
+        assert plan["action"] == "NEEDS_EXACTLY_ONE_EXTEND"
+        result = r15["anchor"].apply_offline_reconciliation(
+            ledger, preflight_hash=pre["preflight_hash"],
+            plan_hash=plan["plan_hash"],
+        )
+        assert result["status"] == "RECONCILED"
+        follow = r15["anchor"].plan_offline_reconciliation(
+            ledger, preflight_hash=pre["preflight_hash"]
+        )
+    assert provider.extend_calls == 2
+    assert follow["action"] == "OUTCOME_EVIDENCE_REQUIRED"
+    assert not (tmp_path / "effect.txt").exists()
+
+
+def test_r15e_started_fail_after_appends_exact_receipt_without_second_extend(r15):
+    broker = r15["broker"]
+    provider = r15["provider"]
+    tmp_path = r15["tmp_path"]
+    pre = _preflight(broker, tmp_path, "r15e-start-after")
+    provider.fail_after.add(2)
+    first = broker.execute_preflight("r15e-start-after")
+    assert first["state"] == "HELD", first
+    assert provider.extend_calls == 2
+    assert not (tmp_path / "effect.txt").exists()
+
+    with broker._ledger() as ledger:
+        plan = r15["anchor"].plan_offline_reconciliation(
+            ledger, preflight_hash=pre["preflight_hash"]
+        )
+        assert plan["action"] == "APPEND_EXACT_RECEIPT_ONLY"
+        result = r15["anchor"].apply_offline_reconciliation(
+            ledger, preflight_hash=pre["preflight_hash"],
+            plan_hash=plan["plan_hash"],
+        )
+        follow = r15["anchor"].plan_offline_reconciliation(
+            ledger, preflight_hash=pre["preflight_hash"]
+        )
+    assert result["status"] == "RECONCILED"
+    assert provider.extend_calls == 2
+    assert follow["action"] == "OUTCOME_EVIDENCE_REQUIRED"
+
+
+def test_r15e_terminal_fail_before_plans_exactly_one_extend(r15):
+    broker = r15["broker"]
+    provider = r15["provider"]
+    tmp_path = r15["tmp_path"]
+    pre = _preflight(broker, tmp_path, "r15e-terminal-before")
+    provider.fail_before.add(3)
+    first = broker.execute_preflight("r15e-terminal-before")
+    assert first["state"] == "HELD", first
+    assert provider.extend_calls == 2
+    assert (tmp_path / "effect.txt").read_text() == "x"
+    provider.fail_before.clear()
+
+    with broker._ledger() as ledger:
+        plan = r15["anchor"].plan_offline_reconciliation(
+            ledger, preflight_hash=pre["preflight_hash"]
+        )
+        assert plan["action"] == "NEEDS_EXACTLY_ONE_EXTEND"
+        result = r15["anchor"].apply_offline_reconciliation(
+            ledger, preflight_hash=pre["preflight_hash"],
+            plan_hash=plan["plan_hash"],
+        )
+        follow = r15["anchor"].plan_offline_reconciliation(
+            ledger, preflight_hash=pre["preflight_hash"]
+        )
+    assert result["status"] == "RECONCILED"
+    assert provider.extend_calls == 3
+    assert follow["action"] == "ALREADY_RECONCILED"
+
+
+def test_r15e_terminal_fail_after_appends_only_without_second_extend(r15):
+    broker = r15["broker"]
+    provider = r15["provider"]
+    tmp_path = r15["tmp_path"]
+    pre = _preflight(broker, tmp_path, "r15e-terminal-after")
+    provider.fail_after.add(3)
+    first = broker.execute_preflight("r15e-terminal-after")
+    assert first["state"] == "HELD", first
+    assert provider.extend_calls == 3
+    assert (tmp_path / "effect.txt").read_text() == "x"
+
+    with broker._ledger() as ledger:
+        plan = r15["anchor"].plan_offline_reconciliation(
+            ledger, preflight_hash=pre["preflight_hash"]
+        )
+        assert plan["action"] == "APPEND_EXACT_RECEIPT_ONLY"
+        result = r15["anchor"].apply_offline_reconciliation(
+            ledger, preflight_hash=pre["preflight_hash"],
+            plan_hash=plan["plan_hash"],
+        )
+    assert result["status"] == "RECONCILED"
+    assert provider.extend_calls == 3
+
+
+def test_r15e_diverged_hardware_holds_without_extend_or_receipt(r15):
+    broker = r15["broker"]
+    provider = r15["provider"]
+    tmp_path = r15["tmp_path"]
+    pre = _preflight(broker, tmp_path, "r15e-diverged")
+    provider.fail_before.add(2)
+    first = broker.execute_preflight("r15e-diverged")
+    assert first["state"] == "HELD", first
+    provider.digest = _expected_digest(provider.digest, "f" * 64)
+    before_calls = provider.extend_calls
+
+    with broker._ledger() as ledger:
+        plan = r15["anchor"].plan_offline_reconciliation(
+            ledger, preflight_hash=pre["preflight_hash"]
+        )
+        assert plan["action"] == "HOLD_DIVERGED"
+        with pytest.raises(MonotonicAnchorError, match="HOLD_DIVERGED"):
+            r15["anchor"].apply_offline_reconciliation(
+                ledger, preflight_hash=pre["preflight_hash"],
+                plan_hash=plan["plan_hash"],
+            )
+        assert ledger.con.execute(
+            "SELECT COUNT(*) FROM events WHERE kind=?", (EVENT_KIND,)
+        ).fetchone()[0] == 1
+    assert provider.extend_calls == before_calls
+
+
+def test_r15e_plan_hash_is_exact_and_duplicate_apply_never_extends_twice(r15):
+    broker = r15["broker"]
+    provider = r15["provider"]
+    tmp_path = r15["tmp_path"]
+    pre = _preflight(broker, tmp_path, "r15e-plan-hash")
+    provider.fail_before.add(3)
+    assert broker.execute_preflight("r15e-plan-hash")["state"] == "HELD"
+    provider.fail_before.clear()
+
+    with broker._ledger() as ledger:
+        plan = r15["anchor"].plan_offline_reconciliation(
+            ledger, preflight_hash=pre["preflight_hash"]
+        )
+        before_calls = provider.extend_calls
+        with pytest.raises(MonotonicAnchorError, match="plan hash differs"):
+            r15["anchor"].apply_offline_reconciliation(
+                ledger, preflight_hash=pre["preflight_hash"],
+                plan_hash="0" * 63 + "1",
+            )
+        assert provider.extend_calls == before_calls
+        result = r15["anchor"].apply_offline_reconciliation(
+            ledger, preflight_hash=pre["preflight_hash"],
+            plan_hash=plan["plan_hash"],
+        )
+        assert result["status"] == "RECONCILED"
+        calls_after = provider.extend_calls
+        with pytest.raises(MonotonicAnchorError, match="plan hash differs"):
+            r15["anchor"].apply_offline_reconciliation(
+                ledger, preflight_hash=pre["preflight_hash"],
+                plan_hash=plan["plan_hash"],
+            )
+    assert provider.extend_calls == calls_after
+
+
+def test_r15e_receipt_failure_sidecar_is_advisory_not_outcome_authority(r15):
+    broker = r15["broker"]
+    provider = r15["provider"]
+    tmp_path = r15["tmp_path"]
+    pre = _preflight(broker, tmp_path, "r15e-sidecar")
+    provider.fail_before.add(2)
+    assert broker.execute_preflight("r15e-sidecar")["state"] == "HELD"
+    provider.fail_before.clear()
+
+    with broker._ledger() as ledger:
+        plan = r15["anchor"].plan_offline_reconciliation(
+            ledger, preflight_hash=pre["preflight_hash"]
+        )
+        r15["anchor"].apply_offline_reconciliation(
+            ledger, preflight_hash=pre["preflight_hash"],
+            plan_hash=plan["plan_hash"],
+        )
+
+    sidecar = Path(broker.ledger_path + ".receipt_failures.jsonl")
+    sidecar.write_text(json.dumps({
+        "status": "EXECUTED_BUT_RECEIPT_FAILED",
+        "preflight_hash": pre["preflight_hash"],
+        "process_exit_code": 0,
+        "instruction": "advisory only",
+    }) + "\\n", encoding="utf-8")
+
+    with broker._ledger() as ledger:
+        follow = r15["anchor"].plan_offline_reconciliation(
+            ledger, preflight_hash=pre["preflight_hash"]
+        )
+    assert follow["action"] == "OUTCOME_EVIDENCE_REQUIRED"
+    assert provider.extend_calls == 2
+
+
+def test_r15e_stale_plan_fails_when_pending_boundary_is_no_longer_frontier(r15):
+    broker = r15["broker"]
+    provider = r15["provider"]
+    tmp_path = r15["tmp_path"]
+    pre = _preflight(broker, tmp_path, "r15e-stale-frontier")
+    provider.fail_before.add(3)
+    assert broker.execute_preflight("r15e-stale-frontier")["state"] == "HELD"
+
+    with broker._ledger() as ledger:
+        plan = r15["anchor"].plan_offline_reconciliation(
+            ledger, preflight_hash=pre["preflight_hash"]
+        )
+        before_calls = provider.extend_calls
+        ledger.append("audit_note", {"note": "frontier moved after recovery plan"})
+        with pytest.raises(MonotonicAnchorError):
+            r15["anchor"].apply_offline_reconciliation(
+                ledger, preflight_hash=pre["preflight_hash"],
+                plan_hash=plan["plan_hash"],
+            )
+    assert provider.extend_calls == before_calls
