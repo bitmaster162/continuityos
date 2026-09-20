@@ -27,6 +27,15 @@ from . import __version__
 PROTOCOL = "2024-11-05"
 _PRODUCT_LEDGER = _Ledger
 
+
+def _build_windows_r15_monotonic_anchor(**kwargs):
+    # Lazy import keeps ordinary R14/non-Windows product startup unchanged.
+    from .gate.windows_tpm_product_runtime import (
+        build_windows_r15_monotonic_anchor,
+    )
+    return build_windows_r15_monotonic_anchor(**kwargs)
+
+
 TOOLS = [
  {"name":"remember","description":"Store a durable memory. Use for facts about the user, projects, rules, decisions you should recall later.",
   "inputSchema":{"type":"object","properties":{
@@ -96,7 +105,13 @@ TOOLS = [
 ]
 
 class Server:
-    def __init__(self, db=None, policy_path: str = "", db_source: str = ""):
+    def __init__(
+        self, db=None, policy_path: str = "", db_source: str = "",
+        *, governance_witness_path: str = "",
+        r15_controller_profile_path: str = "",
+        r15_controller_profile_sha256: str = "",
+        r15_custody_path: str = "",
+    ):
         resolved = resolve_memory_db(db)
         db = resolved["path"]
         self.db_path = db
@@ -123,13 +138,47 @@ class Server:
         runtime_policy = policy_path or _discover_policy(os.path.expanduser("~/.continuityos"))
         self.policy = _load_policy(runtime_policy)
         governance_root = os.path.expanduser("~/.continuityos")
+        witness_path = (
+            os.path.abspath(os.path.expanduser(governance_witness_path))
+            if governance_witness_path
+            else os.path.join(governance_root, "governance.witness.json")
+        )
         self._governance_paths = {
             "registry_path": os.path.join(governance_root, "gate_broker.db"),
             "ledger_path": os.path.join(governance_root, "ledger.db"),
-            "witness_path": os.path.join(
-                governance_root, "governance.witness.json"
-            ),
+            "witness_path": witness_path,
         }
+        self._monotonic_anchor = None
+        self._r15_runtime_error = ""
+        r15_values = {
+            "controller_profile_path": r15_controller_profile_path,
+            "controller_profile_sha256": r15_controller_profile_sha256,
+            "custody_path": r15_custody_path,
+        }
+        supplied = {key for key, value in r15_values.items() if value}
+        if supplied:
+            missing = sorted(set(r15_values) - supplied)
+            if missing:
+                self._r15_runtime_error = (
+                    "explicit R15 runtime configuration is incomplete; missing "
+                    + ", ".join(missing)
+                )
+            elif not governance_witness_path:
+                self._r15_runtime_error = (
+                    "explicit R15 runtime requires an explicit external governance witness path"
+                )
+            else:
+                try:
+                    self._monotonic_anchor = _build_windows_r15_monotonic_anchor(
+                        controller_profile_path=r15_controller_profile_path,
+                        controller_profile_sha256=r15_controller_profile_sha256,
+                        custody_path=r15_custody_path,
+                    )
+                except Exception as exc:
+                    self._r15_runtime_error = (
+                        "R15 runtime binding failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
         self._broker = None
         self.turns = 0
         self.std = 10  # Safe Turn Depth: re-inject canon before omission-rules ("never do X") decay (long-session SRD research)
@@ -296,11 +345,15 @@ class Server:
             paths = getattr(self, "_governance_paths", None)
             if paths is None:
                 raise RuntimeError("product witness configuration unavailable")
+            runtime_error = getattr(self, "_r15_runtime_error", "")
+            if runtime_error:
+                raise RuntimeError(runtime_error)
             self._broker = _GateBroker(
                 **paths,
                 db=self.db_path,
                 policy_snapshot=self.policy,
                 context_error=self._governance_context_error,
+                monotonic_anchor=getattr(self, "_monotonic_anchor", None),
             )
         return self._broker
 
@@ -311,8 +364,30 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default=None)
     ap.add_argument("--policy", default="", help="Path to one JSON policy, or YAML when PyYAML is installed")
+    ap.add_argument(
+        "--governance-witness", default="",
+        help="Explicit external R14 witness path for product governance",
+    )
+    ap.add_argument(
+        "--r15-controller-profile", default="",
+        help="Explicit external R15 controller binding profile path",
+    )
+    ap.add_argument(
+        "--r15-controller-profile-sha256", default="",
+        help="Pinned lowercase SHA-256 of the R15 controller profile",
+    )
+    ap.add_argument(
+        "--r15-custody", default="",
+        help="Explicit DPAPI custody envelope path for the provisioned R15 NV index",
+    )
     a = ap.parse_args()
-    srv = Server(a.db, a.policy)
+    srv = Server(
+        a.db, a.policy,
+        governance_witness_path=a.governance_witness,
+        r15_controller_profile_path=a.r15_controller_profile,
+        r15_controller_profile_sha256=a.r15_controller_profile_sha256,
+        r15_custody_path=a.r15_custody,
+    )
     for line in sys.stdin:
         line = line.strip()
         if not line: continue
