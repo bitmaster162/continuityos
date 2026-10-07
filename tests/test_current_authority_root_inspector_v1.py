@@ -53,8 +53,8 @@ def test_inspector_reuses_current_pointer_and_root_validators(monkeypatch, tmp_p
         lambda value, actual_sha256, expected_sha256: {
             "generation": "R64",
             "accepted_manifest_sha256": "5" * 64,
-            "activation_status": "ACTIVE",
-            "activation_decision": "ACCEPT_R64_POINTER_PROMOTION",
+            "activation_status": "ACTIVE_RESEALED_AFTER_EXACT_PROVIDER_READBACK",
+            "activation_decision": "APPLY_R64_CANONICAL_RESEAL_V1",
             "human_sovereign": "ROBERT",
             "effect_ceiling": {"NO_FURTHER_AGENT_WORK": True, "can_trade": False},
             "root_bindings": {
@@ -84,7 +84,7 @@ def test_inspector_reuses_current_pointer_and_root_validators(monkeypatch, tmp_p
     assert result["terminal"] == "CURRENT_AUTHORITY_ROOT_INSPECT_PASS"
     assert result["selection_mode"] == "EXACT_CANONICAL_FILENAMES_ONLY"
     assert result["authority_generation"] == "R64"
-    assert result["activation_status"] == "ACTIVE"
+    assert result["activation_status"] == "ACTIVE_RESEALED_AFTER_EXACT_PROVIDER_READBACK"
     assert result["human_sovereign"] == "ROBERT"
     assert result["writes_performed"] == []
     assert result["effects"]["filesystem_write"] is False

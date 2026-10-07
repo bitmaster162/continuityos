@@ -29,7 +29,15 @@ def candidate(kind, status, when, artifact_id, **extra):
     return row
 
 
-def build_fixture(tmp_path: Path, *, fresh_contradiction=False, inactive_pointer=False, role="GPT_RUNTIME_CURRENT", effect="READ_ONLY"):
+def build_fixture(
+    tmp_path: Path,
+    *,
+    fresh_contradiction=False,
+    inactive_pointer=False,
+    resealed_pointer=False,
+    role="GPT_RUNTIME_CURRENT",
+    effect="READ_ONLY",
+):
     effect_ceiling = {
         "NO_FURTHER_AGENT_WORK": True,
         "auto_accept": False,
@@ -82,17 +90,29 @@ def build_fixture(tmp_path: Path, *, fresh_contradiction=False, inactive_pointer
     role_views_sha = write_json(role_views_path, role_views)
 
     manifest_sha = "4" * 64
+    historical_manifest_sha = "3" * 64 if resealed_pointer else manifest_sha
     pointer = {
         "schema": "CONTROL_CURRENT_POINTER_R64",
         "generation": "R64",
         "published_at_utc": "2026-08-07T20:34:00Z",
         "canonical_activation": {
-            "status": "INACTIVE" if inactive_pointer else "ACTIVE",
+            "status": (
+                "HISTORICAL_PRE_REPAIR_ACTIVATION"
+                if resealed_pointer
+                else ("INACTIVE" if inactive_pointer else "ACTIVE")
+            ),
             "generation": "R64",
             "decision": "ACCEPT_R64_POINTER_PROMOTION",
-            "accepted_manifest_sha256": manifest_sha,
+            "accepted_manifest_sha256": historical_manifest_sha,
             "human_sovereign": "ROBERT",
-            "stable_root_provider_readback": {"all_exact": True},
+            "stable_root_provider_readback": (
+                {
+                    "all_exact_at_original_promotion": True,
+                    "current_status": "HISTORICAL_PRE_REPAIR_ONLY",
+                }
+                if resealed_pointer
+                else {"all_exact": True}
+            ),
         },
         "manifest": {"sha256": manifest_sha},
         "effect_ceiling": dict(effect_ceiling),
@@ -100,6 +120,20 @@ def build_fixture(tmp_path: Path, *, fresh_contradiction=False, inactive_pointer
         "role_index": {"sha256": role_index_sha},
         "role_views": {"sha256": role_views_sha},
     }
+    if resealed_pointer:
+        pointer["canonical_reseal"] = {
+            "accepted_reseal_manifest_sha256": manifest_sha,
+            "decision": "APPLY_R64_CANONICAL_RESEAL_V1",
+            "generation": "R64",
+            "human_sovereign": "ROBERT",
+            "original_manifest_sha256": historical_manifest_sha,
+            "post_write_provider_readback_required": True,
+            "repaired_current_state": {
+                "bytes": current_state_path.stat().st_size,
+                "sha256": current_state_sha,
+            },
+            "status": "ACTIVE_RESEALED_AFTER_EXACT_PROVIDER_READBACK",
+        }
     pointer_path = tmp_path / "CURRENT_POINTER.json"
     pointer_sha = write_json(pointer_path, pointer)
 
@@ -196,12 +230,56 @@ def test_current_prepare_binds_active_r64_and_supersedes_compiled_candidate_mark
     assert challenge["authority_generation"] == "R64"
     assert capsule["authority_generation"] == "R64"
     assert capsule["compiled_current_state_marker"] == "CANDIDATE_NOT_ACTIVE_PENDING_ROBERT"
-    assert "ACTIVE canonical_activation" in capsule["compiled_marker_interpretation"]
+    assert "canonical_activation:ACTIVE" in capsule["compiled_marker_interpretation"]
     assert capsule["state_selected_artifact_id"] == "OPERATIONAL_CLOSURE"
     assert capsule["state_status"] == "PASS_WITH_CONDITIONS"
     assert capsule["effect_ceiling"] == "READ_ONLY"
     assert capsule["no_repo_writes"] is True
 
+
+
+def test_current_prepare_accepts_exact_active_reseal(tmp_path):
+    fx = build_fixture(tmp_path, resealed_pointer=True)
+    result = prepare(fx)
+
+    assert result["terminal"] == "CURRENT_COLD_START_PASS"
+    assert result["accepted_manifest_sha256"] == "4" * 64
+    capsule = json.loads((fx["out"] / "candidate" / "SESSION_CAPSULE.json").read_text())
+    assert capsule["activation_status"] == "ACTIVE_RESEALED_AFTER_EXACT_PROVIDER_READBACK"
+    assert "canonical_reseal:ACTIVE_RESEALED_AFTER_EXACT_PROVIDER_READBACK" in capsule["compiled_marker_interpretation"]
+
+
+def test_reseal_original_manifest_mismatch_fails_closed(tmp_path):
+    fx = build_fixture(tmp_path, resealed_pointer=True)
+    pointer = json.loads(fx["pointer"].read_text())
+    pointer["canonical_reseal"]["original_manifest_sha256"] = "9" * 64
+    fx["pointer_sha"] = write_json(fx["pointer"], pointer)
+
+    with pytest.raises(current.CurrentColdStartError, match="ORIGINAL_MANIFEST_MISMATCH"):
+        prepare(fx)
+    assert not fx["out"].exists()
+
+
+def test_reseal_manifest_binding_mismatch_fails_closed(tmp_path):
+    fx = build_fixture(tmp_path, resealed_pointer=True)
+    pointer = json.loads(fx["pointer"].read_text())
+    pointer["manifest"]["sha256"] = "9" * 64
+    fx["pointer_sha"] = write_json(fx["pointer"], pointer)
+
+    with pytest.raises(current.CurrentColdStartError, match="RESEAL_SHA_MISMATCH"):
+        prepare(fx)
+    assert not fx["out"].exists()
+
+
+def test_reseal_repaired_current_state_mismatch_fails_closed(tmp_path):
+    fx = build_fixture(tmp_path, resealed_pointer=True)
+    pointer = json.loads(fx["pointer"].read_text())
+    pointer["canonical_reseal"]["repaired_current_state"]["sha256"] = "9" * 64
+    fx["pointer_sha"] = write_json(fx["pointer"], pointer)
+
+    with pytest.raises(current.CurrentColdStartError, match="REPAIRED_CURRENT_STATE_MISMATCH"):
+        prepare(fx)
+    assert not fx["out"].exists()
 
 def test_exact_expected_ack_verifies_pass(tmp_path):
     fx = build_fixture(tmp_path)
