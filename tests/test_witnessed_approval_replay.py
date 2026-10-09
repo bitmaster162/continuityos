@@ -23,6 +23,14 @@ SUBJECT = {
 }
 
 
+class RetryableTransactionError(RuntimeError):
+    sqlstate = "40001"
+
+
+class DeadlockTransactionError(RuntimeError):
+    sqlstate = "40P01"
+
+
 class DbState:
     def __init__(self) -> None:
         self.lock = threading.RLock()
@@ -31,6 +39,7 @@ class DbState:
         self.states: dict[str, tuple[int, str]] = {}
         self.journal: dict[tuple[str, int], tuple[str, str, str, str, str, str, str]] = {}
         self.fail_next_commit = False
+        self.retryable_commit_failures = 0
         self.active_transactions = 0
 
 
@@ -55,6 +64,10 @@ class FakeConnection:
         return FakeCursor(self)
 
     def commit(self) -> None:
+        if self.state.retryable_commit_failures > 0:
+            self.state.retryable_commit_failures -= 1
+            self._release()
+            raise RetryableTransactionError("simulated serialization failure")
         if self.state.fail_next_commit:
             self.state.fail_next_commit = False
             self._release()
@@ -632,3 +645,69 @@ def test_namespaces_are_isolated():
     assert claim(right)["status"] == CLAIMED
     assert witness.current_state("human-approval-a")["generation"] == 1
     assert witness.current_state("human-approval-b")["generation"] == 1
+
+
+def test_retryable_transaction_error_detection_is_sqlstate_scoped():
+    assert replay._is_retryable_transaction_error(
+        RetryableTransactionError("serialization")
+    )
+    assert replay._is_retryable_transaction_error(
+        DeadlockTransactionError("deadlock")
+    )
+    outer = RuntimeError("wrapper")
+    outer.__cause__ = RetryableTransactionError("nested serialization")
+    assert replay._is_retryable_transaction_error(outer)
+    contextual = RuntimeError("ordinary wrapper")
+    contextual.__context__ = RetryableTransactionError("implicit serialization context")
+    assert not replay._is_retryable_transaction_error(contextual)
+    assert not replay._is_retryable_transaction_error(
+        RuntimeError("ordinary failure")
+    )
+
+    # The explicit cause-chain ceiling is a fail-closed safety boundary:
+    # a reviewed SQLSTATE inside the ceiling is retryable; one beyond it is not.
+    inside = RetryableTransactionError("inside bounded cause chain")
+    for _ in range(replay._EXCEPTION_CHAIN_LIMIT - 1):
+        wrapper = RuntimeError("wrapper")
+        wrapper.__cause__ = inside
+        inside = wrapper
+    assert replay._is_retryable_transaction_error(inside)
+
+    outside = RetryableTransactionError("outside bounded cause chain")
+    for _ in range(replay._EXCEPTION_CHAIN_LIMIT):
+        wrapper = RuntimeError("wrapper")
+        wrapper.__cause__ = outside
+        outside = wrapper
+    assert not replay._is_retryable_transaction_error(outside)
+
+
+def test_snapshot_retry_budget_counts_failures_not_successful_calls():
+    db = DbState()
+    witness = FakeWitness(db)
+    guard = authority(db, witness)
+    budget = replay._RetryBudget(2)
+
+    for _ in range(replay._LOGICAL_CONTENTION_LIMIT + 1):
+        state = guard._snapshot_database(retry_budget=budget)
+        assert state["generation"] == 0
+    assert budget.remaining == 2
+
+    db.retryable_commit_failures = 1
+    state = guard._snapshot_database(retry_budget=budget)
+    assert state["generation"] == 0
+    assert budget.remaining == 1
+
+    db.retryable_commit_failures = 2
+    with pytest.raises(MultiHostApprovalReplayError, match="database snapshot contention"):
+        guard._snapshot_database(retry_budget=budget)
+    assert budget.remaining == 0
+
+
+def test_snapshot_retries_retryable_serialization_failure():
+    db = DbState()
+    witness = FakeWitness(db)
+    guard = authority(db, witness)
+    db.retryable_commit_failures = 1
+    state = guard.synchronize()
+    assert state["generation"] == 0
+    assert db.retryable_commit_failures == 0
