@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "continuityos.fleet.coordination_event/v1",
+  "title": "Governed Fleet Coordination Event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "event_type", "work_order_id", "work_order_digest", "run_id",
+    "observed_at", "previous_event_sha256", "payload", "payload_digest",
+    "canonical_work_ledger_required", "authority", "event_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "continuityos.fleet.coordination_event/v1"},
+    "event_type": {"type": "string", "minLength": 1},
+    "work_order_id": {"type": "string", "minLength": 1},
+    "work_order_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "run_id": {"type": "string", "minLength": 1},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "previous_event_sha256": {
+      "oneOf": [{"type": "null"}, {"type": "string", "pattern": "^[0-9a-f]{64}$"}]
+    },
+    "payload": {"type": "object"},
+    "payload_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "canonical_work_ledger_required": {"const": true},
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "execution_authority", "can_trade", "capital_permission", "merge_authority",
+        "deploy_authority", "deploy_permission", "destructive_storage_authority",
+        "external_send_authority"
+      ],
+      "properties": {
+        "execution_authority": {"const": "NONE"},
+        "can_trade": {"const": false},
+        "capital_permission": {"const": "DENY"},
+        "merge_authority": {"const": false},
+        "deploy_authority": {"const": false},
+        "deploy_permission": {"const": "DENY"},
+        "destructive_storage_authority": {"const": false},
+        "external_send_authority": {"const": false}
+      }
+    },
+    "event_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

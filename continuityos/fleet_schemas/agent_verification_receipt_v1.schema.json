@@ -1,0 +1,176 @@
+{
+  "$id": "continuityos.agent_verification_receipt/v1.2",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "PASS"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "conditions": {
+            "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "PASS_WITH_CONDITIONS"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "conditions": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "authority": {
+      "additionalProperties": false,
+      "properties": {
+        "can_trade": {
+          "const": false
+        },
+        "capital_permission": {
+          "const": "DENY"
+        },
+        "deploy_authority": {
+          "const": false
+        },
+        "deploy_permission": {
+          "const": "DENY"
+        },
+        "destructive_storage_authority": {
+          "const": false
+        },
+        "execution_authority": {
+          "const": "NONE"
+        },
+        "external_send_authority": {
+          "const": false
+        },
+        "merge_authority": {
+          "const": false
+        }
+      },
+      "required": [
+        "execution_authority",
+        "can_trade",
+        "capital_permission",
+        "merge_authority",
+        "deploy_authority",
+        "destructive_storage_authority",
+        "external_send_authority",
+        "deploy_permission"
+      ],
+      "type": "object"
+    },
+    "conditions": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "evidence_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "findings_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "schema": {
+      "const": "continuityos.agent_verification_receipt/v1.2"
+    },
+    "status": {
+      "enum": [
+        "PASS",
+        "PASS_WITH_CONDITIONS",
+        "REVISE",
+        "REJECT"
+      ]
+    },
+    "verification_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "verifier_context_isolated": {
+      "const": true
+    },
+    "verifier_run_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "work_order_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "work_order_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "worker_conclusion_inherited_as_fact": {
+      "const": false
+    },
+    "worker_hidden_scratch_shared": {
+      "const": false
+    },
+    "worker_output_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "worker_run_id": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "verification_id",
+    "work_order_id",
+    "work_order_digest",
+    "worker_run_id",
+    "verifier_run_id",
+    "worker_output_digest",
+    "verifier_context_isolated",
+    "worker_hidden_scratch_shared",
+    "worker_conclusion_inherited_as_fact",
+    "status",
+    "authority",
+    "observed_at",
+    "evidence_digest",
+    "findings_digest",
+    "conditions"
+  ],
+  "title": "Independent Agent Verification Receipt v1.2 ",
+  "type": "object",
+  "x-deterministic-cross-field-rules": [
+    "worker_run_id != verifier_run_id",
+    "work_order_digest equals recomputed exact Work Order digest",
+    "worker_output_digest equals independently recomputed frozen worker output digest"
+  ]
+}
