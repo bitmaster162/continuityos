@@ -166,34 +166,111 @@ def _validate_pointer(
         raise CurrentColdStartError("current.pointer.schema:GENERATION_MISMATCH")
 
     activation = _mapping(row.get("canonical_activation"), "current.pointer.canonical_activation")
-    if activation.get("status") != "ACTIVE":
-        raise CurrentColdStartError("current.pointer.canonical_activation:NOT_ACTIVE")
-    if activation.get("generation") != generation:
-        raise CurrentColdStartError("current.pointer.canonical_activation:GENERATION_MISMATCH")
-    decision = _nonempty(
-        activation.get("decision"),
-        "current.pointer.canonical_activation.decision",
-        max_length=255,
-    )
-    manifest_sha = _sha(
-        activation.get("accepted_manifest_sha256"),
-        "current.pointer.canonical_activation.accepted_manifest_sha256",
-    )
-    sovereign = _nonempty(
-        activation.get("human_sovereign"),
-        "current.pointer.canonical_activation.human_sovereign",
-        max_length=128,
-    )
-    provider = _mapping(
-        activation.get("stable_root_provider_readback"),
-        "current.pointer.canonical_activation.stable_root_provider_readback",
-    )
-    if provider.get("all_exact") is not True:
-        raise CurrentColdStartError("current.pointer.provider_readback:NOT_EXACT")
-
     manifest = _mapping(row.get("manifest"), "current.pointer.manifest")
-    if _sha(manifest.get("sha256"), "current.pointer.manifest.sha256") != manifest_sha:
-        raise CurrentColdStartError("current.pointer.manifest:ACTIVATION_SHA_MISMATCH")
+    manifest_file_sha = _sha(manifest.get("sha256"), "current.pointer.manifest.sha256")
+    activation_status = activation.get("status")
+
+    if activation_status == "ACTIVE":
+        if activation.get("generation") != generation:
+            raise CurrentColdStartError("current.pointer.canonical_activation:GENERATION_MISMATCH")
+        decision = _nonempty(
+            activation.get("decision"),
+            "current.pointer.canonical_activation.decision",
+            max_length=255,
+        )
+        manifest_sha = _sha(
+            activation.get("accepted_manifest_sha256"),
+            "current.pointer.canonical_activation.accepted_manifest_sha256",
+        )
+        sovereign = _nonempty(
+            activation.get("human_sovereign"),
+            "current.pointer.canonical_activation.human_sovereign",
+            max_length=128,
+        )
+        provider = _mapping(
+            activation.get("stable_root_provider_readback"),
+            "current.pointer.canonical_activation.stable_root_provider_readback",
+        )
+        if provider.get("all_exact") is not True:
+            raise CurrentColdStartError("current.pointer.provider_readback:NOT_EXACT")
+        if manifest_file_sha != manifest_sha:
+            raise CurrentColdStartError("current.pointer.manifest:ACTIVATION_SHA_MISMATCH")
+        authority_source = "canonical_activation"
+        active_status = "ACTIVE"
+    elif activation_status == "HISTORICAL_PRE_REPAIR_ACTIVATION":
+        if activation.get("generation") != generation:
+            raise CurrentColdStartError("current.pointer.canonical_activation:GENERATION_MISMATCH")
+        historical_manifest_sha = _sha(
+            activation.get("accepted_manifest_sha256"),
+            "current.pointer.canonical_activation.accepted_manifest_sha256",
+        )
+        historical_sovereign = _nonempty(
+            activation.get("human_sovereign"),
+            "current.pointer.canonical_activation.human_sovereign",
+            max_length=128,
+        )
+        historical_provider = _mapping(
+            activation.get("stable_root_provider_readback"),
+            "current.pointer.canonical_activation.stable_root_provider_readback",
+        )
+        if historical_provider.get("all_exact_at_original_promotion") is not True:
+            raise CurrentColdStartError("current.pointer.historical_provider_readback:NOT_EXACT")
+        if historical_provider.get("current_status") != "HISTORICAL_PRE_REPAIR_ONLY":
+            raise CurrentColdStartError("current.pointer.historical_provider_readback:STATUS_MISMATCH")
+
+        reseal = _mapping(row.get("canonical_reseal"), "current.pointer.canonical_reseal")
+        if reseal.get("status") != "ACTIVE_RESEALED_AFTER_EXACT_PROVIDER_READBACK":
+            raise CurrentColdStartError("current.pointer.canonical_reseal:NOT_ACTIVE")
+        if reseal.get("generation") != generation:
+            raise CurrentColdStartError("current.pointer.canonical_reseal:GENERATION_MISMATCH")
+        decision = _nonempty(
+            reseal.get("decision"),
+            "current.pointer.canonical_reseal.decision",
+            max_length=255,
+        )
+        manifest_sha = _sha(
+            reseal.get("accepted_reseal_manifest_sha256"),
+            "current.pointer.canonical_reseal.accepted_reseal_manifest_sha256",
+        )
+        original_manifest_sha = _sha(
+            reseal.get("original_manifest_sha256"),
+            "current.pointer.canonical_reseal.original_manifest_sha256",
+        )
+        if original_manifest_sha != historical_manifest_sha:
+            raise CurrentColdStartError("current.pointer.canonical_reseal:ORIGINAL_MANIFEST_MISMATCH")
+        if manifest_file_sha != manifest_sha:
+            raise CurrentColdStartError("current.pointer.manifest:RESEAL_SHA_MISMATCH")
+        if reseal.get("post_write_provider_readback_required") is not True:
+            raise CurrentColdStartError("current.pointer.canonical_reseal:PROVIDER_READBACK_REQUIRED")
+
+        sovereign = _nonempty(
+            reseal.get("human_sovereign"),
+            "current.pointer.canonical_reseal.human_sovereign",
+            max_length=128,
+        )
+        if sovereign != historical_sovereign:
+            raise CurrentColdStartError("current.pointer.canonical_reseal:HUMAN_SOVEREIGN_MISMATCH")
+
+        repaired = _mapping(
+            reseal.get("repaired_current_state"),
+            "current.pointer.canonical_reseal.repaired_current_state",
+        )
+        repaired_state_sha = _sha(
+            repaired.get("sha256"),
+            "current.pointer.canonical_reseal.repaired_current_state.sha256",
+        )
+        current_state_desc = _mapping(row.get("current_state"), "current.pointer.current_state")
+        current_state_binding_sha = _sha(
+            current_state_desc.get("sha256"),
+            "current.pointer.current_state.sha256",
+        )
+        if repaired_state_sha != current_state_binding_sha:
+            raise CurrentColdStartError("current.pointer.canonical_reseal:REPAIRED_CURRENT_STATE_MISMATCH")
+
+        authority_source = "canonical_reseal"
+        active_status = "ACTIVE_RESEALED_AFTER_EXACT_PROVIDER_READBACK"
+    else:
+        raise CurrentColdStartError("current.pointer.canonical_activation:NOT_ACTIVE")
 
     effect = _mapping(row.get("effect_ceiling"), "current.pointer.effect_ceiling")
     for key, expected in _CORE_EFFECTS.items():
@@ -213,7 +290,8 @@ def _validate_pointer(
         "pointer_sha256": actual_sha256,
         "accepted_manifest_sha256": manifest_sha,
         "activation_decision": decision,
-        "activation_status": "ACTIVE",
+        "activation_status": active_status,
+        "authority_source": authority_source,
         "human_sovereign": sovereign,
         "published_at_utc": _nonempty(
             row.get("published_at_utc"), "current.pointer.published_at_utc", max_length=128
@@ -597,8 +675,9 @@ def prepare_current_cold_start(
         },
         "compiled_current_state_marker": roots["current_state"].get("canonicality_activation"),
         "compiled_marker_interpretation": (
-            "Historical compilation marker only; ACTIVE canonical_activation in the exact "
-            "pointer controls canonicality while CURRENT_STATE bytes remain immutable."
+            "Historical compilation marker only; exact current pointer authority "
+            f"({pointer['authority_source']}:{pointer['activation_status']}) controls "
+            "canonicality while CURRENT_STATE bytes remain immutable."
         ),
         "state_bundle_sha256": bundle_sha,
         "state_resolution_sha256": resolution_sha,
