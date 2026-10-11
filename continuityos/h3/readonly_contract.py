@@ -98,8 +98,14 @@ def _bounded_str(
         raise ContractError(f"{label} must be a bounded string")
     if pattern is not None and pattern.fullmatch(value) is None:
         raise ContractError(f"{label} has invalid characters")
+    # Exclude control/display-spoofing code points without excluding
+    # multilingual letters, combining marks, ZWJ or ZWNJ.
     if any(
         (ord(c) < 32 and not (newlines and c in "\t\n"))
+        or 0x7F <= ord(c) <= 0x9F
+        or ord(c) in (0x061C, 0x200E, 0x200F, 0x2028, 0x2029, 0xFEFF)
+        or 0x202A <= ord(c) <= 0x202E
+        or 0x2066 <= ord(c) <= 0x206F
         or 0xD800 <= ord(c) <= 0xDFFF
         for c in value
     ):

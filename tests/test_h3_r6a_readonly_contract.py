@@ -692,5 +692,154 @@ class V3FullRequestDigestTests(unittest.TestCase):
             rc.request_sha256(req)
 
 
+class R6GUnicodeDisplaySafetyTests(unittest.TestCase):
+    """Bound Unicode control/display risks without excluding normal scripts."""
+
+    @staticmethod
+    def forbidden_codepoints():
+        # DEL/C1, bidi control and invisible direction markers, U+2028/2029,
+        # BOM and the original C0 controls. Preserve ZWNJ/ZWJ.
+        return (
+            tuple(range(0x00, 0x20))
+            + tuple(range(0x7F, 0xA0))
+            + (0x061C, 0x200E, 0x200F, 0x2028, 0x2029, 0xFEFF)
+            + tuple(range(0x202A, 0x202F))
+            + tuple(range(0x2066, 0x2070))
+        )
+
+    def test_forbidden_unicode_set_is_exact_and_unique(self):
+        points = self.forbidden_codepoints()
+        self.assertEqual(86, len(points))
+        self.assertEqual(len(points), len(set(points)))
+        self.assertNotIn(0x200C, points)  # ZWNJ
+        self.assertNotIn(0x200D, points)  # ZWJ
+
+    def test_all_forbidden_controls_rejected_in_query_and_key(self):
+        for point in self.forbidden_codepoints():
+            value = "a" + chr(point) + "b"
+            for method, params in (
+                ("recall", {"namespace": NAMESPACE, "query": value}),
+                ("find", {"namespace": NAMESPACE, "key": value}),
+                ("context", {"namespace": NAMESPACE, "query": value}),
+            ):
+                with self.subTest(point=f"U+{point:04X}", method=method):
+                    with self.assertRaises(rc.ContractError):
+                        request(method, params)
+
+    def test_forbidden_controls_rejected_in_all_record_texts(self):
+        cases = (
+            ("find", {"namespace": NAMESPACE, "key": "item-1"}),
+            ("recall", {"namespace": NAMESPACE, "query": "topic"}),
+            ("context", {"namespace": NAMESPACE, "query": "topic"}),
+        )
+        for point in self.forbidden_codepoints():
+            if point in (0x09, 0x0A):
+                continue  # Only result text may contain TAB and LF.
+            text = "a" + chr(point) + "b"
+            for method, params in cases:
+                with self.subTest(point=f"U+{point:04X}", method=method):
+                    req = request(method, params)
+                    if method == "context":
+                        result = {"namespace": NAMESPACE, "text": text}
+                    else:
+                        record = {
+                            "namespace": NAMESPACE, "key": "item-1",
+                            "text": text,
+                        }
+                        result = [record] if method == "recall" else record
+                    with self.assertRaises(rc.ContractError):
+                        rc.make_response(
+                            request=req, result=result,
+                            authorized_namespaces=SCOPE,
+                        )
+                    with self.assertRaises(rc.ContractError):
+                        rc.parse_response(
+                            response(req, result), request=req,
+                            authorized_namespaces=SCOPE,
+                        )
+
+    def test_escaped_control_characters_cannot_bypass_wire_validation(self):
+        for point in (0x7F, 0x85, 0x9B, 0x061C, 0x200E, 0x2028,
+                      0x202E, 0x2066, 0x206F, 0xFEFF):
+            value = "a" + chr(point) + "b"
+            with self.subTest(point=f"U+{point:04X}"):
+                wire_request = json.dumps(
+                    obj("recall", {"namespace": NAMESPACE, "query": value}),
+                    ensure_ascii=True, separators=(",", ":"),
+                ).encode("ascii")
+                with self.assertRaises(rc.ContractError):
+                    rc.parse_request(wire_request)
+
+    def test_multilingual_and_joiner_text_remains_allowed(self):
+        samples = (
+            "\u041f\u0440\u0438\u0432\u0435\u0442",  # Cyrillic
+            "\u0e20\u0e32\u0e29\u0e32\u0e44\u0e17\u0e22",  # Thai
+            "\u4e2d\u6587",  # Han
+            "\u0627\u0644\u0639\u0631\u0628\u064a\u0629",  # Arabic
+            "\u0645\u06cc\u200c\u0631\u0648\u0645",  # Persian ZWNJ
+            "\u0915\u094d\u200d\u0937",  # Indic ZWJ
+            "\U0001f468\u200d\U0001f469\u200d\U0001f467",  # Emoji ZWJ
+            "re\u0301sume\u0301",  # Combining accents
+        )
+        for sample in samples:
+            with self.subTest(sample=ascii(sample)):
+                find = request("find", {"namespace": NAMESPACE, "key": sample})
+                find_record = {
+                    "namespace": NAMESPACE, "key": sample, "text": sample,
+                }
+                result = rc.parse_response(
+                    rc.make_response(request=find, result=find_record,
+                                     authorized_namespaces=SCOPE),
+                    request=find, authorized_namespaces=SCOPE,
+                )
+                self.assertEqual(result.result, find_record)
+
+                for method in ("recall", "context"):
+                    req = request(method, {
+                        "namespace": NAMESPACE, "query": sample,
+                    })
+                    payload = (
+                        [{"namespace": NAMESPACE, "key": "item-1",
+                          "text": sample}]
+                        if method == "recall"
+                        else {"namespace": NAMESPACE, "text": sample}
+                    )
+                    parsed = rc.parse_response(
+                        rc.make_response(request=req, result=payload,
+                                         authorized_namespaces=SCOPE),
+                        request=req, authorized_namespaces=SCOPE,
+                    )
+                    self.assertEqual(parsed.result, payload)
+
+    def test_tab_and_lf_only_allowed_in_result_text(self):
+        for whitespace in ("\t", "\n"):
+            with self.subTest(char=repr(whitespace)):
+                value = "a" + whitespace + "b"
+                for method in ("find", "recall", "context"):
+                    req = request(method, {
+                        "namespace": NAMESPACE,
+                        **({"key": "item-1"} if method == "find"
+                           else {"query": "topic"}),
+                    })
+                    payload = (
+                        {"namespace": NAMESPACE, "text": value}
+                        if method == "context"
+                        else {"namespace": NAMESPACE, "key": "item-1",
+                              "text": value}
+                    )
+                    if method == "recall":
+                        payload = [payload]
+                    parsed = rc.parse_response(
+                        rc.make_response(request=req, result=payload,
+                                         authorized_namespaces=SCOPE),
+                        request=req, authorized_namespaces=SCOPE,
+                    )
+                    self.assertEqual(parsed.result, payload)
+                with self.assertRaises(rc.ContractError):
+                    request("recall", {
+                        "namespace": NAMESPACE, "query": value,
+                    })
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,42 +1,48 @@
-# ContinuityOS H3-R6B5 R1 — strict evidence types, preserving wire v3
+# ContinuityOS H3-R6G R1 — Unicode display-control hardening, wire v3
 
 **Status:** local candidate / offline synthetic contract only / production HOLD.
-**Approval:** exact owner-authorized H3-R6B5 R1 on 2026-10-11.
-**Compatibility:** wire v3 unchanged; the earlier v2 to v3 transition
-remains deliberately incompatible and documented below.
+**Approval:** exact owner-authorized H3-R6G R1 on 2026-10-11.
+**Compatibility:** wire v3 fields and version unchanged. The accepted
+Unicode character subset is deliberately narrowed; old draft v1/v2
+messages remain incompatible.
 **Authority ceiling:** edit only 3 approved existing files in the local
-branch; no new files, commit, push, PR, merge, deploy, real IPC, DB, TPM,
-MCP, Scheduler, Windows service changes or real-memory operations.
+branch; no new files, commit, push, PR changes, merge, deploy, real IPC,
+DB, TPM, MCP, Scheduler, Windows service changes or production access.
 
 ## Protected Git and local worktree custody
 
 - Repository: bitmaster162/continuityos.
 - Protected master HEAD: fe06d8c769076ea4a1edd0ece6fc88ffa0102a2c.
-- Protected tree: 77b264aa4e1e5825b3752a8cc0da0c80e8ba36f5.
+- Protected accepted-source tree: 77b264aa4e1e5825b3752a8cc0da0c80e8ba36f5.
+- Protected local H3-R6C HEAD: f6d0b9cc8e4a87ca72cadbe8955b6982d7e851a9.
+- Protected local H3-R6C tree: 11ac66d91cb796b33caa69ffe7df3d2826f6a9d9.
 - Branch: agent/h3-r6a-offline-contract-r1.
 - Local worktree:
   C:\Users\coins\AppData\Local\ContinuityOS\h3-r6a-offline-contract-20261011.
 - Accepted source: recovery-r11-20261009T184302Z/source, remains clean.
 - Protected offline R16-D10 worktree:
   r16-d10-memory-offline-20261010, retains its 29 untracked artifacts.
+- Remote PR #207: base/master fe06d8c769..., head f6d0b9cc8e4a...;
+  it remains unchanged and merge is not authorized by R6G R1.
 
-Exactly three existing untracked files are approved for H3-R6B5 changes:
+Exactly three existing **tracked** files are approved for H3-R6G R1:
 
-1. continuityos/h3/authz_decision.py
-2. tests/test_h3_r6a_authz_decision.py
+1. continuityos/h3/readonly_contract.py
+2. tests/test_h3_r6a_readonly_contract.py
 3. docs/H3_R6A_OFFLINE_CONTRACT.md
 
-The other three files must retain their exact H3-R6B4 SHA-256:
+The three other H3 files must retain their exact H3-R6C SHA-256:
 
 - continuityos/h3/__init__.py:
   8e6c4af2af11e2a6a4eef08ab59a558be2950acaf95499ba45465ce2f2ba1480
-- continuityos/h3/readonly_contract.py:
-  0bb4255f957ce85e5f3eb0e6291c155cddd60d9613affc47a319b03f65daa918
-- tests/test_h3_r6a_readonly_contract.py:
-  eead6cfffaa8ced0401cd031e420231847cc7a673769b8e855416f29db7c4d17
+- continuityos/h3/authz_decision.py:
+  7ca43336bea7989bbe451632bb78750ea2ab4e0b6ba5f736bb21aaf6293766a5
+- tests/test_h3_r6a_authz_decision.py:
+  8d0f1e692e127e1677503fc09ae770b3fcecc35204ad09bb752450b18df2c161
 
-Historical note: H3-R6B3 changed readonly_contract.py, its test, and
-this document. That is not the present H3-R6B5 write authority.
+Historical note: H3-R6B5 guarded evidence dataclass types; H3-R6C
+committed all six H3 files. Neither earlier approval broadens the
+present H3-R6G three-file local edit scope.
 
 No source or production file outside this worktree may change.
 
@@ -251,6 +257,51 @@ tuples; mutated owner policy; and a still-positive all-plain-string
 synthetic model result (to avoid misrepresenting type checks as
 verified authorization).
 
+## H3-R6G R1 — bounded Unicode display-control policy
+
+Independent post-CI review of PR #207 found a P2 issue: _bounded_str()
+rejected code points below U+0020 but still accepted DEL/C1,
+Unicode paragraph separators and directional control codes. This is
+a display/log and data-confusion risk, not a proven real-memory or
+authorization bypass. The H3-R6G correction changes only the local
+draft validator and its regression fixtures; it does not change RPC
+message field names, response statuses, digest format or protocol v3.
+
+**Reject in all user-controlled key, query and returned text fields:**
+
+- C0 controls U+0000–U+001F, except U+0009 TAB and U+000A LF
+  inside an authorized record/context *text* field only.
+- DEL/C1 controls U+007F–U+009F, including U+0085 and U+009B.
+- Arabic Letter Mark U+061C, LRM U+200E and RLM U+200F.
+- Unicode line/paragraph separators U+2028 and U+2029.
+- Bidi embedding/override controls U+202A–U+202E.
+- Bidi isolates and related format controls U+2066–U+206F.
+- U+FEFF (BOM/zero-width no-break space).
+- Unpaired surrogate code points U+D800–U+DFFF (existing rule).
+
+The same checks apply to direct ReadonlyRequest construction, parsed
+wire requests, make_response and parse_response. Namespace and IDs
+retain their existing strict ASCII patterns. The validator keeps the
+existing text-only exception for TAB/LF; query and key never admit them.
+
+**Preserve:** ordinary non-ASCII letters and characters, CJK, Thai,
+Cyrillic, Arabic, Persian, Indic text, combining marks, emoji sequences,
+ZWNJ U+200C and ZWJ U+200D. Do not prohibit every Unicode Cf character
+or introduce implicit Unicode normalization. Canonical request hashes
+remain computed over the exact accepted scalar sequence.
+
+This is a scoped syntactic policy, **not complete Unicode security**.
+Confusables, homoglyphs, rendering behavior, terminal escaping and
+sensitive output classification require explicit later broker/UI
+policies. Logs must still use safe escaping; do not treat successful
+validation as proof that arbitrary display sinks are safe.
+
+Negative tests cover all 86 specified forbidden scalar values across
+query/key/record/context shapes, including JSON-escaped wire input.
+Positive tests keep multilingual text, ZWJ/ZWNJ and text TAB/LF.
+Tests are offline-only and do not access real memory, DB, RPC, tokens,
+key material or Windows protection settings.
+
 ## Remaining unimplemented security boundaries
 
 This stage does not build a real broker or grant runtime permissions:
@@ -277,21 +328,23 @@ caller-supplied dataclasses is still NOT runtime permission.
 
 ## Completion criteria and STOP gates
 
-- Exactly 3 approved R6B5 files changed relative to verified
-  H3-R6B4 SHA-256, and only within the existing local worktree.
-- __init__.py, readonly_contract.py (wire v3), and its test file
-  remain byte-for-byte unchanged.
-- Six total untracked files remain; staged=0; tracked modified=0.
-- Exact branch/HEAD/TREE unchanged from protected source baseline.
-- Accepted source and D10 untouched; D10 retains 29 untracked items.
-- Local bounded offline regression and independent negative probes
-  must pass, including all 34 original H3-R6B4 reproductions.
-- No commit, push, PR, merge, deploy, live IPC, DB, TPM or Scheduler.
-- A new independent security defect means REVISE/STOP before commit
-  eligibility, regardless of previous green unit tests.
+- Exactly the 3 approved H3-R6G tracked files modified locally,
+  with no additional tracked, staged or untracked file changes.
+- __init__.py, authz_decision.py and its authorization test must
+  remain byte-for-byte identical to H3-R6C.
+- Local branch and HEAD f6d0b9cc8e4a87ca72cadbe8955b6982d7e851a9
+  and TREE 11ac66d91cb796b33caa69ffe7df3d2826f6a9d9 remain unchanged.
+- Accepted source and R16-D10 unchanged; D10 retains 29 untracked items.
+- Offline regression and independent Unicode negative/positive checks
+  must pass; no assumptions about real server authentication follow.
+- Remote PR #207, branch refs and master remain unchanged.
+- No commit, push, PR mutation, merge, deploy, live IPC, DB, TPM,
+  MCP, Scheduler, real memory or Windows security configuration changes.
+- Any unexpected drift, widened file scope or failed test means STOP.
 
 Maximum status permitted:
 
-    H3-R6B5 LOCAL OFFLINE MODEL PASS
+    H3-R6G LOCAL OFFLINE UNICODE POLICY TESTED
+    PR #207 HEAD UNCHANGED
     LIVE BROKER UNIMPLEMENTED
     PRODUCTION HOLD
