@@ -1,0 +1,459 @@
+# H3 G3: synthetic MIDL C stubs -> two unlinked COFF objects on an ephemeral runner.
+# This job grants no RPC, deployment, production, or owner-workstation authority.
+name: H3 G3 LAB C stubs to objects only
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/h3-g3-c-stubs-object-only.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: h3-g3-objects-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  compile-lab-objects:
+    name: win-2025 / synthetic C stubs to objects only
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'agent/h3-g2-midl-compile-only-r1' && github.event.pull_request.base.ref == 'master' }}
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 6
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Verify toolchain, regenerate LAB stubs and compile two objects
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+
+          $receipt = [ordered]@{
+            schema = 'continuityos.h3.g3.c-stubs-object-only/v1'
+            stage = 'G3_OBJECT_COMPILE_ONLY'
+            repo = $env:GITHUB_REPOSITORY
+            pr_number = $env:PR_NUMBER
+            base_sha = $env:PR_BASE_SHA
+            head_sha = $env:PR_HEAD_SHA
+            run_id = $env:GITHUB_RUN_ID
+            run_attempt = $env:GITHUB_RUN_ATTEMPT
+            runner_image = $env:ImageOS
+            runner_image_version = $env:ImageVersion
+            toolchain_digest_match = $false
+            toolchain_unchanged_after_compile = $false
+            pinned_tools = @()
+            source_before = @()
+            source_after = @()
+            generated_before_compile = @()
+            generated_after_compile = @()
+            objects = @()
+            midl_invocations = 0
+            direct_object_compiler_invocations = 0
+            midl_preprocessor_may_invoke_cl_E = $true
+            process_receipts = [Collections.Generic.List[object]]::new()
+            failures = [Collections.Generic.List[string]]::new()
+            cleanup_attempted = $false
+            temp_cleanup_verified = $false
+            cleanup_error = $null
+            no_git_checkout = $true
+            no_artifact_upload = $true
+            no_explicit_network_command = $true
+            no_link_invocation = $true
+            no_executable_or_dll_output = $null
+            no_rpc_endpoint_process_or_service = $true
+            no_owner_workstation_execution = $true
+            security_C0 = 'UNVERIFIED_HOLD'
+            native_T11_T12 = 'UNEXECUTED'
+            production = 'HOLD'
+            verdict = 'HOLD'
+          }
+
+          function Get-Sha256Bytes([byte[]]$Bytes) {
+            return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($Bytes)).ToLowerInvariant()
+          }
+
+          # Check each existing ancestor; a final regular file can still sit below a junction.
+          function Assert-NoReparse([string]$Path) {
+            $cursor = [IO.Path]::GetFullPath($Path)
+            while (-not [string]::IsNullOrEmpty($cursor)) {
+              $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+              if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'G3_REPARSE_PATH_BLOCKED'
+              }
+              $parent = [IO.Directory]::GetParent($cursor)
+              if ($null -eq $parent) { break }
+              $cursor = $parent.FullName
+            }
+          }
+
+          function Get-BoundedManifest(
+            [string]$Directory, [string[]]$Names, [long]$MaxFileBytes, [long]$MaxTotalBytes
+          ) {
+            Assert-NoReparse $Directory
+            $rows = [Collections.Generic.List[object]]::new()
+            $total = [long]0
+            foreach ($path in [IO.Directory]::EnumerateFileSystemEntries($Directory)) {
+              if ($rows.Count -ge $Names.Count) { throw 'G3_MANIFEST_COUNT_BOUND' }
+              $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+              if ($item.PSIsContainer -or $item.Name -cnotin $Names) { throw 'G3_MANIFEST_UNEXPECTED_ENTRY' }
+              Assert-NoReparse $path
+              if ($item.Length -le 0 -or $item.Length -gt $MaxFileBytes) { throw 'G3_MANIFEST_FILE_BOUND' }
+              $total += [long]$item.Length
+              if ($total -gt $MaxTotalBytes) { throw 'G3_MANIFEST_TOTAL_BOUND' }
+              $rows.Add([ordered]@{
+                filename = $item.Name
+                bytes = [long]$item.Length
+                sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+              })
+            }
+            if ($rows.Count -ne $Names.Count) { throw 'G3_MANIFEST_REQUIRED_FILE_ABSENT' }
+            return @($rows | Sort-Object { $_.filename })
+          }
+
+          function Assert-SameManifest([object[]]$Before, [object[]]$After) {
+            if (($Before | ConvertTo-Json -Compress -Depth 4) -cne ($After | ConvertTo-Json -Compress -Depth 4)) {
+              throw 'G3_COMPILE_INPUT_OR_OUTPUT_DRIFT'
+            }
+          }
+
+          # Native byte streams are capped while reading. No unbounded ReadToEnd tasks.
+          # Hashes cover raw captured bytes; a truncated/failed stream is labelled PREFIX, never FULL.
+          function Invoke-BoundedNative(
+            [string]$Label, [string]$Executable, [string[]]$Arguments,
+            [int]$DeadlineSeconds, [hashtable]$ChildEnvironment, [string]$WorkingDirectory
+          ) {
+            $r = [ordered]@{
+              label = $Label
+              executable = $Executable
+              argv = @($Arguments)
+              run_id = $env:GITHUB_RUN_ID
+              run_attempt = $env:GITHUB_RUN_ATTEMPT
+              child_environment_keys = @($ChildEnvironment.Keys | Sort-Object)
+              deadline_seconds = $DeadlineSeconds
+              diagnostic_limit_bytes_per_stream = 16384
+              started = $false
+              exit_code = $null
+              parent_exit_confirmed = $false
+              termination_requested = $false
+              termination_error = $null
+              descendant_exit_after_termination = 'NOT_APPLICABLE'
+              stdout_bytes = 0
+              stderr_bytes = 0
+              stdout_sha256 = $null
+              stderr_sha256 = $null
+              stdout_hash_scope = 'PREFIX'
+              stderr_hash_scope = 'PREFIX'
+              stdout_excerpt = ''
+              stderr_excerpt = ''
+              warning_count = $null
+              status = 'HOLD'
+              reason = 'UNEXECUTED'
+            }
+            $receipt.process_receipts.Add($r)
+            $p = [Diagnostics.Process]::new()
+            $outMemory = [IO.MemoryStream]::new()
+            $errMemory = [IO.MemoryStream]::new()
+            $outEof = $false
+            $errEof = $false
+            $outTask = $null
+            $errTask = $null
+            $outBuffer = [byte[]]::new(4096)
+            $errBuffer = [byte[]]::new(4096)
+            $clock = [Diagnostics.Stopwatch]::StartNew()
+            try {
+              $start = [Diagnostics.ProcessStartInfo]::new()
+              $start.FileName = $Executable
+              $start.WorkingDirectory = $WorkingDirectory
+              $start.UseShellExecute = $false
+              $start.CreateNoWindow = $true
+              $start.RedirectStandardOutput = $true
+              $start.RedirectStandardError = $true
+              $start.Environment.Clear()
+              foreach ($key in $ChildEnvironment.Keys) { $start.Environment[$key] = [string]$ChildEnvironment[$key] }
+              if ($start.Environment.ContainsKey('CL') -or $start.Environment.ContainsKey('_CL_')) {
+                throw 'G3_INHERITED_COMPILER_FLAGS_BLOCKED'
+              }
+              foreach ($arg in $Arguments) { $start.ArgumentList.Add($arg) }
+              $p.StartInfo = $start
+              if (-not $p.Start()) { throw 'G3_NATIVE_START_FAILED' }
+              $r.started = $true
+              if ($Label -ceq 'MIDL') { $receipt.midl_invocations++ }
+              else { $receipt.direct_object_compiler_invocations++ }
+              $outTask = $p.StandardOutput.BaseStream.ReadAsync($outBuffer, 0, $outBuffer.Length)
+              $errTask = $p.StandardError.BaseStream.ReadAsync($errBuffer, 0, $errBuffer.Length)
+              while (-not ($p.HasExited -and $outEof -and $errEof)) {
+                if ($clock.ElapsedMilliseconds -ge ($DeadlineSeconds * 1000)) { throw 'G3_NATIVE_DEADLINE_EXCEEDED' }
+                if (-not $outEof -and $outTask.IsCompleted) {
+                  $n = $outTask.GetAwaiter().GetResult()
+                  if ($n -eq 0) { $outEof = $true }
+                  else {
+                    $remaining = 16384 - [int]$outMemory.Length
+                    $outMemory.Write($outBuffer, 0, [Math]::Min($n, $remaining))
+                    if ($n -gt $remaining) { throw 'G3_STDOUT_BYTE_CAP_EXCEEDED' }
+                    $outTask = $p.StandardOutput.BaseStream.ReadAsync($outBuffer, 0, [Math]::Min(4096, 16385 - [int]$outMemory.Length))
+                  }
+                }
+                if (-not $errEof -and $errTask.IsCompleted) {
+                  $n = $errTask.GetAwaiter().GetResult()
+                  if ($n -eq 0) { $errEof = $true }
+                  else {
+                    $remaining = 16384 - [int]$errMemory.Length
+                    $errMemory.Write($errBuffer, 0, [Math]::Min($n, $remaining))
+                    if ($n -gt $remaining) { throw 'G3_STDERR_BYTE_CAP_EXCEEDED' }
+                    $errTask = $p.StandardError.BaseStream.ReadAsync($errBuffer, 0, [Math]::Min(4096, 16385 - [int]$errMemory.Length))
+                  }
+                }
+                if (-not ($p.HasExited -and $outEof -and $errEof)) { Start-Sleep -Milliseconds 20 }
+              }
+              $r.parent_exit_confirmed = $true
+              $r.exit_code = [int]$p.ExitCode
+              $diagnostics = [Text.Encoding]::UTF8.GetString($outMemory.ToArray()) + [Text.Encoding]::UTF8.GetString($errMemory.ToArray())
+              $r.warning_count = [regex]::Matches($diagnostics, '(?i)\bwarning\b').Count
+              if ($r.exit_code -ne 0) { throw ('G3_NATIVE_NONZERO_EXIT_' + $r.exit_code) }
+              if ($r.warning_count -ne 0 -or $diagnostics -match '(?i)\b(?:fatal\s+)?error\b|\bMIDL\d{4}\b') {
+                throw 'G3_NATIVE_DIAGNOSTIC_WARNING_OR_ERROR'
+              }
+              $r.status = 'PASS'
+              $r.reason = 'EXIT_ZERO_AND_COMPLETE_BOUNDED_DIAGNOSTICS'
+            } catch {
+              $r.reason = [string]$_.Exception.Message
+              $r.reason = $r.reason.Substring(0, [Math]::Min(512, $r.reason.Length))
+            } finally {
+              if ($r.started) {
+                try {
+                  if (-not $p.HasExited) {
+                    $r.termination_requested = $true
+                    $r.descendant_exit_after_termination = 'UNVERIFIED'
+                    try { $p.Kill($true) } catch { $r.termination_error = 'KILL_TREE_REQUEST_FAILED' }
+                    $r.parent_exit_confirmed = $p.WaitForExit(5000)
+                  } else { $r.parent_exit_confirmed = $true }
+                  if ($r.parent_exit_confirmed) { $r.exit_code = [int]$p.ExitCode }
+                } catch { $r.parent_exit_confirmed = $false }
+                if ($r.termination_requested -or -not $r.parent_exit_confirmed) { $r.status = 'HOLD' }
+              }
+              $clock.Stop()
+              $outBytes = $outMemory.ToArray()
+              $errBytes = $errMemory.ToArray()
+              $r.stdout_bytes = $outBytes.Length
+              $r.stderr_bytes = $errBytes.Length
+              $r.stdout_sha256 = Get-Sha256Bytes $outBytes
+              $r.stderr_sha256 = Get-Sha256Bytes $errBytes
+              if ($outEof) { $r.stdout_hash_scope = 'FULL' }
+              if ($errEof) { $r.stderr_hash_scope = 'FULL' }
+              $r.stdout_excerpt = [Text.Encoding]::UTF8.GetString($outBytes, 0, [Math]::Min(1024, $outBytes.Length))
+              $r.stderr_excerpt = [Text.Encoding]::UTF8.GetString($errBytes, 0, [Math]::Min(1024, $errBytes.Length))
+              $outMemory.Dispose()
+              $errMemory.Dispose()
+              $p.Dispose()
+            }
+            if ($r.status -cne 'PASS') { throw ($Label + ': ' + $r.reason) }
+          }
+
+          function Assert-Amd64Coff([string]$Path) {
+            Assert-NoReparse $Path
+            $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+            if ($item.Length -lt 20 -or $item.Length -gt 1048576) { throw 'G3_OBJECT_BYTE_BOUND' }
+            $b = [IO.File]::ReadAllBytes($Path)
+            if (-not [BitConverter]::IsLittleEndian) { throw 'G3_HOST_ENDIAN_UNEXPECTED' }
+            if ($b[0] -eq 0x4d -and $b[1] -eq 0x5a) { throw 'G3_PE_EXECUTABLE_BLOCKED' }
+            $machine = [BitConverter]::ToUInt16($b, 0)
+            $sections = [BitConverter]::ToUInt16($b, 2)
+            $symbolsAt = [long][BitConverter]::ToUInt32($b, 8)
+            $symbols = [long][BitConverter]::ToUInt32($b, 12)
+            $optionalHeader = [BitConverter]::ToUInt16($b, 16)
+            $flags = [BitConverter]::ToUInt16($b, 18)
+            if ($machine -ne 0x8664 -or $optionalHeader -ne 0 -or ($flags -band 0x2002) -ne 0) {
+              throw 'G3_NOT_AMD64_UNLINKED_COFF'
+            }
+            if ($sections -lt 1 -or $sections -gt 96 -or (20 + 40 * $sections) -gt $b.Length) { throw 'G3_COFF_SECTION_BOUND' }
+            if ($symbolsAt -le 0 -or $symbols -le 0 -or ($symbolsAt + 18 * $symbols + 4) -gt $b.Length) { throw 'G3_COFF_SYMBOL_BOUND' }
+            $stringAt = $symbolsAt + 18 * $symbols
+            $stringBytes = [long][BitConverter]::ToUInt32($b, [int]$stringAt)
+            if ($stringBytes -lt 4 -or ($stringAt + $stringBytes) -gt $b.Length) { throw 'G3_COFF_STRING_TABLE_BOUND' }
+            for ($i = 0; $i -lt $sections; $i++) {
+              $offset = 20 + 40 * $i
+              $size = [long][BitConverter]::ToUInt32($b, $offset + 16)
+              $dataAt = [long][BitConverter]::ToUInt32($b, $offset + 20)
+              $relocationsAt = [long][BitConverter]::ToUInt32($b, $offset + 24)
+              $relocations = [long][BitConverter]::ToUInt16($b, $offset + 32)
+              $sectionFlags = [BitConverter]::ToUInt32($b, $offset + 36)
+              if ($dataAt -eq 0 -and $size -gt 0 -and ($sectionFlags -band 0x80) -eq 0) { throw 'G3_COFF_RAW_DATA_ABSENT' }
+              if ($dataAt -gt 0 -and ($dataAt + $size) -gt $b.Length) { throw 'G3_COFF_RAW_DATA_BOUND' }
+              if ($relocations -eq 65535 -or ($relocations -gt 0 -and ($relocationsAt -le 0 -or ($relocationsAt + 10 * $relocations) -gt $b.Length))) {
+                throw 'G3_COFF_RELOCATION_BOUND'
+              }
+            }
+            return [ordered]@{ machine = 'AMD64_0x8664'; format = 'COFF_OBJECT_NON_PE'; sections = [int]$sections; symbols = $symbols }
+          }
+
+          # Bound traversal before recursive deletion; never traverse a junction or symlink.
+          function Assert-CleanupTree([string]$Root) {
+            Assert-NoReparse $Root
+            $queue = [Collections.Generic.Queue[string]]::new()
+            $queue.Enqueue($Root)
+            $count = 0
+            while ($queue.Count -gt 0) {
+              foreach ($path in [IO.Directory]::EnumerateFileSystemEntries($queue.Dequeue())) {
+                $count++
+                if ($count -gt 64) { throw 'G3_CLEANUP_ENTRY_BOUND' }
+                $entry = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+                if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'G3_CLEANUP_REPARSE_BLOCKED' }
+                if ($entry.PSIsContainer) { $queue.Enqueue($entry.FullName) }
+              }
+            }
+          }
+
+          $scratch = $null
+          $created = $false
+          $completed = $false
+          try {
+            if ($env:GITHUB_REPOSITORY -cne 'bitmaster162/continuityos') { throw 'G3_REPOSITORY_DRIFT' }
+            if ($env:GITHUB_EVENT_NAME -cne 'pull_request' -or $env:PR_NUMBER -cne '210') { throw 'G3_TRIGGER_OR_PR_DRIFT' }
+            if ($env:PR_BASE_REF -cne 'master' -or $env:PR_BASE_SHA -cne '719ed32a64301fc8083a5aad0c4ed7bed316040e') { throw 'G3_BASE_DRIFT' }
+            if ($env:PR_HEAD_REPO -cne $env:GITHUB_REPOSITORY -or $env:PR_HEAD_REF -cne 'agent/h3-g2-midl-compile-only-r1') { throw 'G3_HEAD_CONTEXT_DRIFT' }
+            if ($env:PR_HEAD_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'G3_HEAD_SHA_INVALID' }
+            if ($env:GITHUB_RUN_ID -cnotmatch '^[0-9]{1,20}$' -or $env:GITHUB_RUN_ATTEMPT -cnotmatch '^[0-9]{1,6}$') { throw 'G3_RUN_ID_INVALID' }
+            if ($env:RUNNER_OS -cne 'Windows' -or $env:RUNNER_ARCH -cne 'X64') { throw 'G3_RUNNER_PLATFORM_DRIFT' }
+            if ($env:ImageOS -cne 'win25-vs2026' -or $env:ImageVersion -cne '20260925.250.1') { throw 'G3_IMAGE_DRIFT_REQUIRES_FRESH_TOOLCHAIN_REVIEW' }
+
+            $pf86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+            if ([string]::IsNullOrWhiteSpace($pf86)) { throw 'G3_PROGRAMFILES_X86_MISSING' }
+            $sdk = Join-Path $pf86 'Windows Kits\10'
+            $um = Join-Path $sdk 'Include\10.0.26100.0\um'
+            $shared = Join-Path $sdk 'Include\10.0.26100.0\shared'
+            $ucrt = Join-Path $sdk 'Include\10.0.26100.0\ucrt'
+            $bin = Join-Path $sdk 'bin\10.0.26100.0\x64'
+            $vc = 'C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231'
+            $vcBin = Join-Path $vc 'bin\Hostx64\x64'
+            $vcInclude = Join-Path $vc 'include'
+            $tools = @(
+              @{ label = 'midl.exe'; path = (Join-Path $bin 'midl.exe'); sha = 'c3e800b8e3555476511df81e3d260409ff92e119e4c4e353ac6f4728ab34c8a0' },
+              @{ label = 'midlc.exe'; path = (Join-Path $bin 'midlc.exe'); sha = '209447b250c33b8b458210e6d3d8b0089b596ebf9b4da18c4228af9b025acffa' },
+              @{ label = 'rpcdce.h'; path = (Join-Path $shared 'rpcdce.h'); sha = '991883893134c8ecbe6af8335df0781bfb779c11684b3367def514136241b866' },
+              @{ label = 'Rpcrt4.lib'; path = (Join-Path $sdk 'Lib\10.0.26100.0\um\x64\Rpcrt4.lib'); sha = 'bfe69184c180bf6ade840ac5279b53aa67b0eda43c82bcd86596db0309faeef3' },
+              @{ label = 'cl.exe'; path = (Join-Path $vcBin 'cl.exe'); sha = 'b0a1818ebae6da7f18230a84e76ce839212584ac4c2ab55b97a0d5268085da57' },
+              @{ label = 'link.exe'; path = (Join-Path $vcBin 'link.exe'); sha = 'a8c42e25c91ca2453e1110540ac08f0fc12d7539454a11b9af8baeecb469837d' }
+            )
+            foreach ($tool in $tools) {
+              Assert-NoReparse $tool.path
+              if (-not (Test-Path -LiteralPath $tool.path -PathType Leaf)) { throw 'G3_PINNED_TOOL_ABSENT' }
+              if ((Get-FileHash -LiteralPath $tool.path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $tool.sha) { throw ('G3_TOOL_DIGEST_DRIFT: ' + $tool.label) }
+              $receipt.pinned_tools += [ordered]@{ filename = $tool.label; sha256 = $tool.sha }
+            }
+            # link.exe and Rpcrt4.lib are inventory pins only; neither is used to link.
+            $receipt.toolchain_digest_match = $true
+            foreach ($directory in @($um, $shared, $ucrt, $vcInclude, $env:RUNNER_TEMP, $env:SystemRoot)) {
+              if ([string]::IsNullOrWhiteSpace($directory) -or -not (Test-Path -LiteralPath $directory -PathType Container)) { throw 'G3_REQUIRED_DIRECTORY_MISSING' }
+              Assert-NoReparse $directory
+            }
+            $scratch = Join-Path ([IO.Path]::GetFullPath($env:RUNNER_TEMP)) ('continuityos_h3_g3_' + $env:GITHUB_RUN_ID + '_' + $env:GITHUB_RUN_ATTEMPT + '_pr210')
+            if (Test-Path -LiteralPath $scratch) { throw 'G3_TEMP_PREEXISTS_BLOCKED' }
+            $null = New-Item -ItemType Directory -Path $scratch -ErrorAction Stop
+            $created = $true
+            Assert-NoReparse $scratch
+            $sourceDir = Join-Path $scratch 'source'
+            $outDir = Join-Path $scratch 'generated'
+            $objDir = Join-Path $scratch 'objects'
+            $tempDir = Join-Path $scratch 'tmp'
+            foreach ($directory in @($sourceDir, $outDir, $objDir, $tempDir)) { $null = New-Item -ItemType Directory -Path $directory -ErrorAction Stop }
+            $sourcePath = Join-Path $sourceDir 'h3_r7b1c_lab.idl'
+            $sourceBytes = [Convert]::FromBase64String('LyoKICogQ29udGludWl0eU9TIEgzLVI3QjFDIExBQi1PTkxZIElETCBTS0VUQ0gg4oCUIE5PVCBDT01QSUxFRCBPUiBBVVRIT1JJWkVELgogKiBUaGlzIGlzIGEgZnJlc2gsIHNlcGFyYXRlIHN5bnRoZXRpYyBpbnRlcmZhY2U7IE5PVCBIMyB3aXJlIHYzLgogKiBObyBEQiwgZ3JhbnRzLCB3aXRuZXNzLCBtZW1vcnkgcGF5bG9hZCwgY3JlZGVudGlhbHMsIG9yIHByb2R1Y3Rpb24ga2V5cy4KICogVGhlIHB1YmxpYyBwcm9iZSBpcyBOT1Qgc2VydmVyIGF1dGhlbnRpY2F0aW9uOyBDMCByZW1haW5zIEhPTEQuCiAqIEgzTGFiU3VibWl0U3ludGhldGljIE1VU1QgcmV0dXJuIGEgY29udGVudC1mcmVlIExBQl9ESVNBQkxFRCBzdGF0dXMKICogdW50aWwgc2VwYXJhdGVseSBhcHByb3ZlZCwgaW5kZXBlbmRlbnRseSB2ZXJpZmllZCBzYW1lLWJpbmRpbmcgQzAgZXhpc3RzLgogKiBObyBSUEMgcHJvY2VzcywgZW5kcG9pbnQsIG9yIHNlcnZpY2UgaXMgY3JlYXRlZCBieSB0aGlzIGRlc2lnbiBmaWxlLgogKi8KClsKICAgIHV1aWQoMGIwYTA1OGEtZjVkMS01ZTdiLWEyOWMtOGJiYzY3ODc5NDE4KSwKICAgIHZlcnNpb24oMS4wKSwKICAgIHBvaW50ZXJfZGVmYXVsdChyZWYpCl0KaW50ZXJmYWNlIEgzUjdCMUNfTGFiVjEKewogICAgLyogUHVibGljIGRpc2NvdmVyeTogYSBub25jZSBleGNoYW5nZSBXSVRIT1VUIHByb29mIG9mIHNlcnZlciBpZGVudGl0eS4gKi8KICAgIHZvaWQgSDNMYWJQdWJsaWNQcm9iZSgKICAgICAgICBbaW5dIGhhbmRsZV90IGJpbmRpbmcsCiAgICAgICAgW2luXSBieXRlIGNsaWVudF9ub25jZVszMl0sCiAgICAgICAgW291dF0gYnl0ZSBzZXJ2ZXJfbm9uY2VbMzJdLAogICAgICAgIFtvdXQsIHJlZl0gdW5zaWduZWQgbG9uZyAqbGFiX3N0YXR1cwogICAgKTsKCiAgICAvKiBPbmx5IG5vbi1zZW5zaXRpdmUgc3ludGhldGljIGZpeHR1cmUgYnl0ZXMgbWF5IGVudGVyIHRoaXMgbWV0aG9kLgogICAgICogQSBmdXR1cmUgcmVhbCBicm9rZXIgTVVTVCB1c2UgYSBzZXBhcmF0ZWx5IHJldmlld2VkL2F1dGhlbnRpY2F0ZWQKICAgICAqIHByb3RvY29sLCBhbmQgTVVTVCBOT1QgdHJlYXQgdGhpcyBhcyBhIHYzIG1lbW9yeSBtZXRob2QuCiAgICAgKiBGaXhlZCBhcnJheXMgZGVsaWJlcmF0ZWx5IGF2b2lkIGNhbGxlci1zaXplZCBhbGxvY2F0aW9ucyBpbiBJREwuCiAgICAgKiBUaGUgYnl0ZS1sZW5ndGggZmllbGQgaXMgdmFsaWRhdGVkIGJ5IC9yb2J1c3QgQU5EIGluc2lkZSBoYW5kbGVyLgogICAgICovCiAgICB2b2lkIEgzTGFiU3VibWl0U3ludGhldGljKAogICAgICAgIFtpbl0gaGFuZGxlX3QgYmluZGluZywKICAgICAgICBbaW4sIHJhbmdlKDEsIDE2Mzg0KV0gdW5zaWduZWQgbG9uZyByZXF1ZXN0X2xlbiwKICAgICAgICBbaW5dIGJ5dGUgcmVxdWVzdF9zbG90WzE2Mzg0XSwKICAgICAgICBbb3V0LCByZWZdIHVuc2lnbmVkIGxvbmcgKnJlcGx5X2xlbiwKICAgICAgICBbb3V0XSBieXRlIHJlcGx5X3Nsb3RbODE5Ml0sCiAgICAgICAgW291dCwgcmVmXSB1bnNpZ25lZCBsb25nICpsYWJfc3RhdHVzCiAgICApOwp9Cg==')
+            $sourceSha = '67915aa4c68d7bf8d8dd3a8879f7abed0c12a5262e577f4e4bf9c8c7fe87fe09'
+            if ($sourceBytes.Length -ne 1555 -or (Get-Sha256Bytes $sourceBytes) -cne $sourceSha) { throw 'G3_EMBEDDED_IDL_DRIFT' }
+            [IO.File]::WriteAllBytes($sourcePath, $sourceBytes)
+            $sourceNames = @('h3_r7b1c_lab.idl')
+            $receipt.source_before = @(Get-BoundedManifest $sourceDir $sourceNames 1555 1555)
+            if ($receipt.source_before[0].sha256 -cne $sourceSha) { throw 'G3_IDL_READBACK_DRIFT' }
+
+            # Closed environment for MIDL, its C preprocessor, and both object compilations.
+            $childEnv = @{
+              SystemRoot = $env:SystemRoot
+              WINDIR = $env:SystemRoot
+              ComSpec = (Join-Path $env:SystemRoot 'System32\cmd.exe')
+              PATH = (@($vcBin, $bin, (Join-Path $env:SystemRoot 'System32'), $env:SystemRoot) -join ';')
+              INCLUDE = (@($outDir, $um, $shared, $ucrt, $vcInclude) -join ';')
+              TMP = $tempDir
+              TEMP = $tempDir
+              VSLANG = '1033'
+            }
+            $midlArgs = @('/nologo', '/robust', '/Oicf', '/env', 'amd64', '/out', $outDir, '/I', $um, '/I', $shared, '/I', $ucrt, $sourcePath)
+            Invoke-BoundedNative 'MIDL' (Join-Path $bin 'midl.exe') $midlArgs 90 $childEnv $scratch
+            $generatedNames = @('h3_r7b1c_lab.h', 'h3_r7b1c_lab_c.c', 'h3_r7b1c_lab_s.c')
+            $receipt.generated_before_compile = @(Get-BoundedManifest $outDir $generatedNames 262144 786432)
+            $header = [IO.File]::ReadAllText((Join-Path $outDir 'h3_r7b1c_lab.h'))
+            if (-not $header.Contains('H3LabPublicProbe') -or -not $header.Contains('H3LabSubmitSynthetic')) { throw 'G3_GENERATED_INTERFACE_SYMBOLS_MISSING' }
+
+            # /W3 covers actionable generated-C warnings; /WX rejects every warning at that level.
+            # No warning suppression, /link, /LD, or executable output. Each /Fo is an absolute .obj.
+            $clientObject = Join-Path $objDir 'h3_r7b1c_lab_c.obj'
+            $serverObject = Join-Path $objDir 'h3_r7b1c_lab_s.obj'
+            $clientArgs = @('/nologo', '/TC', '/c', '/W3', '/WX', '/Od', '/I', $outDir, ('/Fo' + $clientObject), (Join-Path $outDir 'h3_r7b1c_lab_c.c'))
+            Invoke-BoundedNative 'CL_CLIENT_OBJECT' (Join-Path $vcBin 'cl.exe') $clientArgs 60 $childEnv $scratch
+            $clientBefore = @(Get-BoundedManifest $objDir @('h3_r7b1c_lab_c.obj') 1048576 1048576)
+            $clientCoff = Assert-Amd64Coff $clientObject
+            $receipt.objects = @([ordered]@{ file = $clientBefore[0]; coff = $clientCoff })
+            Assert-SameManifest $receipt.generated_before_compile @(Get-BoundedManifest $outDir $generatedNames 262144 786432)
+            Assert-SameManifest $receipt.source_before @(Get-BoundedManifest $sourceDir $sourceNames 1555 1555)
+
+            $serverArgs = @('/nologo', '/TC', '/c', '/W3', '/WX', '/Od', '/I', $outDir, ('/Fo' + $serverObject), (Join-Path $outDir 'h3_r7b1c_lab_s.c'))
+            Invoke-BoundedNative 'CL_SERVER_OBJECT' (Join-Path $vcBin 'cl.exe') $serverArgs 60 $childEnv $scratch
+            $objectManifest = @(Get-BoundedManifest $objDir @('h3_r7b1c_lab_c.obj', 'h3_r7b1c_lab_s.obj') 1048576 2097152)
+            $serverCoff = Assert-Amd64Coff $serverObject
+            Assert-SameManifest $clientBefore @($objectManifest | Where-Object { $_.filename -ceq 'h3_r7b1c_lab_c.obj' })
+            $receipt.objects += [ordered]@{ file = $objectManifest[1]; coff = $serverCoff }
+            $receipt.generated_after_compile = @(Get-BoundedManifest $outDir $generatedNames 262144 786432)
+            $receipt.source_after = @(Get-BoundedManifest $sourceDir $sourceNames 1555 1555)
+            Assert-SameManifest $receipt.generated_before_compile $receipt.generated_after_compile
+            Assert-SameManifest $receipt.source_before $receipt.source_after
+            foreach ($tool in $tools) {
+              Assert-NoReparse $tool.path
+              if ((Get-FileHash -LiteralPath $tool.path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $tool.sha) { throw 'G3_TOOL_CHANGED_DURING_COMPILE' }
+            }
+            $receipt.toolchain_unchanged_after_compile = $true
+            $rootEntries = 0
+            foreach ($path in [IO.Directory]::EnumerateFileSystemEntries($scratch)) {
+              $rootEntries++
+              $entry = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+              if ($rootEntries -gt 4 -or -not $entry.PSIsContainer -or $entry.Name -cnotin @('source', 'generated', 'objects', 'tmp')) { throw 'G3_UNEXPECTED_SCRATCH_ENTRY' }
+              Assert-NoReparse $path
+            }
+            if ($rootEntries -ne 4) { throw 'G3_SCRATCH_DIRECTORY_MISSING' }
+            foreach ($path in [IO.Directory]::EnumerateFileSystemEntries($tempDir)) { throw 'G3_RESIDUAL_TEMP_OUTPUT' }
+            if ($receipt.midl_invocations -ne 1 -or $receipt.direct_object_compiler_invocations -ne 2 -or $receipt.process_receipts.Count -ne 3) { throw 'G3_INVOCATION_COUNT_DRIFT' }
+            $receipt.no_executable_or_dll_output = $true
+            $completed = $true
+          } catch {
+            $message = [string]$_.Exception.Message
+            $receipt.failures.Add($message.Substring(0, [Math]::Min(512, $message.Length)))
+          } finally {
+            if ($created) {
+              $receipt.cleanup_attempted = $true
+              try {
+                Assert-CleanupTree $scratch
+                Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction Stop
+                # A failed deletion never sets success, even if a later existence check is false.
+                if (Test-Path -LiteralPath $scratch) { throw 'G3_TEMP_CLEANUP_NOT_VERIFIED' }
+                $receipt.temp_cleanup_verified = $true
+              } catch {
+                $receipt.cleanup_error = 'G3_TEMP_CLEANUP_FAILED_OR_UNVERIFIED'
+                $receipt.failures.Add($receipt.cleanup_error)
+              }
+            }
+          }
+
+          if ($completed -and $receipt.failures.Count -eq 0 -and $receipt.temp_cleanup_verified) {
+            $receipt.verdict = 'PASS_OBJECT_COMPILE_ONLY'
+          }
+          Write-Output ('H3_G3_OBJECT_COMPILE_RECEIPT=' + ($receipt | ConvertTo-Json -Compress -Depth 10))
+          if ($receipt.verdict -cne 'PASS_OBJECT_COMPILE_ONLY') { throw 'H3_G3_OBJECT_COMPILE_HOLD_SEE_RECEIPT' }
+          Write-Output 'H3_G3_OBJECT_COMPILE_ONLY=PASS_NOT_RPC_SECURITY_PASS'
