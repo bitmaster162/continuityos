@@ -62,6 +62,7 @@ jobs:
             midl_preprocessor_may_invoke_cl_E = $true
             process_receipts = [Collections.Generic.List[object]]::new()
             temp_inventory = [Collections.Generic.List[object]]::new()
+            temp_empty_directory_normalization = $null
             failures = [Collections.Generic.List[string]]::new()
             cleanup_attempted = $false
             temp_cleanup_verified = $false
@@ -374,6 +375,74 @@ jobs:
             }
           }
 
+          # Accept only the observed empty directory shape, never a telemetry/content exemption.
+          # Fresh bounded reads precede leaf-first NONRECURSIVE deletion; late files keep HOLD.
+          function Remove-ObservedEmptyTempDirectories([string]$Directory, [object]$Snapshot) {
+            $normalization = [ordered]@{
+              policy = 'EMPTY_OR_EXACT_THREE_EMPTY_DIRECTORIES_V1'
+              allowed_parent_names = @('Microsoft', 'VSApplicationInsights')
+              allowed_leaf_pattern = '^vstel[0-9a-f]{32}$'
+              max_entries = 3
+              files_allowed = $false
+              recursive_delete = $false
+              removed_relative_paths = [Collections.Generic.List[string]]::new()
+              final_empty_verified = $false
+              status = 'HOLD'
+              reason = $null
+            }
+            $receipt.temp_empty_directory_normalization = $normalization
+            try {
+              Assert-NoReparse $Directory
+              if ($Snapshot.boundary -cne 'FINAL_BEFORE_EMPTY_TEMP_GATE' -or $Snapshot.status -cne 'COMPLETE_BOUNDED_INVENTORY') {
+                throw 'G3_TEMP_NORMALIZATION_REQUIRES_COMPLETE_FINAL_SNAPSHOT'
+              }
+              if ($Snapshot.entries.Count -ne 0 -and $Snapshot.entries.Count -ne 3) { throw 'G3_TEMP_NORMALIZATION_UNKNOWN_ENTRY_COUNT' }
+              if ($Snapshot.entries.Count -eq 3) {
+                $leafName = [IO.Path]::GetFileName($Snapshot.entries[2].relative_path)
+                if ($leafName -cnotmatch '^vstel[0-9a-f]{32}$') { throw 'G3_TEMP_NORMALIZATION_UNKNOWN_LEAF' }
+                $parents = Join-Path 'Microsoft' 'VSApplicationInsights'
+                $expected = @('Microsoft', $parents, (Join-Path $parents $leafName))
+                for ($i = 0; $i -lt 3; $i++) {
+                  $row = $Snapshot.entries[$i]
+                  if ($row.type -cne 'DIRECTORY' -or $row.capture -cne 'METADATA_ONLY' -or $row.depth -ne ($i + 1) -or $row.relative_path -cne $expected[$i]) {
+                    throw 'G3_TEMP_NORMALIZATION_UNKNOWN_DIRECTORY_SHAPE'
+                  }
+                }
+                $parent = $Directory
+                for ($i = 0; $i -lt 3; $i++) {
+                  Assert-NoReparse $parent
+                  $count = 0
+                  foreach ($path in [IO.Directory]::EnumerateFileSystemEntries($parent)) {
+                    $count++
+                    if ($count -gt 1) { throw 'G3_TEMP_NORMALIZATION_EXTRA_ENTRY' }
+                    $entry = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+                    if (-not $entry.PSIsContainer -or $entry.Name -cne [IO.Path]::GetFileName($expected[$i])) { throw 'G3_TEMP_NORMALIZATION_LIVE_SHAPE_DRIFT' }
+                    Assert-NoReparse $path
+                  }
+                  if ($count -ne 1) { throw 'G3_TEMP_NORMALIZATION_DIRECTORY_MISSING' }
+                  $parent = Join-Path $Directory $expected[$i]
+                }
+                Assert-NoReparse $parent
+                foreach ($path in [IO.Directory]::EnumerateFileSystemEntries($parent)) { throw 'G3_TEMP_NORMALIZATION_LEAF_NOT_EMPTY' }
+                for ($i = 2; $i -ge 0; $i--) {
+                  $path = Join-Path $Directory $expected[$i]
+                  Assert-NoReparse $path
+                  [IO.Directory]::Delete($path, $false)
+                  if (Test-Path -LiteralPath $path) { throw 'G3_TEMP_NORMALIZATION_DELETE_NOT_VERIFIED' }
+                  $normalization.removed_relative_paths.Add($expected[$i])
+                }
+              }
+              Assert-NoReparse $Directory
+              foreach ($path in [IO.Directory]::EnumerateFileSystemEntries($Directory)) { throw 'G3_TEMP_NORMALIZATION_RESIDUAL_ENTRY' }
+              $normalization.final_empty_verified = $true
+              $normalization.status = 'PASS_EMPTY_TEMP'
+            } catch {
+              $message = [string]$_.Exception.Message
+              $normalization.reason = $message.Substring(0, [Math]::Min(256, $message.Length))
+              throw ('G3_TEMP_NORMALIZATION_HOLD: ' + $normalization.reason)
+            }
+          }
+
           # Bound traversal before recursive deletion; never traverse a junction or symlink.
           function Assert-CleanupTree([string]$Root) {
             Assert-NoReparse $Root
@@ -511,6 +580,7 @@ jobs:
             }
             if ($rootEntries -ne 4) { throw 'G3_SCRATCH_DIRECTORY_MISSING' }
             Add-BoundedTempInventory 'FINAL_BEFORE_EMPTY_TEMP_GATE' $tempDir
+            Remove-ObservedEmptyTempDirectories $tempDir $receipt.temp_inventory[$receipt.temp_inventory.Count - 1]
             foreach ($path in [IO.Directory]::EnumerateFileSystemEntries($tempDir)) { throw 'G3_RESIDUAL_TEMP_OUTPUT' }
             if ($receipt.midl_invocations -ne 1 -or $receipt.direct_object_compiler_invocations -ne 2 -or $receipt.process_receipts.Count -ne 3) { throw 'G3_INVOCATION_COUNT_DRIFT' }
             $receipt.no_executable_or_dll_output = $true
