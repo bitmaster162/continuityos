@@ -1,0 +1,184 @@
+# ContinuityOS H3-R7B1B1: proposed GitHub-hosted Windows toolchain inventory.
+# DESIGN ONLY until separate object-bound owner approval and verified PR.
+# No checkout, installation, build, native RPC registration, or artifacts.
+name: H3 R7B1B1 native toolchain inventory
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/h3-r7b1b1-toolchain-preflight.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: h3-r7b1b1-toolchain-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  inventory:
+    name: win-2025 / MSVC MIDL SDK metadata only
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.base.ref == 'master' }}
+    runs-on: windows-2025
+    timeout-minutes: 8
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Verify exact context and inventory preinstalled toolchain
+        env:
+          EXPECTED_REPOSITORY: bitmaster162/continuityos
+          EXPECTED_BASE_SHA: 719ed32a64301fc8083a5aad0c4ed7bed316040e
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+
+          if ($env:GITHUB_REPOSITORY -cne $env:EXPECTED_REPOSITORY) {
+            throw 'H3_REPOSITORY_DRIFT'
+          }
+          if ($env:GITHUB_EVENT_NAME -cne 'pull_request') {
+            throw 'H3_UNAPPROVED_EVENT'
+          }
+          if ($env:PR_BASE_SHA -cne $env:EXPECTED_BASE_SHA) {
+            throw 'H3_PROTECTED_MASTER_BASE_SHA_DRIFT'
+          }
+          if ($env:PR_HEAD_SHA -notmatch '^[0-9a-f]{40}$') {
+            throw 'H3_HEAD_SHA_INVALID'
+          }
+          if ($env:RUNNER_OS -cne 'Windows' -or $env:RUNNER_ARCH -cne 'X64') {
+            throw 'H3_UNEXPECTED_RUNNER_PLATFORM'
+          }
+
+          function Get-FileEvidence {
+            param(
+              [Parameter(Mandatory = $true)][string] $Label,
+              [AllowNull()][string] $Path,
+              [bool] $Required = $true
+            )
+            $record = [ordered]@{
+              label        = $Label
+              required     = $Required
+              present      = $false
+              path         = $null
+              bytes        = $null
+              file_version = $null
+              sha256       = $null
+            }
+            if (-not [string]::IsNullOrWhiteSpace($Path) -and
+                (Test-Path -LiteralPath $Path -PathType Leaf)) {
+              $file = Get-Item -LiteralPath $Path -ErrorAction Stop
+              if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "H3_REPARSE_TOOLCHAIN_FILE_BLOCKED: $Label"
+              }
+              $record.present = $true
+              $record.path = $file.FullName
+              $record.bytes = [long]$file.Length
+              $record.file_version = [string]([Diagnostics.FileVersionInfo]::GetVersionInfo($file.FullName).FileVersion)
+              $record.sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+            [pscustomobject]$record
+          }
+
+          $pf86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+          if ([string]::IsNullOrWhiteSpace($pf86)) {
+            throw 'H3_PROGRAMFILES_X86_MISSING'
+          }
+
+          $vswhere = Join-Path $pf86 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vsRoot = $null
+          $vcVersion = $null
+          $cl = $null
+          $link = $null
+          if (Test-Path -LiteralPath $vswhere -PathType Leaf) {
+            $installations = @(& $vswhere -latest -products '*' -requires 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' -property installationPath)
+            if ($LASTEXITCODE -ne 0) {
+              throw 'H3_VSWHERE_QUERY_FAILED'
+            }
+            $installations = @($installations | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            if ($installations.Count -eq 1) {
+              $vsRoot = [string]$installations[0].Trim()
+              $msvcRoot = Join-Path $vsRoot 'VC\Tools\MSVC'
+              if (Test-Path -LiteralPath $msvcRoot -PathType Container) {
+                $versions = @(Get-ChildItem -LiteralPath $msvcRoot -Directory | Sort-Object Name -Descending)
+                if ($versions.Count -gt 0) {
+                  $vcVersion = $versions[0].Name
+                  $vcBin = Join-Path $versions[0].FullName 'bin\Hostx64\x64'
+                  $cl = Join-Path $vcBin 'cl.exe'
+                  $link = Join-Path $vcBin 'link.exe'
+                }
+              }
+            }
+          }
+
+          $sdkRoot = Join-Path $pf86 'Windows Kits\10'
+          $sdkVersion = $null
+          $midl = $null
+          $midlc = $null
+          $header = $null
+          $importLib = $null
+          $sdkBin = Join-Path $sdkRoot 'bin'
+          if (Test-Path -LiteralPath $sdkBin -PathType Container) {
+            $sdkVersions = @(Get-ChildItem -LiteralPath $sdkBin -Directory |
+              Where-Object { $_.Name -match '^10\.\d+\.\d+\.\d+$' } |
+              Sort-Object Name -Descending)
+            foreach ($candidate in $sdkVersions) {
+              $candidateMidl = Join-Path $candidate.FullName 'x64\midl.exe'
+              $candidateHeader = Join-Path $sdkRoot "Include\$($candidate.Name)\um\rpcdce.h"
+              $candidateLib = Join-Path $sdkRoot "Lib\$($candidate.Name)\um\x64\Rpcrt4.lib"
+              if ((Test-Path -LiteralPath $candidateMidl -PathType Leaf) -and
+                  (Test-Path -LiteralPath $candidateHeader -PathType Leaf) -and
+                  (Test-Path -LiteralPath $candidateLib -PathType Leaf)) {
+                $sdkVersion = $candidate.Name
+                $midl = $candidateMidl
+                $midlc = Join-Path $candidate.FullName 'x64\midlc.exe'
+                $header = $candidateHeader
+                $importLib = $candidateLib
+                break
+              }
+            }
+          }
+
+          $files = @(
+            (Get-FileEvidence -Label 'vswhere.exe' -Path $vswhere)
+            (Get-FileEvidence -Label 'cl.exe' -Path $cl)
+            (Get-FileEvidence -Label 'link.exe' -Path $link)
+            (Get-FileEvidence -Label 'midl.exe' -Path $midl)
+            (Get-FileEvidence -Label 'rpcdce.h' -Path $header)
+            (Get-FileEvidence -Label 'Rpcrt4.lib' -Path $importLib)
+            (Get-FileEvidence -Label 'midlc.exe' -Path $midlc -Required $false)
+          )
+          $missing = @($files | Where-Object { $_.required -and -not $_.present } |
+            ForEach-Object { $_.label })
+
+          $receipt = [ordered]@{
+            schema               = 'continuityos.h3.r7b1b1.toolchain-preflight/v1'
+            scope                = 'preinstalled local toolchain inventory only'
+            github_repository    = $env:GITHUB_REPOSITORY
+            pr_base_sha          = $env:PR_BASE_SHA
+            pr_head_sha          = $env:PR_HEAD_SHA
+            runner_os            = $env:RUNNER_OS
+            runner_arch          = $env:RUNNER_ARCH
+            image_os             = $env:ImageOS
+            image_version        = $env:ImageVersion
+            windows_version      = [Environment]::OSVersion.Version.ToString()
+            vs_installation_path = $vsRoot
+            msvc_version         = $vcVersion
+            windows_sdk_version  = $sdkVersion
+            files                = $files
+            missing_required     = $missing
+            no_source_checkout   = $true
+            no_compiler_execution = $true
+            no_network_command  = $true
+            no_artifact_upload   = $true
+            no_rpc_registration  = $true
+            production           = 'HOLD'
+          }
+          Write-Output ('H3_R7B1B1_READONLY_RECEIPT=' + ($receipt | ConvertTo-Json -Compress -Depth 8))
+          if ($missing.Count -ne 0) {
+            throw ('H3_R7B1B1_TOOLCHAIN_INCOMPLETE: ' + ($missing -join ','))
+          }
+          Write-Output 'H3_R7B1B1_TOOLCHAIN_INVENTORY=PASS_ONLY_NOT_NATIVE_BROKER_SECURITY_PASS'
