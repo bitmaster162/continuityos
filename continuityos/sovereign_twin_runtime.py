@@ -15,9 +15,15 @@ or its subclasses.
 """
 from __future__ import annotations
 
+from dataclasses import replace as _replace
+from threading import get_ident as _get_ident
 from typing import Any
 
 from . import sovereign_twin_runtime_r21g as _r21g
+from .person_twin_r21h_evidence import (
+    PersonTwinEvidenceError,
+    PersonTwinR21HEvidenceAdapter,
+)
 from .sovereign_twin_runtime_r21g import *  # noqa: F401,F403
 
 for _legacy_name, _legacy_value in vars(_r21g).items():
@@ -37,8 +43,91 @@ EMBEDDING_STARTUP_READINESS_QUERY = (
 )
 
 
+class _PersonPromptBoundary:
+    """Keep historical class-static formatting, guard protected instance calls."""
+
+    def __get__(self, instance, owner):
+        if instance is None:
+            return _r21g.SovereignTwinRuntime._system_prompt
+        return instance._person_system_prompt
+
+
+class _PersonDeepBoundary:
+    """Preserve inherited DEEP identity while denying protected instance entry."""
+
+    def __get__(self, instance, owner):
+        original = _r21g.SovereignTwinRuntime._ask_deep
+        if instance is None:
+            return original
+        if getattr(instance, "_person_evidence_adapter", None) is None:
+            return original.__get__(instance, owner)
+        return instance._person_deep_denied
+
+
 class SovereignTwinRuntime(_r21g.SovereignTwinRuntime):
     """R21G runtime plus fail-closed embedding-aware FAST startup/request ordering."""
+
+    _system_prompt = _PersonPromptBoundary()
+    _ask_deep = _PersonDeepBoundary()
+
+    def __init__(
+        self, memory_db: str, *, client: LmStudioClient | None = None,
+        recall_k: int = 8, profiles: Mapping[str, LocalModelProfile] | None = None,
+        embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+        person_evidence_adapter: PersonTwinR21HEvidenceAdapter | None = None,
+    ):
+        if person_evidence_adapter is not None and type(person_evidence_adapter) is not PersonTwinR21HEvidenceAdapter:
+            raise PersonTwinEvidenceError("PERSON_ADAPTER_CONFIGURATION_INVALID")
+        super().__init__(memory_db, client=client, recall_k=recall_k,
+                         profiles=profiles, embedding_model=embedding_model)
+        self._person_evidence_adapter = person_evidence_adapter
+        self._person_active_request = None
+
+    def _person_request(self) -> dict[str, Any]:
+        active = getattr(self, "_person_active_request", None)
+        if active is None or active["owner_thread"] != _get_ident() or active["adapter"] is not getattr(self, "_person_evidence_adapter", None):
+            raise PersonTwinEvidenceError("PERSON_ACTIVE_ASK_REQUIRED")
+        return active
+
+    def _person_deep_denied(self, *args: Any, **kwargs: Any) -> TwinAnswer:
+        raise PersonTwinEvidenceError("PERSON_PROTECTED_DEEP_UNSUPPORTED")
+
+    def evidence(self, query: str) -> tuple[TwinEvidence, ...]:
+        adapter = getattr(self, "_person_evidence_adapter", None)
+        if adapter is None:
+            return super().evidence(query)
+        with self._model_lock:
+            active = self._person_request()
+            if query != active["query"]:
+                raise PersonTwinEvidenceError("PERSON_ACTIVE_QUERY_MISMATCH")
+            evidence = adapter.prepare(query, self.memory.store)
+            active["evidence"] = evidence
+            return evidence
+
+    def _person_system_prompt(self, evidence: Sequence[TwinEvidence]) -> str:
+        adapter = getattr(self, "_person_evidence_adapter", None)
+        if adapter is None:
+            return super()._system_prompt(evidence)
+        with self._model_lock:
+            active = self._person_request()
+            if evidence is not active["evidence"]:
+                raise PersonTwinEvidenceError("PERSON_FOREIGN_PROMPT_EVIDENCE")
+            active["receipt"] = adapter.validate_for_prompt(
+                active["query"], self.memory.store, evidence,
+            )
+            return super()._system_prompt(evidence)
+
+    def _ask_fast_cold_streaming(
+        self, query: str, *, profile: LocalModelProfile, evidence: Any,
+    ) -> TwinAnswer:
+        if getattr(self, "_person_evidence_adapter", None) is None:
+            return super()._ask_fast_cold_streaming(query, profile=profile, evidence=evidence)
+        with self._model_lock:
+            active = self._person_request()
+            if query != active["query"] or evidence is not active["evidence"] or profile != self.profiles["fast"]:
+                raise PersonTwinEvidenceError("PERSON_FOREIGN_STREAM_REQUEST")
+            self._require_fast_streaming_transport()
+            return super()._ask_fast_cold_streaming(query, profile=profile, evidence=evidence)
 
     def _require_fast_streaming_transport(self):
         stream_chat = getattr(
@@ -73,6 +162,8 @@ class SovereignTwinRuntime(_r21g.SovereignTwinRuntime):
         first prove the embedding endpoint with a fixed query that bypasses
         canonical memory, then make FAST the final startup acquisition.
         """
+        if getattr(self, "_person_evidence_adapter", None) is not None:
+            raise PersonTwinEvidenceError("PERSON_PROTECTED_PREWARM_UNSUPPORTED")
         with self._model_lock:
             profile = self.profiles["fast"]
 
@@ -168,7 +259,39 @@ class SovereignTwinRuntime(_r21g.SovereignTwinRuntime):
             }
 
     def ask(self, query: str, *, mode: str = "fast") -> TwinAnswer:
+        adapter = getattr(self, "_person_evidence_adapter", None)
+        if adapter is None:
+            return self._ask_r21h(query, mode=mode)
+        if mode != "fast" or not callable(getattr(self.client, "chat_fast_streaming_jit_reconciled", None)):
+            raise PersonTwinEvidenceError("PERSON_PROTECTED_FAST_STREAMING_ONLY")
+        with self._model_lock:
+            if getattr(self, "_person_active_request", None) is not None:
+                raise PersonTwinEvidenceError("PERSON_NESTED_ASK_DENIED")
+            self._person_active_request = {
+                "adapter": adapter, "query": query, "owner_thread": _get_ident(),
+                "evidence": None, "receipt": None, "dispatcher_entered": False,
+            }
+            try:
+                answer = self._ask_r21h(query, mode=mode)
+                receipt = self._person_request()["receipt"]
+                if receipt is None:
+                    raise PersonTwinEvidenceError("PERSON_PROMPT_REVALIDATION_MISSING")
+                return _replace(answer, stats={**answer.stats, "person_evidence": receipt})
+            finally:
+                self._person_active_request = None
+
+    def _ask_r21h(self, query: str, *, mode: str = "fast") -> TwinAnswer:
         """Answer FAST after evidence/reprobe, preserving old custom-client fallback."""
+        if getattr(self, "_person_evidence_adapter", None) is not None:
+            with self._model_lock:
+                active = self._person_request()
+                if query != active["query"]:
+                    raise PersonTwinEvidenceError("PERSON_ACTIVE_QUERY_MISMATCH")
+                if mode != "fast" or not callable(getattr(self.client, "chat_fast_streaming_jit_reconciled", None)):
+                    raise PersonTwinEvidenceError("PERSON_PROTECTED_FAST_STREAMING_ONLY")
+                if active["dispatcher_entered"]:
+                    raise PersonTwinEvidenceError("PERSON_NESTED_DISPATCH_DENIED")
+                active["dispatcher_entered"] = True
         if mode != "fast":
             return super().ask(query, mode=mode)
 
