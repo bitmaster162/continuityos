@@ -1,7 +1,7 @@
-# ContinuityOS H3-R7B1B1: proposed GitHub-hosted Windows toolchain inventory.
-# DESIGN ONLY; exact runner image windows-2025-vs2026; requires new object-bound approval.
+# ContinuityOS H3-G1 R4: independent Windows SDK component discovery (design only).
+# DESIGN ONLY: not approved to update GitHub PR 209; no CI execution authorization.
 # No checkout, installation, build, native RPC registration, or artifacts.
-name: H3 R7B1B1 native toolchain inventory R3
+name: H3 G1 Windows SDK component inventory R4
 
 on:
   pull_request:
@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   inventory:
-    name: win-2025 / MSVC MIDL SDK metadata only
+    name: win-2025 / independent SDK components only
     if: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.base.ref == 'master' }}
     runs-on: windows-2025-vs2026
     timeout-minutes: 8
@@ -114,32 +114,150 @@ jobs:
             }
           }
 
-          $sdkRoot = Join-Path $pf86 'Windows Kits\10'
-          $sdkVersion = $null
+          # H3 G1 R4: bounded, independent component discovery; no toolchain execution.
+          # R3 had a composite early-exit that left four individual statuses null.
+          $sdkRoots = [System.Collections.Generic.List[object]]::new()
+          $seenRoots = [System.Collections.Generic.HashSet[string]]::new(
+            [System.StringComparer]::OrdinalIgnoreCase
+          )
+          function Add-SdkRoot {
+            param([string] $Origin, [AllowNull()][string] $Value)
+            if ([string]::IsNullOrWhiteSpace($Value)) { return }
+            $path = [IO.Path]::GetFullPath($Value.Trim().TrimEnd([char[]]@('\','/')))
+            if ($seenRoots.Add($path)) {
+              if ($sdkRoots.Count -ge 8) { throw 'H3_SDK_ROOT_LIMIT_EXCEEDED' }
+              $sdkRoots.Add([pscustomobject]@{
+                source = $Origin
+                path = $path
+                present = [bool](Test-Path -LiteralPath $path -PathType Container)
+              })
+            }
+          }
+
+          Add-SdkRoot -Origin 'ProgramFiles(x86)' -Value (Join-Path $pf86 'Windows Kits\10')
+          $pf = [Environment]::GetEnvironmentVariable('ProgramFiles')
+          if (-not [string]::IsNullOrWhiteSpace($pf)) {
+            Add-SdkRoot -Origin 'ProgramFiles' -Value (Join-Path $pf 'Windows Kits\10')
+          }
+          Add-SdkRoot -Origin 'WindowsSdkDir' -Value $env:WindowsSdkDir
+          $regKeys = @(
+            'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows Kits\Installed Roots'
+          )
+          $registryReads = [System.Collections.Generic.List[object]]::new()
+          foreach ($regKey in $regKeys) {
+            $regValue = $null
+            $regStatus = 'MISSING_KEY_OR_VALUE'
+            try {
+              $regData = Get-ItemProperty -LiteralPath $regKey -ErrorAction Stop
+              $regValue = [string]$regData.KitsRoot10
+              if (-not [string]::IsNullOrWhiteSpace($regValue)) {
+                $regStatus = 'FOUND'
+                Add-SdkRoot -Origin $regKey -Value $regValue
+              }
+            } catch {
+              $regStatus = 'UNAVAILABLE'
+            }
+            $registryReads.Add([pscustomobject]@{ key=$regKey; status=$regStatus })
+          }
+
+          $sdkProbes = [System.Collections.Generic.List[object]]::new()
+          foreach ($rootEntry in $sdkRoots) {
+            if (-not $rootEntry.present) { continue }
+            $versions = [System.Collections.Generic.HashSet[string]]::new(
+              [System.StringComparer]::OrdinalIgnoreCase
+            )
+            # A bounded union of Bin/Include/Lib versions, not only Bin versions.
+            [void]$versions.Add('10.0.26100.0')
+            $envSDKVersion = [string]$env:WindowsSDKVersion
+            $envSDKVersion = $envSDKVersion.Trim().TrimEnd([char[]]@('\','/'))
+            if ($envSDKVersion -match '^10\.\d+\.\d+\.\d+$') {
+              [void]$versions.Add($envSDKVersion)
+            }
+            foreach ($directory in @('bin','Include','Lib')) {
+              $dir = Join-Path $rootEntry.path $directory
+              if (Test-Path -LiteralPath $dir -PathType Container) {
+                $kids = @(Get-ChildItem -LiteralPath $dir -Directory -ErrorAction Stop)
+                if ($kids.Count -gt 64) { throw 'H3_SDK_DIRECTORY_ENTRY_LIMIT_EXCEEDED' }
+                foreach ($child in $kids) {
+                  if ($child.Name -match '^10\.\d+\.\d+\.\d+$') {
+                    [void]$versions.Add($child.Name)
+                  }
+                }
+              }
+            }
+            if ($versions.Count -gt 16) { throw 'H3_SDK_VERSION_LIMIT_EXCEEDED' }
+            $sorted = @($versions | Sort-Object -Property @{Expression={ [version]$_ };Descending=$true})
+            foreach ($ver in $sorted) {
+              if ($sdkProbes.Count -ge 128) { throw 'H3_SDK_PROBE_LIMIT_EXCEEDED' }
+              $dirVersion = Join-Path $rootEntry.path ("bin\$ver\x64")
+              $dirLegacy = Join-Path $rootEntry.path 'bin\x64'
+              $midlPath = Join-Path $dirVersion 'midl.exe'
+              $midlcPath = Join-Path $dirVersion 'midlc.exe'
+              $layout = 'versioned'
+              if (-not (Test-Path -LiteralPath $midlPath -PathType Leaf)) {
+                $legacyMidl = Join-Path $dirLegacy 'midl.exe'
+                if (Test-Path -LiteralPath $legacyMidl -PathType Leaf) {
+                  $midlPath = $legacyMidl
+                  $layout = 'legacy'
+                }
+              }
+              if (-not (Test-Path -LiteralPath $midlcPath -PathType Leaf)) {
+                $legacyMidlc = Join-Path $dirLegacy 'midlc.exe'
+                if (Test-Path -LiteralPath $legacyMidlc -PathType Leaf) {
+                  $midlcPath = $legacyMidlc
+                  $layout = 'mixed_or_legacy'
+                }
+              }
+              $headerPath = Join-Path $rootEntry.path ("Include\$ver\um\rpcdce.h")
+              $libPath = Join-Path $rootEntry.path ("Lib\$ver\um\x64\Rpcrt4.lib")
+              $probe = [pscustomobject]@{
+                root = $rootEntry.path
+                version = $ver
+                layout = $layout
+                midl_path = $midlPath
+                midlc_path = $midlcPath
+                header_path = $headerPath
+                lib_path = $libPath
+                midl_present = [bool](Test-Path -LiteralPath $midlPath -PathType Leaf)
+                midlc_present = [bool](Test-Path -LiteralPath $midlcPath -PathType Leaf)
+                header_present = [bool](Test-Path -LiteralPath $headerPath -PathType Leaf)
+                lib_present = [bool](Test-Path -LiteralPath $libPath -PathType Leaf)
+              }
+              $sdkProbes.Add($probe)
+            }
+          }
+
+          # Independent presence per component; never infer absence from composite failure.
+          $componentFound = [ordered]@{
+            'midl.exe'  = [bool](@($sdkProbes | Where-Object { $_.midl_present }).Count -gt 0)
+            'midlc.exe' = [bool](@($sdkProbes | Where-Object { $_.midlc_present }).Count -gt 0)
+            'rpcdce.h' = [bool](@($sdkProbes | Where-Object { $_.header_present }).Count -gt 0)
+            'Rpcrt4.lib' = [bool](@($sdkProbes | Where-Object { $_.lib_present }).Count -gt 0)
+          }
+          $coherentSets = @($sdkProbes | Where-Object {
+            $_.midl_present -and $_.midlc_present -and $_.header_present -and $_.lib_present
+          })
+          $coherentSet = if ($coherentSets.Count -gt 0) { $coherentSets[0] } else { $null }
+          $sdkVersion = if ($null -ne $coherentSet) { $coherentSet.version } else { $null }
           $midl = $null
           $midlc = $null
           $header = $null
           $importLib = $null
-          $sdkBin = Join-Path $sdkRoot 'bin'
-          if (Test-Path -LiteralPath $sdkBin -PathType Container) {
-            $sdkVersions = @(Get-ChildItem -LiteralPath $sdkBin -Directory |
-              Where-Object { $_.Name -match '^10\.\d+\.\d+\.\d+$' } |
-              Sort-Object -Property @{ Expression = { [version]$_.Name }; Descending = $true })
-            foreach ($candidate in $sdkVersions) {
-              $candidateMidl = Join-Path $candidate.FullName 'x64\midl.exe'
-              $candidateHeader = Join-Path $sdkRoot "Include\$($candidate.Name)\um\rpcdce.h"
-              $candidateLib = Join-Path $sdkRoot "Lib\$($candidate.Name)\um\x64\Rpcrt4.lib"
-              if ((Test-Path -LiteralPath $candidateMidl -PathType Leaf) -and
-                  (Test-Path -LiteralPath $candidateHeader -PathType Leaf) -and
-                  (Test-Path -LiteralPath $candidateLib -PathType Leaf)) {
-                $sdkVersion = $candidate.Name
-                $midl = $candidateMidl
-                $midlc = Join-Path $candidate.FullName 'x64\midlc.exe'
-                $header = $candidateHeader
-                $importLib = $candidateLib
-                break
-              }
-            }
+          if ($null -ne $coherentSet) {
+            $midl = $coherentSet.midl_path
+            $midlc = $coherentSet.midlc_path
+            $header = $coherentSet.header_path
+            $importLib = $coherentSet.lib_path
+          } else {
+            $p = @($sdkProbes | Where-Object { $_.midl_present } | Select-Object -First 1)
+            if ($p.Count -gt 0) { $midl = $p[0].midl_path }
+            $p = @($sdkProbes | Where-Object { $_.midlc_present } | Select-Object -First 1)
+            if ($p.Count -gt 0) { $midlc = $p[0].midlc_path }
+            $p = @($sdkProbes | Where-Object { $_.header_present } | Select-Object -First 1)
+            if ($p.Count -gt 0) { $header = $p[0].header_path }
+            $p = @($sdkProbes | Where-Object { $_.lib_present } | Select-Object -First 1)
+            if ($p.Count -gt 0) { $importLib = $p[0].lib_path }
           }
 
           $files = @(
@@ -165,8 +283,22 @@ jobs:
           $missing = @($files | Where-Object { $_.required -and -not $_.present } |
             ForEach-Object { $_.label })
 
+          $missingIndependent = @($componentFound.Keys | Where-Object {
+            -not $componentFound[$_]
+          })
+          $coherentSdkFound = [bool]($null -ne $coherentSet)
+          $sdkRootRecords = @($sdkRoots | ForEach-Object {
+            [pscustomobject]@{ source=$_.source; path=$_.path; present=$_.present }
+          })
+          $sdkProbeRecords = @($sdkProbes | ForEach-Object {
+            [pscustomobject]@{
+              root=$_.root; version=$_.version; layout=$_.layout
+              midl_present=$_.midl_present; midlc_present=$_.midlc_present
+              header_present=$_.header_present; lib_present=$_.lib_present
+            }
+          })
           $receipt = [ordered]@{
-            schema               = 'continuityos.h3.r7b1b1.toolchain-preflight/v2'
+            schema               = 'continuityos.h3.g1.sdk-independent-inventory/v3'
             expected_runner_label = 'windows-2025-vs2026'
             scope                = 'preinstalled local toolchain inventory only'
             github_repository    = $env:GITHUB_REPOSITORY
@@ -181,6 +313,12 @@ jobs:
             msvc_version         = $vcVersion
             windows_sdk_version  = $sdkVersion
             files                = $files
+            sdk_roots            = $sdkRootRecords
+            sdk_registry_reads   = @($registryReads)
+            sdk_probes           = $sdkProbeRecords
+            independent_presence = $componentFound
+            missing_independent  = $missingIndependent
+            coherent_sdk_found   = $coherentSdkFound
             missing_required     = $missing
             midl_driver_engine_versions_match = $midlPairVersionMatch
             no_source_checkout   = $true
@@ -191,10 +329,14 @@ jobs:
             production           = 'HOLD'
           }
           Write-Output ('H3_R7B1B1_READONLY_RECEIPT=' + ($receipt | ConvertTo-Json -Compress -Depth 8))
+          if (-not $coherentSdkFound) {
+            throw ('H3_G1_COHERENT_SDK_NOT_FOUND: absent_individually=' +
+              ($missingIndependent -join ',') + '; no same-root same-version quartet')
+          }
           if ($missing.Count -ne 0) {
-            throw ('H3_R7B1B1_TOOLCHAIN_INCOMPLETE: ' + ($missing -join ','))
+            throw ('H3_G1_TOOLCHAIN_INCOMPLETE: ' + ($missing -join ','))
           }
           if (-not $midlPairVersionMatch) {
             throw 'H3_MIDL_DRIVER_ENGINE_VERSION_MISMATCH_OR_ABSENT'
           }
-          Write-Output 'H3_R7B1B1_TOOLCHAIN_INVENTORY=PASS_ONLY_NOT_NATIVE_BROKER_SECURITY_PASS'
+          Write-Output 'H3_G1_R4_TOOLCHAIN_INVENTORY=PASS_ONLY_NOT_NATIVE_BROKER_SECURITY_PASS'
