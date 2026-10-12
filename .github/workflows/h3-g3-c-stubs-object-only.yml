@@ -303,7 +303,7 @@ jobs:
             $snapshot = [ordered]@{
               boundary = $Boundary
               max_entries = 16
-              max_depth = 2
+              max_depth = 4
               max_prefix_bytes_per_file = 128
               entries = [Collections.Generic.List[object]]::new()
               status = 'PARTIAL'
@@ -340,7 +340,7 @@ jobs:
                   if ($entry.PSIsContainer) {
                     $row.type = 'DIRECTORY'
                     $row.capture = 'METADATA_ONLY'
-                    if ($row.depth -ge 2) { throw 'G3_TEMP_INVENTORY_DEPTH_BOUND' }
+                    if ($row.depth -ge 4) { throw 'G3_TEMP_INVENTORY_DEPTH_BOUND' }
                     $queue.Enqueue(@{ path = $path; depth = $row.depth })
                     continue
                   }
