@@ -694,3 +694,69 @@ def test_foreign_thread_cannot_borrow_active_ask_for_protected_helpers(snapshot,
     assert workers and all(not worker.is_alive() for worker in workers)
     assert len(results) == 3 and all(isinstance(result, PersonTwinEvidenceError) for result in results)
     assert env.provider.reads >= 2 and len(env.client.calls) == 1
+
+
+@pytest.mark.parametrize("helper, stage, cold", [
+    pytest.param("cold-helper", "pre-dispatch", False, id="warm-cold-helper-pre-dispatch"),
+    pytest.param("cold-helper", "pre-dispatch", True, id="cold-cold-helper-pre-dispatch"),
+    pytest.param("cold-helper", "final-read", False, id="warm-cold-helper-final-read"),
+    pytest.param("cold-helper", "final-read", True, id="cold-cold-helper-final-read"),
+    pytest.param("cold-helper", "model-load", True, id="cold-cold-helper-model-load"),
+    pytest.param("cold-helper", "final-residency", True, id="cold-cold-helper-final-residency"),
+    pytest.param("prompt", "pre-dispatch", False, id="warm-prompt-pre-dispatch"),
+    pytest.param("prompt", "pre-dispatch", True, id="cold-prompt-pre-dispatch"),
+    pytest.param("prompt", "final-read", False, id="warm-prompt-final-read"),
+    pytest.param("prompt", "final-read", True, id="cold-prompt-final-read"),
+    pytest.param("evidence", "initial-read", False, id="evidence-initial-read"),
+    pytest.param("evidence", "final-read", False, id="evidence-final-read"),
+])
+def test_request_phase_helpers_cannot_reenter_outer_fast(snapshot, make_runtime, helper, stage, cold):
+    env = make_runtime(cold=cold)
+    attempts = []
+
+    def attempt_nested_helper():
+        calls_before = len(env.client.calls)
+        denied = False
+        try:
+            if helper == "evidence":
+                env.runtime.evidence(QUERY)
+            else:
+                # Reuse the legitimate pending tuple without modifying the frame
+                # or replacing runtime methods. Membership alone is insufficient.
+                evidence = env.runtime._person_active_request["evidence"]
+                if helper == "prompt":
+                    env.runtime._system_prompt(evidence)
+                else:
+                    env.runtime._ask_fast_cold_streaming(
+                        QUERY, profile=env.profile, evidence=evidence,
+                    )
+        except PersonTwinEvidenceError:
+            denied = True
+        attempts.append({
+            "denied": denied,
+            "extra_generations": len(env.client.calls) - calls_before,
+        })
+
+    if stage == "initial-read":
+        env.provider.on_read = attempt_nested_helper
+    elif stage == "pre-dispatch":
+        env.client.on_models = attempt_nested_helper
+    elif stage == "final-read":
+        env.client.on_models = lambda: setattr(env.provider, "on_read", attempt_nested_helper)
+    elif stage == "model-load":
+        env.client.on_models = lambda: setattr(env.client, "on_models", attempt_nested_helper)
+    else:
+        # Cold FAST probes before dispatch, at model_load.end, and once more
+        # after the stream returns. Arm this attempt for the final readback.
+        def arm_final_readback():
+            env.client.on_models = attempt_nested_helper
+
+        env.client.on_models = lambda: setattr(env.client, "on_models", arm_final_readback)
+
+    answer = env.runtime.ask(QUERY)
+    assert attempts == [{"denied": True, "extra_generations": 0}], {
+        "attempts": attempts,
+        "generation_events": [event for event in env.client.events if event in {"chat", "stream"}],
+    }
+    _assert_current_prompt(answer, env, snapshot)
+    assert env.runtime._person_active_request is None

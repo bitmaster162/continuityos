@@ -100,8 +100,12 @@ class SovereignTwinRuntime(_r21g.SovereignTwinRuntime):
             active = self._person_request()
             if query != active["query"]:
                 raise PersonTwinEvidenceError("PERSON_ACTIVE_QUERY_MISMATCH")
+            if active["phase"] != "EVIDENCE_ALLOWED":
+                raise PersonTwinEvidenceError("PERSON_EVIDENCE_PHASE_INVALID")
+            active["phase"] = "PREPARING_EVIDENCE"
             evidence = adapter.prepare(query, self.memory.store)
             active["evidence"] = evidence
+            active["phase"] = "EVIDENCE_READY"
             return evidence
 
     def _person_system_prompt(self, evidence: Sequence[TwinEvidence]) -> str:
@@ -112,10 +116,16 @@ class SovereignTwinRuntime(_r21g.SovereignTwinRuntime):
             active = self._person_request()
             if evidence is not active["evidence"]:
                 raise PersonTwinEvidenceError("PERSON_FOREIGN_PROMPT_EVIDENCE")
+            if active["phase"] != "PROMPT_ALLOWED":
+                raise PersonTwinEvidenceError("PERSON_PROMPT_PHASE_INVALID")
+            # Consume the boundary before provider callbacks can reenter it.
+            active["phase"] = "PROMPT_VALIDATING"
             active["receipt"] = adapter.validate_for_prompt(
                 active["query"], self.memory.store, evidence,
             )
-            return super()._system_prompt(evidence)
+            prompt = super()._system_prompt(evidence)
+            active["phase"] = "PROMPT_READY"
+            return prompt
 
     def _ask_fast_cold_streaming(
         self, query: str, *, profile: LocalModelProfile, evidence: Any,
@@ -126,6 +136,11 @@ class SovereignTwinRuntime(_r21g.SovereignTwinRuntime):
             active = self._person_request()
             if query != active["query"] or evidence is not active["evidence"] or profile != self.profiles["fast"]:
                 raise PersonTwinEvidenceError("PERSON_FOREIGN_STREAM_REQUEST")
+            if active["phase"] != "COLD_DISPATCH_ALLOWED":
+                raise PersonTwinEvidenceError("PERSON_COLD_DISPATCH_PHASE_INVALID")
+            # Only the outer dispatcher issues this one-use permission, after
+            # its residency probe. An active frame alone cannot start a stream.
+            active["phase"] = "PROMPT_ALLOWED"
             self._require_fast_streaming_transport()
             return super()._ask_fast_cold_streaming(query, profile=profile, evidence=evidence)
 
@@ -270,11 +285,13 @@ class SovereignTwinRuntime(_r21g.SovereignTwinRuntime):
             self._person_active_request = {
                 "adapter": adapter, "query": query, "owner_thread": _get_ident(),
                 "evidence": None, "receipt": None, "dispatcher_entered": False,
+                "phase": "DISPATCH_PENDING",
             }
             try:
                 answer = self._ask_r21h(query, mode=mode)
-                receipt = self._person_request()["receipt"]
-                if receipt is None:
+                active = self._person_request()
+                receipt = active["receipt"]
+                if receipt is None or active["phase"] != "PROMPT_READY":
                     raise PersonTwinEvidenceError("PERSON_PROMPT_REVALIDATION_MISSING")
                 return _replace(answer, stats={**answer.stats, "person_evidence": receipt})
             finally:
@@ -282,6 +299,7 @@ class SovereignTwinRuntime(_r21g.SovereignTwinRuntime):
 
     def _ask_r21h(self, query: str, *, mode: str = "fast") -> TwinAnswer:
         """Answer FAST after evidence/reprobe, preserving old custom-client fallback."""
+        active = None
         if getattr(self, "_person_evidence_adapter", None) is not None:
             with self._model_lock:
                 active = self._person_request()
@@ -303,17 +321,23 @@ class SovereignTwinRuntime(_r21g.SovereignTwinRuntime):
                 raise ValueError(f"unknown Sovereign Twin mode: {mode}")
             profile = self.profiles[mode]
 
+            if active is not None:
+                active["phase"] = "EVIDENCE_ALLOWED"
             evidence = self.evidence(query)
             resident_id = self._probe_exact_fast_residency(profile)
 
             if resident_id is None:
                 self._require_fast_streaming_transport()
+                if active is not None:
+                    active["phase"] = "COLD_DISPATCH_ALLOWED"
                 return self._ask_fast_cold_streaming(
                     query,
                     profile=profile,
                     evidence=evidence,
                 )
 
+            if active is not None:
+                active["phase"] = "PROMPT_ALLOWED"
             result = self.client.chat(
                 model=profile.model,
                 system_prompt=self._system_prompt(evidence),

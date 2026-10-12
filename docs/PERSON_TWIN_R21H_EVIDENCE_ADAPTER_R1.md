@@ -60,6 +60,12 @@ startup prewarm and direct protected helper use outside the active request.
 The request frame is scoped to the runtime lock and is cleared after completion
 or failure.
 
+The request-phase followup below makes evidence preparation, cold dispatch and
+prompt construction one-use steps within that frame. The outer dispatcher
+permits cold transport only after its residency probe has returned. Prompt
+validation consumes its permission before calling the context provider. Nested
+callbacks cannot borrow a pending or completed step to start another generation.
+
 The generic runtime remains available when no adapter is configured. Its
 compatibility behavior does not become Person-qualified by this change.
 The class-level prompt formatter used by generic DeepLite is retained.
@@ -216,3 +222,83 @@ Installed-wheel gate receipt SHA-256:
 These are local Linux followup results. At recording time, the followup had not
 been published or checked by GitHub's Ubuntu/Windows jobs. They do not replace
 the initial failed CI record or change the integration's admission limits.
+
+## Request-phase followup — post-CI review
+
+The wheel-import repair was published as HEAD
+`742c7aaa12d3af5cbc79c119e9d75b7afaa94a87`, tree
+`3ed09df888465c4cc3d61433fc30b1a6f6ecd5d4`. All five GitHub checks completed
+successfully on that HEAD, including Ubuntu and Windows review-gates run
+[38298448627](https://github.com/bitmaster162/continuityos/actions/runs/38298448627).
+Those checks did not exercise the callback reentry described here.
+
+The subsequent source review found that the bound cold-streaming helper accepted
+the same active query, profile and evidence tuple while the outer request was
+still validating its prompt. A context-provider callback could therefore invoke
+the helper again. An independently repeated local characterization of the
+published source recorded two captured streaming calls with identical prompts,
+three provider reads and an outer answer containing an ALLOW receipt. The
+runtime methods and request fields were not replaced or modified by the probe.
+All data and model clients were synthetic; no live inference was performed.
+
+The earlier integration review's no-blockers conclusion is superseded for this
+request-reentry path. An active frame and a one-use top-level dispatcher did not
+make the nested transport helper one-use.
+
+The fix adds internal request phases to the existing protected R21H path:
+
+- evidence permission is consumed before the initial provider read;
+- cold-dispatch permission is issued only after the outer residency probe and
+  consumed before entering transport helpers;
+- both warm and cold prompt construction consume the same prompt permission
+  before final provider validation;
+- a successful answer requires a completed prompt phase and receipt;
+- wrong-phase calls fail with fixed error codes, while the outer frame still
+  clears on success or failure.
+
+This is an in-process sequencing guard for the configured protected path. It
+does not authenticate a hostile host, provide durable replay protection across
+separate asks, or make admission, SQLite and model delivery atomic.
+
+Validation on 2026-10-12 UTC, Python 3.12.14 / pytest 9.1.1:
+
+| Observation | Result |
+|---|---|
+| Root characterization on the published source | Two model calls for one ask; defect reproduced |
+| Twelve new regression cases on the published runtime | 12 failed as expected; characterization only |
+| Corrected runtime with the same twelve cases and existing scoped suite | 166 passed; 0 failed; 0 skipped |
+| Separate reviewer/process replay of the twelve cases in importlib mode | 12 passed; 0 failed; 0 skipped |
+
+The new cases cover cold-helper entry before dispatch on warm/cold paths,
+during final provider reads, during model-load and final-residency callbacks,
+plus nested prompt/evidence helpers. Each requires denial with no extra
+generation, the unchanged successful outer prompt and a cleared request frame.
+The complete scoped run contains 73 adapter/integration cases, 50 unchanged R4
+cases and 43 existing runtime/DeepLite cases. Socket events were denied and zero
+were observed; all five selected code/test hashes matched before and after.
+
+| Corrected file | SHA-256 |
+|---|---|
+| R21H runtime | `8ce39204994fa7d8d622246cb4a766547980bf5ff5c89163eeb479dbbaafd935` |
+| Adapter/integration tests | `eecf6b2b86974e2a7ebaaa9223e79b7a57cc929d5dc5fa9edbc7eaebdd83cc19` |
+
+Root characterization receipt SHA-256:
+`c7180daccd3fd92da27ef113567258fd206350d0245d6b60bffd5a360d4b8b74`.
+Expected-failure regression receipt SHA-256:
+`9f4769b90d40de497b3c5efd05423f96eefc82a6340e2826e0df8c5809c49e4f`.
+Corrected scoped-run receipt SHA-256:
+`fea5f2bf344abeaa2ddf7c4ea17853a378001edd0f5a25bbdea399993557827e`.
+Independent replay receipt SHA-256:
+`c17a7ecd98769fdcf34ebd609cc56efe6547879caad7b2d999e54b8d1bbb912b`.
+The replay used the exact expected-failure pytest arguments and node order in a
+fresh process. Its five source/test hashes matched the corrected scoped run
+before and after execution; no socket events were observed. This is a separate
+verification role and process using the same source and fixture lineage.
+These unsigned local receipts bind observed test inputs and outcomes; they do
+not supply independent owner authority. The author review and root reproduction
+use the same repository and synthetic fixture lineage.
+
+At recording time this request-phase followup is a local candidate. It has not
+been published or checked by GitHub CI. The five successful checks above belong
+to its predecessor. R4, the evidence adapter, fixture import, workflows and CI
+tools are unchanged. Existing trust, personal-pilot and production limits remain.
