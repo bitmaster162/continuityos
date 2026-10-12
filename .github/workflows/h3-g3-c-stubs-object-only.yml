@@ -61,6 +61,7 @@ jobs:
             direct_object_compiler_invocations = 0
             midl_preprocessor_may_invoke_cl_E = $true
             process_receipts = [Collections.Generic.List[object]]::new()
+            temp_inventory = [Collections.Generic.List[object]]::new()
             failures = [Collections.Generic.List[string]]::new()
             cleanup_attempted = $false
             temp_cleanup_verified = $false
@@ -296,6 +297,83 @@ jobs:
             return [ordered]@{ machine = 'AMD64_0x8664'; format = 'COFF_OBJECT_NON_PE'; sections = [int]$sections; symbols = $symbols }
           }
 
+          # Diagnose residual compiler temp files without changing the final empty-temp gate.
+          # Attach each snapshot before sampling so failures retain the entries already observed.
+          function Add-BoundedTempInventory([string]$Boundary, [string]$Directory) {
+            $snapshot = [ordered]@{
+              boundary = $Boundary
+              max_entries = 16
+              max_depth = 2
+              max_prefix_bytes_per_file = 128
+              entries = [Collections.Generic.List[object]]::new()
+              status = 'PARTIAL'
+              reason = $null
+            }
+            $receipt.temp_inventory.Add($snapshot)
+            try {
+              Assert-NoReparse $Directory
+              $queue = [Collections.Generic.Queue[object]]::new()
+              $queue.Enqueue(@{ path = $Directory; depth = 0 })
+              while ($queue.Count -gt 0) {
+                $current = $queue.Dequeue()
+                Assert-NoReparse $current.path
+                foreach ($path in [IO.Directory]::EnumerateFileSystemEntries($current.path)) {
+                  if ($snapshot.entries.Count -ge 16) { throw 'G3_TEMP_INVENTORY_ENTRY_BOUND' }
+                  $relative = [IO.Path]::GetRelativePath($Directory, $path)
+                  $row = [ordered]@{
+                    relative_path = $relative.Substring(0, [Math]::Min(1024, $relative.Length))
+                    depth = $current.depth + 1
+                    type = 'UNKNOWN'
+                    bytes = $null
+                    prefix_bytes = 0
+                    prefix_base64 = ''
+                    capture = 'UNREAD'
+                  }
+                  $snapshot.entries.Add($row)
+                  if ($relative.Length -gt 1024) { throw 'G3_TEMP_INVENTORY_PATH_BOUND' }
+                  $entry = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+                  if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    $row.type = 'REPARSE_POINT'
+                    $row.capture = 'BLOCKED_NO_FOLLOW'
+                    throw 'G3_TEMP_INVENTORY_REPARSE_BLOCKED'
+                  }
+                  if ($entry.PSIsContainer) {
+                    $row.type = 'DIRECTORY'
+                    $row.capture = 'METADATA_ONLY'
+                    if ($row.depth -ge 2) { throw 'G3_TEMP_INVENTORY_DEPTH_BOUND' }
+                    $queue.Enqueue(@{ path = $path; depth = $row.depth })
+                    continue
+                  }
+                  if ($entry -isnot [IO.FileInfo] -or ($entry.Attributes -band [IO.FileAttributes]::Device) -ne 0) { throw 'G3_TEMP_INVENTORY_UNKNOWN_ENTRY_TYPE' }
+                  $row.type = 'REGULAR_FILE'
+                  $row.bytes = [long]$entry.Length
+                  Assert-NoReparse $path
+                  $stream = $null
+                  try {
+                    $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+                    $prefix = [byte[]]::new(128)
+                    $count = 0
+                    while ($count -lt $prefix.Length) {
+                      $n = $stream.Read($prefix, $count, $prefix.Length - $count)
+                      if ($n -eq 0) { break }
+                      $count += $n
+                      $row.prefix_bytes = $count
+                      $row.prefix_base64 = [Convert]::ToBase64String($prefix, 0, $count)
+                    }
+                    $row.capture = 'PREFIX_ONLY_NO_FULL_FILE_HASH'
+                  } finally {
+                    if ($null -ne $stream) { $stream.Dispose() }
+                  }
+                }
+              }
+              $snapshot.status = 'COMPLETE_BOUNDED_INVENTORY'
+            } catch {
+              $message = [string]$_.Exception.Message
+              $snapshot.reason = $message.Substring(0, [Math]::Min(256, $message.Length))
+              throw ('G3_TEMP_INVENTORY_HOLD: ' + $Boundary + ': ' + $snapshot.reason)
+            }
+          }
+
           # Bound traversal before recursive deletion; never traverse a junction or symlink.
           function Assert-CleanupTree([string]$Root) {
             Assert-NoReparse $Root
@@ -366,6 +444,7 @@ jobs:
             $objDir = Join-Path $scratch 'objects'
             $tempDir = Join-Path $scratch 'tmp'
             foreach ($directory in @($sourceDir, $outDir, $objDir, $tempDir)) { $null = New-Item -ItemType Directory -Path $directory -ErrorAction Stop }
+            Add-BoundedTempInventory 'INITIAL_AFTER_DIRECTORY_CREATION' $tempDir
             $sourcePath = Join-Path $sourceDir 'h3_r7b1c_lab.idl'
             $sourceBytes = [Convert]::FromBase64String('LyoKICogQ29udGludWl0eU9TIEgzLVI3QjFDIExBQi1PTkxZIElETCBTS0VUQ0gg4oCUIE5PVCBDT01QSUxFRCBPUiBBVVRIT1JJWkVELgogKiBUaGlzIGlzIGEgZnJlc2gsIHNlcGFyYXRlIHN5bnRoZXRpYyBpbnRlcmZhY2U7IE5PVCBIMyB3aXJlIHYzLgogKiBObyBEQiwgZ3JhbnRzLCB3aXRuZXNzLCBtZW1vcnkgcGF5bG9hZCwgY3JlZGVudGlhbHMsIG9yIHByb2R1Y3Rpb24ga2V5cy4KICogVGhlIHB1YmxpYyBwcm9iZSBpcyBOT1Qgc2VydmVyIGF1dGhlbnRpY2F0aW9uOyBDMCByZW1haW5zIEhPTEQuCiAqIEgzTGFiU3VibWl0U3ludGhldGljIE1VU1QgcmV0dXJuIGEgY29udGVudC1mcmVlIExBQl9ESVNBQkxFRCBzdGF0dXMKICogdW50aWwgc2VwYXJhdGVseSBhcHByb3ZlZCwgaW5kZXBlbmRlbnRseSB2ZXJpZmllZCBzYW1lLWJpbmRpbmcgQzAgZXhpc3RzLgogKiBObyBSUEMgcHJvY2VzcywgZW5kcG9pbnQsIG9yIHNlcnZpY2UgaXMgY3JlYXRlZCBieSB0aGlzIGRlc2lnbiBmaWxlLgogKi8KClsKICAgIHV1aWQoMGIwYTA1OGEtZjVkMS01ZTdiLWEyOWMtOGJiYzY3ODc5NDE4KSwKICAgIHZlcnNpb24oMS4wKSwKICAgIHBvaW50ZXJfZGVmYXVsdChyZWYpCl0KaW50ZXJmYWNlIEgzUjdCMUNfTGFiVjEKewogICAgLyogUHVibGljIGRpc2NvdmVyeTogYSBub25jZSBleGNoYW5nZSBXSVRIT1VUIHByb29mIG9mIHNlcnZlciBpZGVudGl0eS4gKi8KICAgIHZvaWQgSDNMYWJQdWJsaWNQcm9iZSgKICAgICAgICBbaW5dIGhhbmRsZV90IGJpbmRpbmcsCiAgICAgICAgW2luXSBieXRlIGNsaWVudF9ub25jZVszMl0sCiAgICAgICAgW291dF0gYnl0ZSBzZXJ2ZXJfbm9uY2VbMzJdLAogICAgICAgIFtvdXQsIHJlZl0gdW5zaWduZWQgbG9uZyAqbGFiX3N0YXR1cwogICAgKTsKCiAgICAvKiBPbmx5IG5vbi1zZW5zaXRpdmUgc3ludGhldGljIGZpeHR1cmUgYnl0ZXMgbWF5IGVudGVyIHRoaXMgbWV0aG9kLgogICAgICogQSBmdXR1cmUgcmVhbCBicm9rZXIgTVVTVCB1c2UgYSBzZXBhcmF0ZWx5IHJldmlld2VkL2F1dGhlbnRpY2F0ZWQKICAgICAqIHByb3RvY29sLCBhbmQgTVVTVCBOT1QgdHJlYXQgdGhpcyBhcyBhIHYzIG1lbW9yeSBtZXRob2QuCiAgICAgKiBGaXhlZCBhcnJheXMgZGVsaWJlcmF0ZWx5IGF2b2lkIGNhbGxlci1zaXplZCBhbGxvY2F0aW9ucyBpbiBJREwuCiAgICAgKiBUaGUgYnl0ZS1sZW5ndGggZmllbGQgaXMgdmFsaWRhdGVkIGJ5IC9yb2J1c3QgQU5EIGluc2lkZSBoYW5kbGVyLgogICAgICovCiAgICB2b2lkIEgzTGFiU3VibWl0U3ludGhldGljKAogICAgICAgIFtpbl0gaGFuZGxlX3QgYmluZGluZywKICAgICAgICBbaW4sIHJhbmdlKDEsIDE2Mzg0KV0gdW5zaWduZWQgbG9uZyByZXF1ZXN0X2xlbiwKICAgICAgICBbaW5dIGJ5dGUgcmVxdWVzdF9zbG90WzE2Mzg0XSwKICAgICAgICBbb3V0LCByZWZdIHVuc2lnbmVkIGxvbmcgKnJlcGx5X2xlbiwKICAgICAgICBbb3V0XSBieXRlIHJlcGx5X3Nsb3RbODE5Ml0sCiAgICAgICAgW291dCwgcmVmXSB1bnNpZ25lZCBsb25nICpsYWJfc3RhdHVzCiAgICApOwp9Cg==')
             $sourceSha = '67915aa4c68d7bf8d8dd3a8879f7abed0c12a5262e577f4e4bf9c8c7fe87fe09'
@@ -388,6 +467,7 @@ jobs:
             }
             $midlArgs = @('/nologo', '/robust', '/Oicf', '/env', 'amd64', '/out', $outDir, '/I', $um, '/I', $shared, '/I', $ucrt, $sourcePath)
             Invoke-BoundedNative 'MIDL' (Join-Path $bin 'midl.exe') $midlArgs 90 $childEnv $scratch
+            Add-BoundedTempInventory 'AFTER_MIDL' $tempDir
             $generatedNames = @('h3_r7b1c_lab.h', 'h3_r7b1c_lab_c.c', 'h3_r7b1c_lab_s.c')
             $receipt.generated_before_compile = @(Get-BoundedManifest $outDir $generatedNames 262144 786432)
             $header = [IO.File]::ReadAllText((Join-Path $outDir 'h3_r7b1c_lab.h'))
@@ -399,6 +479,7 @@ jobs:
             $serverObject = Join-Path $objDir 'h3_r7b1c_lab_s.obj'
             $clientArgs = @('/nologo', '/TC', '/c', '/W3', '/WX', '/Od', '/I', $outDir, ('/Fo' + $clientObject), (Join-Path $outDir 'h3_r7b1c_lab_c.c'))
             Invoke-BoundedNative 'CL_CLIENT_OBJECT' (Join-Path $vcBin 'cl.exe') $clientArgs 60 $childEnv $scratch
+            Add-BoundedTempInventory 'AFTER_CL_CLIENT_OBJECT' $tempDir
             $clientBefore = @(Get-BoundedManifest $objDir @('h3_r7b1c_lab_c.obj') 1048576 1048576)
             $clientCoff = Assert-Amd64Coff $clientObject
             $receipt.objects = @([ordered]@{ file = $clientBefore[0]; coff = $clientCoff })
@@ -407,6 +488,7 @@ jobs:
 
             $serverArgs = @('/nologo', '/TC', '/c', '/W3', '/WX', '/Od', '/I', $outDir, ('/Fo' + $serverObject), (Join-Path $outDir 'h3_r7b1c_lab_s.c'))
             Invoke-BoundedNative 'CL_SERVER_OBJECT' (Join-Path $vcBin 'cl.exe') $serverArgs 60 $childEnv $scratch
+            Add-BoundedTempInventory 'AFTER_CL_SERVER_OBJECT' $tempDir
             $objectManifest = @(Get-BoundedManifest $objDir @('h3_r7b1c_lab_c.obj', 'h3_r7b1c_lab_s.obj') 1048576 2097152)
             $serverCoff = Assert-Amd64Coff $serverObject
             Assert-SameManifest $clientBefore @($objectManifest | Where-Object { $_.filename -ceq 'h3_r7b1c_lab_c.obj' })
@@ -428,6 +510,7 @@ jobs:
               Assert-NoReparse $path
             }
             if ($rootEntries -ne 4) { throw 'G3_SCRATCH_DIRECTORY_MISSING' }
+            Add-BoundedTempInventory 'FINAL_BEFORE_EMPTY_TEMP_GATE' $tempDir
             foreach ($path in [IO.Directory]::EnumerateFileSystemEntries($tempDir)) { throw 'G3_RESIDUAL_TEMP_OUTPUT' }
             if ($receipt.midl_invocations -ne 1 -or $receipt.direct_object_compiler_invocations -ne 2 -or $receipt.process_receipts.Count -ne 3) { throw 'G3_INVOCATION_COUNT_DRIFT' }
             $receipt.no_executable_or_dll_output = $true
