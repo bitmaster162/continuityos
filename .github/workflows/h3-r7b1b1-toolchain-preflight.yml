@@ -1,7 +1,7 @@
 # ContinuityOS H3-R7B1B1: proposed GitHub-hosted Windows toolchain inventory.
-# DESIGN ONLY until separate object-bound owner approval and verified PR.
+# DESIGN ONLY; exact runner image windows-2025-vs2026; requires new object-bound approval.
 # No checkout, installation, build, native RPC registration, or artifacts.
-name: H3 R7B1B1 native toolchain inventory
+name: H3 R7B1B1 native toolchain inventory R3
 
 on:
   pull_request:
@@ -20,7 +20,7 @@ jobs:
   inventory:
     name: win-2025 / MSVC MIDL SDK metadata only
     if: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.base.ref == 'master' }}
-    runs-on: windows-2025
+    runs-on: windows-2025-vs2026
     timeout-minutes: 8
     defaults:
       run:
@@ -103,7 +103,7 @@ jobs:
               $vsRoot = [string]$installations[0].Trim()
               $msvcRoot = Join-Path $vsRoot 'VC\Tools\MSVC'
               if (Test-Path -LiteralPath $msvcRoot -PathType Container) {
-                $versions = @(Get-ChildItem -LiteralPath $msvcRoot -Directory | Sort-Object Name -Descending)
+                $versions = @(Get-ChildItem -LiteralPath $msvcRoot -Directory | Sort-Object -Property @{ Expression = { [version]$_.Name }; Descending = $true })
                 if ($versions.Count -gt 0) {
                   $vcVersion = $versions[0].Name
                   $vcBin = Join-Path $versions[0].FullName 'bin\Hostx64\x64'
@@ -124,7 +124,7 @@ jobs:
           if (Test-Path -LiteralPath $sdkBin -PathType Container) {
             $sdkVersions = @(Get-ChildItem -LiteralPath $sdkBin -Directory |
               Where-Object { $_.Name -match '^10\.\d+\.\d+\.\d+$' } |
-              Sort-Object Name -Descending)
+              Sort-Object -Property @{ Expression = { [version]$_.Name }; Descending = $true })
             foreach ($candidate in $sdkVersions) {
               $candidateMidl = Join-Path $candidate.FullName 'x64\midl.exe'
               $candidateHeader = Join-Path $sdkRoot "Include\$($candidate.Name)\um\rpcdce.h"
@@ -149,13 +149,25 @@ jobs:
             (Get-FileEvidence -Label 'midl.exe' -Path $midl)
             (Get-FileEvidence -Label 'rpcdce.h' -Path $header)
             (Get-FileEvidence -Label 'Rpcrt4.lib' -Path $importLib)
-            (Get-FileEvidence -Label 'midlc.exe' -Path $midlc -Required $false)
+            (Get-FileEvidence -Label 'midlc.exe' -Path $midlc -Required $true)
           )
+          $midlDriver = @($files | Where-Object { $_.label -ceq 'midl.exe' })[0]
+          $midlEngine = @($files | Where-Object { $_.label -ceq 'midlc.exe' })[0]
+          $midlPairVersionMatch = $false
+          if ($midlDriver.present -and $midlEngine.present) {
+            $midlPairVersionMatch = (
+              -not [string]::IsNullOrWhiteSpace($midlDriver.file_version) -and
+              -not [string]::IsNullOrWhiteSpace($midlEngine.file_version) -and
+              $midlDriver.file_version -ceq $midlEngine.file_version
+            )
+          }
+
           $missing = @($files | Where-Object { $_.required -and -not $_.present } |
             ForEach-Object { $_.label })
 
           $receipt = [ordered]@{
-            schema               = 'continuityos.h3.r7b1b1.toolchain-preflight/v1'
+            schema               = 'continuityos.h3.r7b1b1.toolchain-preflight/v2'
+            expected_runner_label = 'windows-2025-vs2026'
             scope                = 'preinstalled local toolchain inventory only'
             github_repository    = $env:GITHUB_REPOSITORY
             pr_base_sha          = $env:PR_BASE_SHA
@@ -170,6 +182,7 @@ jobs:
             windows_sdk_version  = $sdkVersion
             files                = $files
             missing_required     = $missing
+            midl_driver_engine_versions_match = $midlPairVersionMatch
             no_source_checkout   = $true
             no_compiler_execution = $true
             no_network_command  = $true
@@ -180,5 +193,8 @@ jobs:
           Write-Output ('H3_R7B1B1_READONLY_RECEIPT=' + ($receipt | ConvertTo-Json -Compress -Depth 8))
           if ($missing.Count -ne 0) {
             throw ('H3_R7B1B1_TOOLCHAIN_INCOMPLETE: ' + ($missing -join ','))
+          }
+          if (-not $midlPairVersionMatch) {
+            throw 'H3_MIDL_DRIVER_ENGINE_VERSION_MISMATCH_OR_ABSENT'
           }
           Write-Output 'H3_R7B1B1_TOOLCHAIN_INVENTORY=PASS_ONLY_NOT_NATIVE_BROKER_SECURITY_PASS'
