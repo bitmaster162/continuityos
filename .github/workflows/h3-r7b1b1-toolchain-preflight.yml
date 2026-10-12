@@ -1,7 +1,7 @@
-# ContinuityOS H3-G1 R4: independent Windows SDK component discovery (design only).
-# DESIGN ONLY: not approved to update GitHub PR 209; no CI execution authorization.
+# ContinuityOS H3-G1 R5: SDK shared-header path correction for read-only inventory.
+# INVENTORY ONLY: no H3 C0/T11/T12 broker-security or production qualification.
 # No checkout, installation, build, native RPC registration, or artifacts.
-name: H3 G1 Windows SDK component inventory R4
+name: H3 G1 Windows SDK component inventory R5
 
 on:
   pull_request:
@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   inventory:
-    name: win-2025 / independent SDK components only
+    name: win-2025 / independent SDK shared RPC header
     if: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.base.ref == 'master' }}
     runs-on: windows-2025-vs2026
     timeout-minutes: 8
@@ -114,7 +114,7 @@ jobs:
             }
           }
 
-          # H3 G1 R4: bounded, independent component discovery; no toolchain execution.
+          # H3 G1 R5: bounded, independent component discovery; no toolchain execution.
           # R3 had a composite early-exit that left four individual statuses null.
           $sdkRoots = [System.Collections.Generic.List[object]]::new()
           $seenRoots = [System.Collections.Generic.HashSet[string]]::new(
@@ -209,7 +209,7 @@ jobs:
                   $layout = 'mixed_or_legacy'
                 }
               }
-              $headerPath = Join-Path $rootEntry.path ("Include\$ver\um\rpcdce.h")
+              $headerPath = Join-Path $rootEntry.path ("Include\$ver\shared\rpcdce.h")
               $libPath = Join-Path $rootEntry.path ("Lib\$ver\um\x64\Rpcrt4.lib")
               $probe = [pscustomobject]@{
                 root = $rootEntry.path
@@ -298,7 +298,7 @@ jobs:
             }
           })
           $receipt = [ordered]@{
-            schema               = 'continuityos.h3.g1.sdk-independent-inventory/v3'
+            schema               = 'continuityos.h3.g1.sdk-independent-inventory/v4'
             expected_runner_label = 'windows-2025-vs2026'
             scope                = 'preinstalled local toolchain inventory only'
             github_repository    = $env:GITHUB_REPOSITORY
@@ -339,4 +339,4 @@ jobs:
           if (-not $midlPairVersionMatch) {
             throw 'H3_MIDL_DRIVER_ENGINE_VERSION_MISMATCH_OR_ABSENT'
           }
-          Write-Output 'H3_G1_R4_TOOLCHAIN_INVENTORY=PASS_ONLY_NOT_NATIVE_BROKER_SECURITY_PASS'
+          Write-Output 'H3_G1_R5_TOOLCHAIN_INVENTORY=PASS_ONLY_NOT_NATIVE_BROKER_SECURITY_PASS'
