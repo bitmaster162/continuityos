@@ -10,7 +10,9 @@ from __future__ import annotations
 import copy
 from dataclasses import replace
 import hashlib
+import importlib.util
 import json
+from pathlib import Path
 import sqlite3
 from threading import Event, Thread
 import traceback
@@ -38,13 +40,22 @@ from continuityos.sovereign_twin_runtime import (
     TwinEvidence,
 )
 
-# Reuse the unchanged R4 fixture contract, including real R3 admission writes.
-from test_person_twin_authority_replay import (
-    Store as AdmissionStore,
-    _hash,
-    _inputs,
-    _policy,
-)
+# Reuse the unchanged R4 fixture contract in source and isolated wheel suites.
+def _load_r4_fixture_module():
+    path = Path(__file__).with_name("test_person_twin_authority_replay.py")
+    spec = importlib.util.spec_from_file_location("_person_twin_r4_fixture_r21h", path)
+    if spec is None or spec.loader is None:
+        raise ImportError("Cannot load the adjacent R4 test fixture module")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_R4_FIXTURE = _load_r4_fixture_module()
+AdmissionStore = _R4_FIXTURE.Store
+_hash = _R4_FIXTURE._hash
+_inputs = _R4_FIXTURE._inputs
+_policy = _R4_FIXTURE._policy
 
 
 QUERY = "Restore the current synthetic project context."

@@ -1,6 +1,6 @@
 # Person evidence in R21H — R1 integration candidate
 
-Status: local synthetic integration candidate; `NOT_PRODUCTION_ADMITTED`.
+Status: synthetic integration under draft review; `NOT_PRODUCTION_ADMITTED`.
 
 ## Why this change exists
 
@@ -22,6 +22,9 @@ is introduced.
   PR #150 head `4515bea19978b522328607deb493a55234ef7d4c`.
 - R1, R2 and R3 remain the existing master implementations.
 - Historical R21B–R21G overlays remain unchanged.
+- The initial candidate was published as Draft PR #211 at
+  `4d8cf5d3028e11d4990b836e9e15ee881f446e6e`, with the approved tree
+  `1d97123f6b08fde74754117128eabb1dbb75ab7a`.
 
 Importing R4 into this candidate does not merge PR #150 or grant pilot admission.
 
@@ -99,7 +102,10 @@ authenticated authority and currentness inputs, approved database custody and
 egress, and coverage for every enabled route. This candidate does not enable
 that pilot.
 
-## Validation record
+## Initial candidate validation record
+
+The following receipt describes the initial published tree above. Its test-file
+hash predates the wheel-import followup documented below.
 
 Observed 2026-10-12 19:03:36–19:03:38 UTC (2026-10-13 Asia/Bangkok):
 
@@ -156,3 +162,57 @@ raise SystemExit(pytest.main([
 ]))
 PY
 ```
+
+## Wheel-import followup qualification
+
+The initial PR #211 review-gates run
+([38296546803](https://github.com/bitmaster162/continuityos/actions/runs/38296546803))
+passed its clean-source suites: Ubuntu recorded 2479 passed / 67 skipped,
+and Windows recorded 2487 passed / 59 skipped; both recorded 870 passed subtests.
+Both jobs then failed while collecting the external wheel suite:
+`ModuleNotFoundError: No module named 'test_person_twin_authority_replay'`.
+Those failed CI results remain the record for the initial published tree.
+
+The new test used a bare sibling-module import. The wheel gate copies the tests
+to an external directory and uses `--import-mode=importlib`, where that short
+module name is unavailable. A standalone importlib collection reproduced the
+failure locally before the fix. The followup resolves the unchanged adjacent
+R4 fixture with `Path(__file__).with_name(...)` and `importlib.util`, preserving
+the four existing fixture aliases. It does not change `sys.path`, the runtime,
+the R4 fixture, or the CI gate and its exclusions.
+
+The revised adapter test has SHA-256
+`661d8f96b42034c673fee872e157df68b03c6e779e857a064fce1b9f33437927`.
+An independent review checked these exact bytes and found no remaining issue
+with the fixture-loading change.
+
+Local verification on 2026-10-12, Python 3.12.14 / pytest 9.1.1:
+
+| Verification | Result |
+|---|---:|
+| Original scoped suite, default import mode, 19:21:10 UTC | 154 passed; 0 skipped |
+| Adapter file selected alone, importlib mode, 19:21:35 UTC | 61 passed; 0 skipped |
+| Actual installed-wheel suite, unmodified `tools/ci_review.py` wheel gate | 2407 passed; 117 skipped; 870 subtests passed |
+
+The two scoped runs denied all `socket.*` audit events and observed zero events;
+their five source/test hashes were unchanged before and after. Their receipt
+SHA-256 values are respectively
+`8b2d32b9f3ed2ca9c82d94059732f5cd5f63ff8809511e5d7f1a647250ab6ccd`
+and `8dae8b07732416ff4f90d82eb61ddfc434d1d94f3c1ea20bcf7944fc52602f87`.
+
+The wheel rehearsal built the declared package in a separate source copy,
+installed it with pytest into a fresh isolated environment, and used exactly
+the gate's four existing exclusions. The package imported from that environment's
+`site-packages`; neither project checkout nor the build source appeared on the
+test interpreter's import path. Package and distribution versions both read
+`0.10.3`. Documentation was annotated after the source snapshot; the tested
+runtime/R4 files and revised adapter test remained byte-identical.
+
+Wheel SHA-256:
+`80ead6cc699a53efd01e0dbc0eba9c511ffd891f8010772651d26e32fc25d186`.
+Installed-wheel gate receipt SHA-256:
+`b4c597640abd016963c68accc5cc4ce6113901c32877f76e25e137dd6747cc68`.
+
+These are local Linux followup results. At recording time, the followup had not
+been published or checked by GitHub's Ubuntu/Windows jobs. They do not replace
+the initial failed CI record or change the integration's admission limits.
