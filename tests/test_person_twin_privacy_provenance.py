@@ -764,3 +764,24 @@ def test_r2_module_has_no_network_connector_oauth_or_runtime_effect_surface():
         "can_trade",
     )
     assert all(token not in text for token in forbidden)
+
+
+@pytest.mark.parametrize("actor_kind,authority", [
+    ("ALIEN", "NONSENSE"),
+    ("SERVICE", "NONE"),
+    ("", "OWNER"),
+])
+def test_person_export_fails_closed_on_unrecognized_actor(actor_kind, authority):
+    from continuityos.company_twin_lifecycle import LifecycleAuthorizationError
+    identity, source, consent, ledger, record = _build()
+    requester = {
+        "actor_id": "untrusted:synthetic", "actor_kind": actor_kind, "authority_class": authority,
+    }
+    with pytest.raises(LifecycleAuthorizationError):
+        pp.build_person_twin_export_bundle(
+            [record], identity, authorized_scopes=[record["scope"]],
+            source_records={source["id"]: source},
+            consent_receipts={consent["consent_receipt_id"]: consent},
+            current_revocation_ledger=ledger,
+            purpose="person-memory", requested_at=AT, requested_by=requester,
+        )
