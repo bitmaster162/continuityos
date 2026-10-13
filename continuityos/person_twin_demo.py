@@ -1,8 +1,9 @@
 """Synthetic Person/R21H continuity through three finite, isolated children.
 
 The caller owns PREPARE, A and B directly. Only PREPARE writes the fixture;
-both model workers read the same bytes and construct fresh synthetic host
-bindings. This is a product proof, not a vault, real model run or owner grant.
+both model workers recover the real R3 receipt from that same SQLite file and
+construct fresh synthetic host bindings. No admission sidecar or reader-side
+promotion is used. This is a product proof, not a vault or owner grant.
 """
 from __future__ import annotations
 
@@ -28,11 +29,11 @@ from typing import Any, Mapping, Sequence
 
 from .current_effect_boundary import assert_current_effect_allowed
 
-SCHEMA = "continuityos.product_demo_person_continuity/v1"
-FIXTURE_SCHEMA = "continuityos.product_demo_person_continuity_fixture/v1"
-WORKER_SCHEMA = "continuityos.product_demo_person_continuity_worker/v1"
-PREPARE_SCHEMA = "continuityos.product_demo_person_continuity_prepare/v1"
-WORK_ORDER = "COS_DEMO_PERSON_CONTINUITY_R1"
+SCHEMA = "continuityos.product_demo_person_continuity/v2"
+FIXTURE_SCHEMA = "continuityos.product_demo_person_continuity_snapshot/v2"
+WORKER_SCHEMA = "continuityos.product_demo_person_continuity_worker/v2"
+PREPARE_SCHEMA = "continuityos.product_demo_person_continuity_prepare/v2"
+WORK_ORDER = "COS_PERSON_CONTINUITY_DURABLE_DEMO_R2"
 PASS = "COS_DEMO_PERSON_CONTINUITY_PASS"
 HOLD = "COS_DEMO_PERSON_CONTINUITY_HOLD"
 NAMESPACE = "synthetic-person-context"
@@ -40,7 +41,6 @@ QUERY = "Continue the current synthetic project context."
 AT = "2026-08-25T12:50:00Z"  # Declared fixture clock, not trusted current time.
 PURPOSE = "person-memory"
 ROOT_PREFIX = "continuityos-person-demo-"
-MAX_FIXTURE_BYTES = 131072
 MAX_DB_BYTES = 2097152
 MAX_OUTPUT_BYTES = 65536
 OLD_TEXT = "OLD_DECISION_SENTINEL: use the retired prototype."
@@ -49,7 +49,7 @@ _socket_events: list[str] = []
 _socket_guard_installed = False
 WORKER_CHECKS = frozenset({"current_evidence_delivered", "old_and_foreign_excluded", "exact_query",
     "query_only", "fresh_prompt_revalidation", "one_generation", "transport", "execute_denied",
-    "no_socket_events", "fixture_and_db_unchanged"})
+    "no_socket_events", "fixture_and_db_unchanged", "durable_receipt_recovered", "no_admission_sidecar"})
 PERSON_RECEIPT_KEYS = frozenset({"schema", "decision", "action", "evidence_count", "memory_refs",
     "prompt_boundary_revalidated", "production_admission_status", "execution_authority", "can_execute",
     "can_trade", "capital_permission", "intent_sha256", "r4_receipt_hash", "evidence_sha256", "receipt_hash"})
@@ -181,7 +181,7 @@ def _owned_root(root: Path) -> Path:
 
 def _read_bytes(root: Path, name: str, maximum: int) -> bytes:
     root = _owned_root(root)
-    if name not in {"fixture.json", "memory.db"}:
+    if name != "memory.db":
         raise PersonDemoHold("FIXTURE_MEMBER_INVALID")
     path = root / name
     try:
@@ -212,38 +212,22 @@ def _read_bytes(root: Path, name: str, maximum: int) -> bytes:
 
 def _members(root: Path) -> None:
     root = _owned_root(root)
-    if {item.name for item in root.iterdir()} != {"memory.db", "fixture.json"}:
+    if {item.name for item in root.iterdir()} != {"memory.db"}:
         raise PersonDemoHold("FIXTURE_MEMBERS_CHANGED")
     for item in root.iterdir():
         _reject_link(item.lstat())
 
 
-class _AdmissionFixtureStore:
-    """Ephemeral R3 byte fixture, never installed as a canonical backend."""
-
-    def __init__(self):
-        self.pointer: bytes | None = None
-        self.candidates: dict[str, bytes] = {}
-
-    def read_current_pointer_bytes(self):
-        return self.pointer
-
-    def read_candidate_bytes(self, candidate_id):
-        return self.candidates.get(candidate_id)
-
-    def commit_candidate_not_current(self, candidate_id, candidate_bytes):
-        from .person_twin_admission_coordinator import AdmissionStoreConflict
-        if candidate_id in self.candidates and self.candidates[candidate_id] != candidate_bytes:
-            raise AdmissionStoreConflict("fixture candidate conflict")
-        self.candidates[candidate_id] = candidate_bytes
-
-    def promote_current_pointer(self, *, expected_pointer_sha256, pointer_bytes):
-        from .person_twin_admission_coordinator import AdmissionStoreConflict
-        actual = None if self.pointer is None else _sha(self.pointer)
-        if actual != expected_pointer_sha256:
-            raise AdmissionStoreConflict("fixture pointer conflict")
-        self.pointer = pointer_bytes
-
+def _fixture_identity(run_id: str) -> dict[str, Any]:
+    """Controller-pinned synthetic identity; never selected from stored contents."""
+    if type(run_id) is not str or re.fullmatch(r"[0-9a-f]{32}", run_id) is None:
+        raise PersonDemoHold("FIXTURE_RUN_ID_INVALID")
+    from .person_twin_admission_contracts import build_person_twin_identity
+    return build_person_twin_identity(
+        tenant_id="tenant:synthetic-person-demo", subject_id="subject:" + run_id,
+        owner_id="human:demo-owner", controller_id="human:demo-owner",
+        controller_kind="HUMAN", ownership_epoch=1, created_at="2026-08-25T00:00:00Z",
+    )
 
 def _write_fixture(root: Path, run_id: str) -> dict[str, Any]:
     _guard()
@@ -254,17 +238,13 @@ def _write_fixture(root: Path, run_id: str) -> dict[str, Any]:
     from .embed import HashingEmbedder
     from .memory import Memory
     from .person_twin_admission_contracts import (
-        build_consent_revocation_ledger, build_person_twin_identity, build_source_consent_receipt,
+        build_consent_revocation_ledger, build_source_consent_receipt,
     )
-    from .person_twin_admission_coordinator import PersonTwinAdmissionCoordinator
+    from .person_twin_admission_store import PersonTwinAdmissionStore
     from .person_twin_privacy_provenance import (
         build_person_twin_provenance, canonical_person_private_scope, deterministic_source_identity_hash,
     )
-    identity = build_person_twin_identity(
-        tenant_id="tenant:synthetic-person-demo", subject_id="subject:" + run_id,
-        owner_id="human:demo-owner", controller_id="human:demo-owner",
-        controller_kind="HUMAN", ownership_epoch=1, created_at="2026-08-25T00:00:00Z",
-    )
+    identity = _fixture_identity(run_id)
     scope = canonical_person_private_scope(identity["twin_id"])
     text = ("Goal: continue the approved synthetic project.\n"
             "Decision: keep the read-only Person/R21H evidence path.\n"
@@ -295,22 +275,6 @@ def _write_fixture(root: Path, run_id: str) -> dict[str, Any]:
         identity, consent, ledger, source, admission_session_id="admission:" + run_id,
         purpose=PURPOSE, at="2026-08-25T11:00:00Z",
     )
-    store = _AdmissionFixtureStore()
-    coordinator = PersonTwinAdmissionCoordinator(
-        store, session_id=record["admission_session_id"], identity=identity, consent_receipt=consent,
-        source_record=source, candidate_record=record, purpose=PURPOSE,
-    )
-    steps = (
-        (coordinator.validate, {"revocation_ledger": ledger}, "VALIDATED"),
-        (coordinator.commit_not_current, {"current_revocation_ledger": ledger}, "COMMITTED_NOT_CURRENT"),
-        (coordinator.postverify, {"current_revocation_ledger": ledger}, "POSTVERIFY_PASS"),
-        (coordinator.promote_current, {"current_revocation_ledger": ledger}, "CURRENT"),
-    )
-    admission = None
-    for method, kwargs, expected in steps:
-        admission = method(**kwargs, at="2026-08-25T11:40:00Z")
-        if admission.get("state") != expected:
-            raise PersonDemoHold("FIXTURE_ADMISSION_HOLD")
     writer = Memory(str(root / "memory.db"), embedder=HashingEmbedder())
     try:
         old_id = writer.remember(OLD_TEXT, namespace=NAMESPACE)
@@ -324,89 +288,72 @@ def _write_fixture(root: Path, run_id: str) -> dict[str, Any]:
             raise PersonDemoHold("FIXTURE_JOURNAL_NOT_QUIESCENT")
     finally:
         writer.store.con.close()
+    # The Memory writer is closed. The real store adds its tables to this same
+    # owned DB and persists the unchanged coordinator's actual final receipt.
+    PersonTwinAdmissionStore.initialize(root / "memory.db")
+    with PersonTwinAdmissionStore(root / "memory.db", identity=identity, read_only=False) as store:
+        result = store.admit(consent_receipt=consent, source_record=source,
+            candidate_record=record, purpose=PURPOSE, memory_id=memory_id, namespace=NAMESPACE,
+            read_current_evidence=lambda: {"current_revocation_ledger": build_consent_revocation_ledger(), "at": AT})
+        snapshot = store.load_current()
+        if (result.get("status") != "PASS" or result.get("commit_state") != "CONFIRMED"
+                or snapshot is None or snapshot.receipt != result.get("admission_receipt")):
+            raise PersonDemoHold("FIXTURE_DURABLE_ADMISSION_HOLD")
+    _members(root)
     db = _read_bytes(root, "memory.db", MAX_DB_BYTES)
-    candidate_bytes = store.read_candidate_bytes(record["id"])
-    pointer_bytes = store.read_current_pointer_bytes()
-    if candidate_bytes is None or pointer_bytes is None:
-        raise PersonDemoHold("FIXTURE_ADMISSION_MISSING")
-    fixture = {"schema": FIXTURE_SCHEMA, "run_id": run_id,
-        "memory": {"id": memory_id, "namespace": NAMESPACE, "sha256": _sha(db), "size_bytes": len(db)},
-        "context": {"identity": identity, "source_record": source, "consent_receipt": consent,
-            "current_revocation_ledger": ledger, "person_record": record, "admission_receipt": admission,
-            "current_pointer": _decode(pointer_bytes)},
-        "admission_bytes": {"candidate_utf8": candidate_bytes.decode("utf-8"),
-            "pointer_utf8": pointer_bytes.decode("utf-8"), "candidate_sha256": _sha(candidate_bytes),
-            "pointer_sha256": _sha(pointer_bytes)}}
-    raw = _canonical(fixture)
-    if len(raw) > MAX_FIXTURE_BYTES:
-        raise PersonDemoHold("FIXTURE_TOO_LARGE")
-    fd = os.open(root / "fixture.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                 | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0), 0o600)
-    with os.fdopen(fd, "wb") as handle:
-        handle.write(raw)
-        handle.flush()
-        os.fsync(handle.fileno())
-    _read_fixture(root, _sha(raw))
-    return {"fixture_sha256": _sha(raw), "db_sha256": _sha(db), "memory_id": memory_id, "run_id": run_id}
+    _read_fixture(root, _sha(db), run_id)
+    # Only selectors and digests cross PREPARE stdout, never the R3 receipt/body.
+    return {"db_sha256": _sha(db), "memory_id": memory_id, "run_id": run_id,
+            "publication_id": snapshot.publication_id, "stored_receipt_sha256": _sha(snapshot.receipt_bytes),
+            "admission_source": "MEMORY_SQLITE", "admission_sidecar_count": 0}
 
 
-def _read_fixture(root: Path, expected_sha256: str) -> dict[str, Any]:
+def _read_fixture(root: Path, expected_sha256: str, run_id: str) -> dict[str, Any]:
+    """Reopen only the pinned DB; decoded data stays in this process, not a sidecar."""
     _guard()
+    identity = _fixture_identity(run_id)
     if not _is_sha(expected_sha256):
         raise PersonDemoHold("FIXTURE_HASH_INVALID")
     _members(root)
-    raw = _read_bytes(root, "fixture.json", MAX_FIXTURE_BYTES)
-    if _sha(raw) != expected_sha256:
-        raise PersonDemoHold("FIXTURE_HASH_MISMATCH")
-    fixture = _decode(raw)
-    try:
-        if set(fixture) != {"schema", "run_id", "memory", "context", "admission_bytes"}:
-            raise ValueError()
-        if fixture["schema"] != FIXTURE_SCHEMA or _canonical(fixture) != raw:
-            raise ValueError()
-        if re.fullmatch(r"[0-9a-f]{32}", fixture["run_id"]) is None:
-            raise ValueError()
-        memory = fixture["memory"]
-        if set(memory) != {"id", "namespace", "sha256", "size_bytes"} or type(memory["id"]) is not int or memory["id"] < 1:
-            raise ValueError()
-        if memory["namespace"] != NAMESPACE:
-            raise ValueError()
-        context = fixture["context"]
-        if set(context) != {"identity", "source_record", "consent_receipt", "current_revocation_ledger",
-                            "person_record", "admission_receipt", "current_pointer"}:
-            raise ValueError()
-        stored = fixture["admission_bytes"]
-        if set(stored) != {"candidate_utf8", "pointer_utf8", "candidate_sha256", "pointer_sha256"}:
-            raise ValueError()
-        for name, value in (("candidate", context["person_record"]), ("pointer", context["current_pointer"])):
-            data = stored[name + "_utf8"].encode("utf-8")
-            if data != _canonical(value) or _sha(data) != stored[name + "_sha256"]:
-                raise ValueError()
-        if context["admission_receipt"]["state"] != "CURRENT":
-            raise ValueError()
-        text = context["source_record"]["payload"]["text"]
-        if not isinstance(text, str) or not 0 < len(text) <= 8192 or fixture["run_id"] not in text:
-            raise ValueError()
-    except Exception:
-        raise PersonDemoHold("FIXTURE_CONTRACT_INVALID") from None
     db = _read_bytes(root, "memory.db", MAX_DB_BYTES)
-    if _sha(db) != memory["sha256"] or len(db) != memory["size_bytes"]:
+    if _sha(db) != expected_sha256:
         raise PersonDemoHold("FIXTURE_DB_HASH_MISMATCH")
+    from .person_twin_admission_store import PersonTwinAdmissionStore
+    from .person_twin_admission_contracts import build_consent_revocation_ledger
+    try:
+        with PersonTwinAdmissionStore(root / "memory.db", identity=identity) as store:
+            snapshot = store.load_current()
+        if snapshot is None:
+            raise ValueError()
+        anchors, binding = snapshot.anchors, snapshot.binding
+        if (anchors["identity"] != identity or anchors["purpose"] != PURPOSE
+                or type(binding["memory_id"]) is not int or binding["memory_id"] < 1
+                or binding["namespace"] != NAMESPACE):
+            raise ValueError()
+        text = anchors["source_record"]["payload"]["text"]
+        if not isinstance(text, str) or not 0 < len(text) <= 8192 or run_id not in text:
+            raise ValueError()
+        # The ledger is a new synthetic host input, not persisted authorization.
+        context = {"identity": identity, "source_record": anchors["source_record"],
+            "consent_receipt": anchors["consent_receipt"],
+            "current_revocation_ledger": build_consent_revocation_ledger(),
+            "person_record": snapshot.candidate, "admission_receipt": snapshot.receipt,
+            "current_pointer": snapshot.pointer}
+        fixture = {"schema": FIXTURE_SCHEMA, "run_id": run_id,
+            "memory": {"id": binding["memory_id"], "namespace": NAMESPACE,
+                       "sha256": expected_sha256, "size_bytes": len(db)},
+            "context": context, "publication_id": snapshot.publication_id,
+            "admission_bytes": {"candidate_utf8": snapshot.candidate_bytes.decode("utf-8"),
+                "pointer_utf8": snapshot.pointer_bytes.decode("utf-8"),
+                "candidate_sha256": _sha(snapshot.candidate_bytes),
+                "pointer_sha256": _sha(snapshot.pointer_bytes),
+                "receipt_sha256": _sha(snapshot.receipt_bytes)}}
+    except Exception:
+        raise PersonDemoHold("DURABLE_ADMISSION_READ_HOLD") from None
+    _members(root)
+    if _read_bytes(root, "memory.db", MAX_DB_BYTES) != db:
+        raise PersonDemoHold("FIXTURE_DB_CHANGED_DURING_READ")
     return fixture
-
-
-class _AdmissionReadFixture:
-    def __init__(self, fixture):
-        self.candidate_id = fixture["context"]["person_record"]["id"]
-        self.candidate = fixture["admission_bytes"]["candidate_utf8"].encode("utf-8")
-        self.pointer = fixture["admission_bytes"]["pointer_utf8"].encode("utf-8")
-
-    def read_candidate_bytes(self, candidate_id):
-        return self.candidate if candidate_id == self.candidate_id else None
-
-    def read_current_pointer_bytes(self):
-        return self.pointer
-
 
 class _EmptyReplayFixture:
     def read_replay_receipt_bytes(self, replay_key):
@@ -467,17 +414,19 @@ def _fresh_host_context(fixture: Mapping[str, Any], role: str) -> dict[str, Any]
 
 
 class _FixtureProvider:
-    def __init__(self, root: Path, expected_sha256: str, host: Mapping[str, Any]):
-        self.root, self.expected_sha256 = root, expected_sha256
+    """Synthetic host context plus fresh reads of the real SQLite admission store."""
+    def __init__(self, root: Path, expected_sha256: str, host: Mapping[str, Any], *,
+                 run_id: str, admission_store):
+        self.root, self.expected_sha256, self.run_id = root, expected_sha256, run_id
         self.host = copy.deepcopy(dict(host))
+        self.admission_store = admission_store
         self.reads = 0
 
     def read_context(self):
         self.reads += 1
-        fixture = _read_fixture(self.root, self.expected_sha256)
+        fixture = _read_fixture(self.root, self.expected_sha256, self.run_id)
         return {**copy.deepcopy(fixture["context"]), **copy.deepcopy(self.host),
-                "admission_store": _AdmissionReadFixture(fixture), "replay_store": _EmptyReplayFixture()}
-
+                "admission_store": self.admission_store, "replay_store": _EmptyReplayFixture()}
 
 class _RecordingModel:
     """Transport fixture only. Its zero timing values are not measured latency."""
@@ -541,12 +490,12 @@ def _context_fields(text: str) -> dict[str, str]:
     return result
 
 
-def _worker(root: Path, expected_sha256: str, role: str) -> tuple[dict[str, Any], int]:
-    client = runtime = None
+def _worker(root: Path, expected_sha256: str, role: str, run_id: str = "") -> tuple[dict[str, Any], int]:
+    client = runtime = admission_store = None
     started = time.monotonic()
     try:
         _guard()
-        fixture = _read_fixture(root, expected_sha256)
+        fixture = _read_fixture(root, expected_sha256, run_id)
         host = _fresh_host_context(fixture, role)
         from .person_twin_authority_replay import evaluate_person_twin_authority_replay
         from .person_twin_r21h_evidence import PersonReadIntent, PersonTwinR21HEvidenceAdapter
@@ -560,10 +509,12 @@ def _worker(root: Path, expected_sha256: str, role: str) -> tuple[dict[str, Any]
             principal_id=host["principal_id"], scope=host["requested_scope"],
             privacy_class=host["requested_privacy_class"], purpose=PURPOSE,
         )
-        provider = _FixtureProvider(root, expected_sha256, host)
+        from .person_twin_admission_store import PersonTwinAdmissionStore
+        admission_store = PersonTwinAdmissionStore(root / "memory.db", identity=_fixture_identity(run_id))
+        provider = _FixtureProvider(root, expected_sha256, host, run_id=run_id, admission_store=admission_store)
         profile = replace(DEFAULT_PROFILES["fast"], model="synthetic-person-" + role)
         client = _RecordingModel(profile, cold=role == "B")
-        _read_fixture(root, expected_sha256)  # No-follow/hash checks directly before Memory opens.
+        _read_fixture(root, expected_sha256, run_id)  # No-follow/hash checks directly before Memory opens.
         runtime = SovereignTwinRuntime(str(root / "memory.db"), client=client,
             profiles={**DEFAULT_PROFILES, "fast": profile},
             person_evidence_adapter=PersonTwinR21HEvidenceAdapter(intent, provider))
@@ -580,15 +531,19 @@ def _worker(root: Path, expected_sha256: str, role: str) -> tuple[dict[str, Any]
         person = dict(answer.stats["person_evidence"])
         checks = {"current_evidence_delivered": delivered == expected,
             "old_and_foreign_excluded": OLD_TEXT not in prompt and FOREIGN_TEXT not in prompt,
-            "exact_query": client.calls[0]["input_text"] == QUERY, "query_only": query_only,
+            "exact_query": client.calls[0]["input_text"] == QUERY, "query_only": query_only and admission_store._con.execute("PRAGMA query_only").fetchone()[0] == 1,
             "fresh_prompt_revalidation": provider.reads >= 2 and person.get("prompt_boundary_revalidated") is True,
             "one_generation": len(client.calls) == 1,
             "transport": (client.events.count("chat"), client.events.count("stream")) == ((1, 0) if role == "A" else (0, 1)),
             "execute_denied": denied.get("decision") == "DENY" and denied.get("execution_authorized") is False,
-            "no_socket_events": not _socket_events}
+            "no_socket_events": not _socket_events,
+            "durable_receipt_recovered": _sha(admission_store.load_current().receipt_bytes) == fixture["admission_bytes"]["receipt_sha256"],
+            "no_admission_sidecar": {item.name for item in root.iterdir()} == {"memory.db"}}
         runtime.close()
         runtime = None
-        after = _read_fixture(root, expected_sha256)
+        admission_store.close()
+        admission_store = None
+        after = _read_fixture(root, expected_sha256, run_id)
         checks["fixture_and_db_unchanged"] = after == fixture
         if not all(checks.values()):
             raise PersonDemoHold("WORKER_PROOF_MISMATCH")
@@ -601,7 +556,9 @@ def _worker(root: Path, expected_sha256: str, role: str) -> tuple[dict[str, Any]
             "request_sha256": _hash(host["authorization_request"]),
             "packet_sha256": _hash(host["authorization_preflight"]),
             "person_evidence": person, "context_reads": provider.reads, "checks": checks,
-            "fixture_sha256": expected_sha256, "db_sha256": fixture["memory"]["sha256"],
+            "db_sha256": expected_sha256, "publication_id": fixture["publication_id"],
+            "stored_receipt_sha256": fixture["admission_bytes"]["receipt_sha256"],
+            "admission_source": "MEMORY_SQLITE", "admission_sidecar_count": 0,
             "unsupported_execute": {"decision": denied["decision"], "reason": denied.get("reason"),
                                     "execution_authorized": denied.get("execution_authorized")},
             "socket_audit": _audit_state(), "synthetic_host_bindings": True, "fixture_clock_at": AT,
@@ -620,6 +577,11 @@ def _worker(root: Path, expected_sha256: str, role: str) -> tuple[dict[str, Any]
                 runtime.close()
             except Exception:
                 pass  # The failed normal close already produces a HOLD above.
+        if admission_store is not None:
+            try:
+                admission_store.close()
+            except Exception:
+                pass  # Any failed normal close above is already a HOLD.
 
 
 def _run_process(command: list[str], timeout: float) -> dict[str, Any]:
@@ -710,10 +672,9 @@ def _run_prepare(root: Path, run_id: str, timeout: float) -> dict[str, Any]:
     return _child_result(_child_command("_prepare", "--root", str(root), "--run-id", run_id), timeout)
 
 
-def _run_worker(root: Path, expected_sha256: str, role: str, timeout: float) -> dict[str, Any]:
+def _run_worker(root: Path, expected_sha256: str, role: str, timeout: float, run_id: str) -> dict[str, Any]:
     return _child_result(_child_command("_worker", "--root", str(root),
-                         "--fixture-sha256", expected_sha256, "--role", role), timeout)
-
+                         "--db-sha256", expected_sha256, "--role", role, "--run-id", run_id), timeout)
 
 def _child_command(*arguments: str) -> list[str]:
     # -I removes CWD/PYTHONPATH ambiguity; -B avoids ignored environment settings
@@ -731,7 +692,30 @@ def _child_command(*arguments: str) -> list[str]:
             str(Path(__file__).resolve().parent.parent), _source_sha256(), *arguments]
 
 
-def _valid_worker(result: Mapping[str, Any], role: str, fixture: Mapping[str, Any], fixture_sha: str) -> bool:
+def _valid_preparation(result: Mapping[str, Any], run_id: str) -> bool:
+    try:
+        value = result["receipt"]
+        keys = {"schema", "terminal", "process_id", "socket_audit", "source_sha256",
+                "db_sha256", "memory_id", "run_id", "publication_id", "stored_receipt_sha256",
+                "admission_source", "admission_sidecar_count", "receipt_sha256", *_governance()}
+        return (result.get("ok") is True and result.get("direct_child_reaped") is True
+            and _sealed(value) and set(value) == keys
+            and value["schema"] == PREPARE_SCHEMA and value["terminal"] == "PERSON_DEMO_PREPARE_PASS"
+            and value["run_id"] == run_id and type(value["process_id"]) is int
+            and value["process_id"] == result["process_id"]
+            and type(value["memory_id"]) is int and value["memory_id"] > 0
+            and value["source_sha256"] == _source_sha256()
+            and value["socket_audit"] == {"installed": True, "events": 0, "policy": "DENY_SOCKET_EVENTS"}
+            and _is_sha(value["db_sha256"]) and _is_sha(value["stored_receipt_sha256"])
+            and isinstance(value["publication_id"], str) and re.fullmatch(r"[0-9a-f]{32}", value["publication_id"]) is not None
+            and value["admission_source"] == "MEMORY_SQLITE" and type(value["admission_sidecar_count"]) is int
+            and value["admission_sidecar_count"] == 0
+            and all(type(value.get(k)) is type(v) and value[k] == v for k, v in _governance().items()))
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _valid_worker(result: Mapping[str, Any], role: str, fixture: Mapping[str, Any], db_sha: str) -> bool:
     try:
         receipt = result["receipt"]
         person = receipt["person_evidence"]
@@ -741,10 +725,14 @@ def _valid_worker(result: Mapping[str, Any], role: str, fixture: Mapping[str, An
         return (result.get("ok") is True and result.get("direct_child_reaped") is True and _sealed(receipt)
             and receipt["schema"] == WORKER_SCHEMA and receipt["terminal"] == "PERSON_DEMO_WORKER_PASS"
             and receipt["role"] == role and receipt["model_profile"] == "synthetic-person-" + role
-            and receipt["model_calls"] == 1 and type(receipt["process_id"]) is int
+            and type(receipt["model_calls"]) is int and receipt["model_calls"] == 1 and type(receipt["process_id"]) is int
             and receipt["process_id"] == result["process_id"]
             and receipt["source_sha256"] == _source_sha256()
-            and receipt["fixture_sha256"] == fixture_sha and receipt["db_sha256"] == fixture["memory"]["sha256"]
+            and receipt["db_sha256"] == db_sha == fixture["memory"]["sha256"]
+            and receipt["publication_id"] == fixture["publication_id"]
+            and receipt["stored_receipt_sha256"] == fixture["admission_bytes"]["receipt_sha256"]
+            and receipt["admission_source"] == "MEMORY_SQLITE"
+            and type(receipt["admission_sidecar_count"]) is int and receipt["admission_sidecar_count"] == 0
             and receipt["captured_evidence"] == expected_evidence
             and receipt["recovered"] == _context_fields(expected_evidence[0]["text"])
             and receipt["transport"] == ("warm_chat" if role == "A" else "cold_streaming")
@@ -788,27 +776,24 @@ def _controller(*, timeout: float = 20.0) -> tuple[dict[str, Any], int]:
         children.append(prepared)
         if prepared.get("started") is True:
             effects["ephemeral_memory_write"] = "UNKNOWN"
-        if not prepared.get("ok") or not isinstance(prepared.get("receipt"), dict):
-            raise PersonDemoHold("FIXTURE_PREPARATION_FAILED")
-        preparation = prepared["receipt"]
-        if (preparation.get("schema") != PREPARE_SCHEMA or preparation.get("terminal") != "PERSON_DEMO_PREPARE_PASS"
-                or preparation.get("run_id") != run_id or preparation.get("process_id") != prepared.get("process_id")):
+        if not _valid_preparation(prepared, run_id):
             raise PersonDemoHold("FIXTURE_PREPARATION_RECEIPT_INVALID")
-        if preparation.get("source_sha256") != _source_sha256():
-            raise PersonDemoHold("FIXTURE_PREPARATION_SOURCE_MISMATCH")
-        if preparation.get("socket_audit") != {"installed": True, "events": 0, "policy": "DENY_SOCKET_EVENTS"}:
-            raise PersonDemoHold("FIXTURE_PREPARATION_AUDIT_INVALID")
-        fixture_sha = preparation["fixture_sha256"]
-        fixture = _read_fixture(root, fixture_sha)
+        preparation = prepared["receipt"]
+        db_sha = preparation["db_sha256"]
+        fixture = _read_fixture(root, db_sha, run_id)
+        if (preparation["memory_id"] != fixture["memory"]["id"]
+                or preparation["publication_id"] != fixture["publication_id"]
+                or preparation["stored_receipt_sha256"] != fixture["admission_bytes"]["receipt_sha256"]):
+            raise PersonDemoHold("FIXTURE_PREPARATION_SNAPSHOT_MISMATCH")
         effects["ephemeral_memory_write"] = True
         sessions = {}
         for role in ("A", "B"):
-            result = _run_worker(root, fixture_sha, role, timeout)
+            result = _run_worker(root, db_sha, role, timeout, run_id)
             children.append(result)
-            if not _valid_worker(result, role, fixture, fixture_sha):
+            if not _valid_worker(result, role, fixture, db_sha):
                 raise PersonDemoHold("WORKER_RESULT_INVALID")
             sessions[role] = result["receipt"]
-            if _read_fixture(root, fixture_sha) != fixture:
+            if _read_fixture(root, db_sha, run_id) != fixture:
                 raise PersonDemoHold("FIXTURE_CHANGED_AFTER_WORKER")
         a, b = sessions["A"], sessions["B"]
         checks = {"separate_model_processes": a["process_id"] != b["process_id"] and os.getpid() not in (a["process_id"], b["process_id"]),
@@ -819,18 +804,22 @@ def _controller(*, timeout: float = 20.0) -> tuple[dict[str, Any], int]:
             "fresh_intent_and_r4": all(a["person_evidence"][key] != b["person_evidence"][key]
                 for key in ("intent_sha256", "r4_receipt_hash", "receipt_hash")),
             "warm_a_cold_b": a["transport"] == "warm_chat" and b["transport"] == "cold_streaming",
-            "snapshot_bytes_unchanged": _read_fixture(root, fixture_sha) == fixture}
+            "snapshot_bytes_unchanged": _read_fixture(root, db_sha, run_id) == fixture,
+            "same_saved_admission": a["stored_receipt_sha256"] == b["stored_receipt_sha256"]
+                == preparation["stored_receipt_sha256"] and a["publication_id"] == b["publication_id"] == preparation["publication_id"],
+            "no_admission_sidecar": {item.name for item in root.iterdir()} == {"memory.db"}}
         if not all(checks.values()):
             raise PersonDemoHold("CROSS_PROCESS_PROOF_MISMATCH")
         value = {"schema": SCHEMA, "work_order": WORK_ORDER, "terminal": PASS,
             "reason": "SYNTHETIC_PERSON_CONTEXT_RECOVERED", "mode": "SYNTHETIC_ONLY", "run_id": run_id,
             "orchestrator_process_id": os.getpid(), "prepare": preparation, "sessions": sessions,
             "checks": checks, "recovered": b["recovered"], "fixture_clock_at": AT,
-            "snapshot": {"fixture_sha256_before": fixture_sha, "fixture_sha256_after": _sha(_read_bytes(root, "fixture.json", MAX_FIXTURE_BYTES)),
+            "snapshot": {"admission_source": "MEMORY_SQLITE", "admission_sidecar_count": 0,
                 "db_sha256_before": fixture["memory"]["sha256"], "db_sha256_after": _sha(_read_bytes(root, "memory.db", MAX_DB_BYTES)),
                 "memory_ref": "mem:" + str(fixture["memory"]["id"]),
                 "candidate_sha256": fixture["admission_bytes"]["candidate_sha256"],
-                "pointer_sha256": fixture["admission_bytes"]["pointer_sha256"]},
+                "pointer_sha256": fixture["admission_bytes"]["pointer_sha256"],
+                "stored_receipt_sha256": fixture["admission_bytes"]["receipt_sha256"], "publication_id": fixture["publication_id"]},
             "socket_audit": {"scope": "fixture_and_model_children", "audited_children": 3, "events": 0},
             "provenance": {"signed": False, "authority": "NONE", "synthetic_host_bindings": True}, **_governance()}
         value["source_sha256"] = _source_sha256()
@@ -873,6 +862,7 @@ def render_person_continuity(value: Mapping[str, Any]) -> str:
     lines = ["ContinuityOS Person continuity demo  " + ("PASS" if passed else "HOLD")]
     if passed:
         lines.append("Boundary      fresh A/B processes; synthetic model profiles; B cold")
+        lines.append("Admission     same Memory SQLite; no receipt sidecar")
         for key, label in (("goal", "Goal"), ("decision", "Decision"), ("constraint", "Constraint"), ("next_action", "Next step")):
             lines.append(f"{label:<14}{value['recovered'][key]}")
         lines.append("Memory ref    " + str(value["snapshot"]["memory_ref"]))
@@ -898,7 +888,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("operation", choices=["_prepare", "_worker"])
     parser.add_argument("--root", required=True)
     parser.add_argument("--run-id")
-    parser.add_argument("--fixture-sha256")
+    parser.add_argument("--db-sha256")
     parser.add_argument("--role", choices=["A", "B"])
     args = parser.parse_args(argv)
     try:
@@ -910,7 +900,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "process_id": os.getpid(), "socket_audit": _audit_state(),
                 "source_sha256": _source_sha256(), **result, **_governance()}), 0
         else:
-            value, code = _worker(Path(args.root), args.fixture_sha256 or "", args.role or "")
+            value, code = _worker(Path(args.root), args.db_sha256 or "", args.role or "", args.run_id or "")
     except Exception as exc:
         value, code = _seal(_hold(str(exc) if type(exc) is PersonDemoHold else "CHILD_VALIDATION_HOLD")), 2
     print(_canonical(value).decode("utf-8"))

@@ -63,17 +63,33 @@ def completed_person_demo(tmp_path_factory):
         "raise RuntimeError('SYNTHETIC_WRONG_IMPORT_ORIGIN')\n", encoding="utf-8",
     )
     observations = []
+    commands = []
+    original_command = person_demo._child_command
     original_worker = person_demo._run_worker
 
-    def observe_worker(root, expected_sha256, role, timeout):
-        before = {name: (root / name).read_bytes() for name in ("memory.db", "fixture.json")}
-        fixture = json.loads(before["fixture.json"])
+    def observed_command(*arguments):
+        command = original_command(*arguments)
+        commands.append((arguments, list(command)))
+        if arguments[0] == "_worker":
+            # These real reader children must succeed with every write entry
+            # disabled: neither SQL admission nor R3 receipt regeneration is a fallback.
+            prelude = ("from continuityos.person_twin_admission_store import PersonTwinAdmissionStore as S\n"
+                       "from continuityos.person_twin_admission_coordinator import PersonTwinAdmissionCoordinator as C\n"
+                       "def forbidden(*a, **kw): raise AssertionError('READER_ADMISSION_WRITE_FORBIDDEN')\n"
+                       "S.initialize = forbidden\nS.admit = forbidden\nC.promote_current = forbidden\n")
+            command[4] = command[4].replace("runpy.run_module(", "exec(" + repr(prelude) + "); runpy.run_module(", 1)
+        return command
+
+    def observe_worker(root, expected_sha256, role, timeout, run_id):
+        assert {item.name for item in root.iterdir()} == {"memory.db"}
+        before = {"memory.db": (root / "memory.db").read_bytes()}
+        fixture = person_demo._read_fixture(root, expected_sha256, run_id)
         con = sqlite3.connect((root / "memory.db").as_uri() + "?mode=ro&immutable=1", uri=True)
         try:
             rows = con.execute("SELECT id, namespace, text, meta FROM items ORDER BY id").fetchall()
         finally:
             con.close()
-        result = original_worker(root, expected_sha256, role, timeout)
+        result = original_worker(root, expected_sha256, role, timeout, run_id)
         after = {name: (root / name).read_bytes() for name in before}
         observations.append({
             "role": role, "before": before, "after": after,
@@ -89,9 +105,17 @@ def completed_person_demo(tmp_path_factory):
         patch.chdir(shadow)
         patch.setenv("PYTHONPATH", str(shadow))
         patch.setattr(person_demo, "_run_worker", observe_worker)
+        patch.setattr(person_demo, "_child_command", observed_command)
         value, code = person_demo.run_person_continuity(timeout=20.0)
 
-    assert code == 0, value
+    assert code == 0, (value, [o['result'] for o in observations])
+    assert len(commands) == 3
+    for args, command in commands[1:]:
+        assert len(args) == 9 and args[0] == "_worker"
+        assert args[1] == "--root" and args[3] == "--db-sha256"
+        assert args[5] == "--role" and args[7] == "--run-id"
+        assert args[8] == value["run_id"]
+        assert not any("fixture.json" in item or '"admission_receipt"' in item for item in command[7:])
     assert not root.exists()
     assert user_db.read_bytes() == user_before
     return value, observations
@@ -149,10 +173,23 @@ def test_person_continuity_recovers_actual_current_evidence_across_processes(com
             "installed": True, "events": 0, "policy": "DENY_SOCKET_EVENTS",
         }
 
-    for member, key in (("memory.db", "db"), ("fixture.json", "fixture")):
+    for member, key in (("memory.db", "db"),):
         digest = hashlib.sha256(first["before"][member]).hexdigest()
         assert value["snapshot"][key + "_sha256_before"] == digest
         assert value["snapshot"][key + "_sha256_after"] == digest
+    assert value["schema"] == "continuityos.product_demo_person_continuity/v2"
+    assert value["work_order"] == "COS_PERSON_CONTINUITY_DURABLE_DEMO_R2"
+    assert value["snapshot"]["admission_source"] == "MEMORY_SQLITE"
+    assert value["snapshot"]["admission_sidecar_count"] == 0
+    saved = fixture["context"]["admission_receipt"]
+    saved_hash = hashlib.sha256(person_demo._canonical(saved)).hexdigest()
+    assert a["stored_receipt_sha256"] == b["stored_receipt_sha256"] == saved_hash
+    assert a["publication_id"] == b["publication_id"] == fixture["publication_id"]
+    assert value["prepare"]["stored_receipt_sha256"] == saved_hash
+    assert value["snapshot"]["stored_receipt_sha256"] == saved_hash
+    assert "admission_receipt" not in value["prepare"]
+    assert "admission_bytes" not in value["prepare"] and "context" not in value["prepare"]
+    assert all(worker["checks"]["durable_receipt_recovered"] is True for worker in (a,b))
     for kind in ("candidate", "pointer"):
         persisted = fixture["admission_bytes"][kind + "_utf8"].encode("utf-8")
         assert value["snapshot"][kind + "_sha256"] == hashlib.sha256(persisted).hexdigest()
@@ -276,7 +313,7 @@ def test_person_demo_direct_surfaces_reject_declared_current_binding(
     else:
         code = person_demo.main([
             "_worker", "--root", str(tmp_path / "continuityos-person-demo-unopened"),
-            "--fixture-sha256", "a" * 64, "--role", "B",
+            "--db-sha256", "a" * 64, "--role", "B",
         ])
         value = json.loads(capsys.readouterr().out)
 
@@ -285,8 +322,9 @@ def test_person_demo_direct_surfaces_reject_declared_current_binding(
     assert not calls
 
 
-@pytest.mark.parametrize("drift", ["stale-session", "revoked-consent"])
-def test_person_demo_fresh_host_drift_holds_before_model(tmp_path, monkeypatch, drift):
+@pytest.mark.parametrize("drift", ["stale-session", "revoked-consent", "stale-request"])
+@pytest.mark.parametrize("boundary", [1, 2])
+def test_person_demo_fresh_host_drift_holds_before_model(tmp_path, monkeypatch, drift, boundary):
     root, written = _fixture(tmp_path)
     original_read = person_demo._FixtureProvider.read_context
     seen = []
@@ -294,9 +332,13 @@ def test_person_demo_fresh_host_drift_holds_before_model(tmp_path, monkeypatch, 
     def drifted_read(provider):
         context = original_read(provider)
         seen.append(drift)
+        if provider.reads < boundary:
+            return context
         if drift == "stale-session":
             context["current_session"] = copy.deepcopy(context["current_session"])
             context["current_session"]["challenge_sha256"] = "0" * 64
+        elif drift == "stale-request":
+            context["authorization_request"]["request_id"] = "stale-request"
         else:
             identity = context["identity"]
             consent = context["consent_receipt"]
@@ -311,17 +353,17 @@ def test_person_demo_fresh_host_drift_holds_before_model(tmp_path, monkeypatch, 
         return context
 
     monkeypatch.setattr(person_demo._FixtureProvider, "read_context", drifted_read)
-    value, code = person_demo._worker(root, written["fixture_sha256"], "B")
+    value, code = person_demo._worker(root, written["db_sha256"], "B", written["run_id"])
 
     _assert_hold(value, code)
     assert value["model_calls"] == 0
     assert seen
 
 
-@pytest.mark.parametrize("case", ["tampered-db", "tampered-fixture", "missing-db"])
+@pytest.mark.parametrize("case", ["tampered-db", "injected-sidecar", "missing-db"])
 def test_person_demo_changed_persisted_bytes_hold_without_reseed(tmp_path, monkeypatch, case):
     root, written = _fixture(tmp_path)
-    member = "fixture.json" if case == "tampered-fixture" else "memory.db"
+    member = "fixture.json" if case == "injected-sidecar" else "memory.db"
     path = root / member
     writer_calls = []
 
@@ -333,13 +375,16 @@ def test_person_demo_changed_persisted_bytes_hold_without_reseed(tmp_path, monke
     if case == "missing-db":
         path.unlink()
         changed = None
+    elif case == "injected-sidecar":
+        changed = b'{"admission_receipt":{"state":"CURRENT"}}'
+        path.write_bytes(changed)
     else:
         # Keep the SQLite header intact and JSON parseable; the persisted hash
         # binding must reject changed bytes before model or mutable DB work.
         changed = path.read_bytes() + (b" " if member.endswith("json") else b"\x00")
         path.write_bytes(changed)
 
-    value, code = person_demo._worker(root, written["fixture_sha256"], "B")
+    value, code = person_demo._worker(root, written["db_sha256"], "B", written["run_id"])
 
     _assert_hold(value, code)
     assert value["model_calls"] == 0
@@ -374,7 +419,7 @@ def test_person_demo_worker_uses_only_the_explicit_read_only_fixture(tmp_path, m
     monkeypatch.setattr(db, "resolve_memory_db", forbidden_resolver)
     monkeypatch.setattr(sovereign_twin_runtime, "SovereignTwinRuntime", observe_runtime)
 
-    value, code = person_demo._worker(root, written["fixture_sha256"], "B")
+    value, code = person_demo._worker(root, written["db_sha256"], "B", written["run_id"])
 
     assert code == 0, value
     assert value["model_calls"] == 1 and value["transport"] == "cold_streaming"
@@ -397,7 +442,7 @@ def test_person_demo_rejects_linked_db_before_following_it(tmp_path):
     except (NotImplementedError, OSError) as exc:
         pytest.skip(f"Creating a real filesystem symlink is unavailable: {type(exc).__name__}")
 
-    value, code = person_demo._worker(root, written["fixture_sha256"], "B")
+    value, code = person_demo._worker(root, written["db_sha256"], "B", written["run_id"])
 
     _assert_hold(value, code)
     assert value["reason"] == "FIXTURE_LINK_FORBIDDEN"
@@ -411,14 +456,14 @@ def test_person_demo_rejects_parent_traversal_even_to_valid_fixture(tmp_path):
     redundant.mkdir()
     traversal = redundant / ".." / root.name
 
-    value, code = person_demo._worker(traversal, written["fixture_sha256"], "B")
+    value, code = person_demo._worker(traversal, written["db_sha256"], "B", written["run_id"])
 
     _assert_hold(value, code)
     assert value["reason"] == "FIXTURE_ROOT_INVALID"
     assert value["model_calls"] == 0
 
 
-@pytest.mark.parametrize("mutation", ["subset-checks", "corrupt-inner-hash"])
+@pytest.mark.parametrize("mutation", ["subset-checks", "corrupt-inner-hash", "stored-receipt", "publication", "sidecar", "source", "bool-calls"])
 def test_person_demo_sealed_outer_receipt_does_not_replace_worker_validation(
     completed_person_demo, mutation,
 ):
@@ -426,13 +471,23 @@ def test_person_demo_sealed_outer_receipt_does_not_replace_worker_validation(
     observed = observations[0]
     result = copy.deepcopy(observed["result"])
     fixture = observed["fixture"]
-    fixture_sha = hashlib.sha256(observed["before"]["fixture.json"]).hexdigest()
+    fixture_sha = hashlib.sha256(observed["before"]["memory.db"]).hexdigest()
     assert person_demo._valid_worker(result, "A", fixture, fixture_sha) is True
     receipt = result["receipt"]
     if mutation == "subset-checks":
         receipt["checks"] = {"one_generation": True}
-    else:
+    elif mutation == "corrupt-inner-hash":
         receipt["person_evidence"]["receipt_hash"] = "0" * 64
+    elif mutation == "stored-receipt":
+        receipt["stored_receipt_sha256"] = "0" * 64
+    elif mutation == "publication":
+        receipt["publication_id"] = "0" * 32
+    elif mutation == "sidecar":
+        receipt["admission_sidecar_count"] = 1
+    elif mutation == "source":
+        receipt["admission_source"] = "SIDECAR"
+    else:
+        receipt["model_calls"] = True
     receipt.pop("receipt_sha256")
     result["receipt"] = person_demo._seal(receipt)
 
@@ -517,7 +572,7 @@ def test_person_demo_invalid_worker_receipt_stops_before_b_and_cleans(tmp_path, 
     root = _controlled_root(tmp_path, monkeypatch)
     roles = []
 
-    def incomplete_worker(root, expected_sha256, role, timeout):
+    def incomplete_worker(root, expected_sha256, role, timeout, run_id):
         roles.append(role)
         return {
             "ok": True, "started": True, "returncode": 0, "direct_child_reaped": True,
@@ -555,3 +610,115 @@ def test_person_demo_cleanup_failure_cannot_return_pass(tmp_path, monkeypatch):
     finally:
         if root.exists():
             original_rmtree(root)
+
+
+@pytest.mark.parametrize("damage", ["missing-schema", "wrong-version", "missing-current", "missing-publication",
+    "missing-candidate", "corrupt-receipt", "rehashed-receipt", "pointer-hash", "text", "namespace", "superseded"])
+def test_durable_demo_rejects_structural_damage_even_with_recomputed_db_digest(tmp_path, monkeypatch, damage):
+    from continuityos.person_twin_admission_store import PersonTwinAdmissionStore
+    from continuityos.person_twin_admission_coordinator import PersonTwinAdmissionCoordinator
+    root, written = _fixture(tmp_path)
+    path = root / "memory.db"
+    with sqlite3.connect(path) as con:
+        if damage == "missing-schema":
+            con.execute("DROP TABLE person_admission_meta")
+        elif damage == "wrong-version":
+            con.execute("UPDATE person_admission_meta SET schema_id='unknown'")
+        elif damage == "missing-current":
+            con.execute("DELETE FROM person_admission_current")
+        elif damage == "missing-publication":
+            con.execute("DELETE FROM person_admission_publications")
+        elif damage == "missing-candidate":
+            con.execute("DELETE FROM person_admission_candidates")
+        elif damage == "corrupt-receipt":
+            con.execute("UPDATE person_admission_publications SET receipt=?", (b"{}",))
+        elif damage == "rehashed-receipt":
+            con.execute("UPDATE person_admission_publications SET receipt=?,receipt_hash=?", (b"{}", hashlib.sha256(b"{}").hexdigest()))
+        elif damage == "pointer-hash":
+            con.execute("UPDATE person_admission_current SET pointer_hash=?", ("0" * 64,))
+        elif damage == "text":
+            con.execute("UPDATE items SET text='ALTERED_CURRENT_TEXT' WHERE id=?", (written["memory_id"],))
+        elif damage == "namespace":
+            con.execute("UPDATE items SET namespace='foreign-person' WHERE id=?", (written["memory_id"],))
+        else:
+            row = con.execute("SELECT meta FROM items WHERE id=?", (written["memory_id"],)).fetchone()
+            meta = json.loads(row[0]); meta["superseded_by"] = 99999
+            con.execute("UPDATE items SET meta=? WHERE id=?", (json.dumps(meta), written["memory_id"]))
+    con.close()
+    before = path.read_bytes()
+    calls = []
+    def forbidden(*args, **kwargs):
+        calls.append("repair")
+        raise AssertionError("Read must not repair or regenerate admission")
+    monkeypatch.setattr(PersonTwinAdmissionStore, "initialize", forbidden)
+    monkeypatch.setattr(PersonTwinAdmissionStore, "admit", forbidden)
+    monkeypatch.setattr(PersonTwinAdmissionCoordinator, "promote_current", forbidden)
+    monkeypatch.setattr(person_demo, "_write_fixture", forbidden)
+    value, code = person_demo._worker(root, hashlib.sha256(before).hexdigest(), "B", written["run_id"])
+    _assert_hold(value, code)
+    assert value["model_calls"] == 0 and not calls
+    assert path.read_bytes() == before
+    assert {item.name for item in root.iterdir()} == {"memory.db"}
+
+
+def test_durable_demo_expected_identity_is_not_selected_from_database(tmp_path):
+    root, written = _fixture(tmp_path)
+    before = (root / "memory.db").read_bytes()
+    value, code = person_demo._worker(root, written["db_sha256"], "B", "f" * 32)
+    _assert_hold(value, code)
+    assert value["model_calls"] == 0
+    assert (root / "memory.db").read_bytes() == before
+
+
+@pytest.mark.parametrize("damage", ["full-receipt", "extra-context", "bool-memory-id", "bool-sidecars"])
+def test_durable_demo_prepare_shape_cannot_transport_admission_payload(completed_person_demo, tmp_path, monkeypatch, damage):
+    value, observations = completed_person_demo
+    prepared = {**value["processes"][0], "receipt": copy.deepcopy(value["prepare"]), "ok": True}
+    assert person_demo._valid_preparation(prepared, value["run_id"]) is True
+    def invalid_prepare(root, run_id, timeout):
+        result = copy.deepcopy(prepared)
+        receipt = result["receipt"]
+        receipt["run_id"] = run_id
+        if damage == "full-receipt":
+            receipt["admission_receipt"] = observations[0]["fixture"]["context"]["admission_receipt"]
+        elif damage == "extra-context":
+            receipt["context"] = observations[0]["fixture"]["context"]
+        elif damage == "bool-memory-id":
+            receipt["memory_id"] = True
+        else:
+            receipt["admission_sidecar_count"] = False
+        receipt.pop("receipt_sha256")
+        result["receipt"] = person_demo._seal(receipt)
+        return result
+    def forbidden_worker(*args, **kwargs):
+        raise AssertionError("Invalid PREPARE cannot reach a model worker")
+    root = _controlled_root(tmp_path, monkeypatch)
+    monkeypatch.setattr(person_demo, "_run_prepare", invalid_prepare)
+    monkeypatch.setattr(person_demo, "_run_worker", forbidden_worker)
+    outcome, code = person_demo.run_person_continuity()
+    _assert_hold(outcome, code)
+    assert outcome["reason"] == "FIXTURE_PREPARATION_RECEIPT_INVALID"
+    assert not root.exists()
+
+
+def test_durable_demo_db_tampering_between_real_workers_stops_b(tmp_path, monkeypatch):
+    root = _controlled_root(tmp_path, monkeypatch)
+    original = person_demo._run_worker
+    observations = []
+    def change_before_b(root, digest, role, timeout, run_id):
+        if role == "B":
+            with sqlite3.connect(root / "memory.db") as con:
+                con.execute("UPDATE person_admission_publications SET receipt=?", (b"{}",))
+            con.close()
+        result = original(root, digest, role, timeout, run_id)
+        observations.append(result)
+        return result
+    monkeypatch.setattr(person_demo, "_run_worker", change_before_b)
+    value, code = person_demo.run_person_continuity()
+    _assert_hold(value, code)
+    assert value["reason"] == "WORKER_RESULT_INVALID"
+    assert len(observations) == 2
+    assert observations[0]["receipt"]["model_calls"] == 1
+    assert observations[1]["receipt"]["model_calls"] == 0
+    assert observations[1]["direct_child_reaped"] is True
+    assert not root.exists()
