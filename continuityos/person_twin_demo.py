@@ -688,7 +688,15 @@ def _child_command(*arguments: str) -> list[str]:
         "sys.path.insert(0,root); "
         "runpy.run_module('continuityos.person_twin_demo',run_name='__main__')"
     )
-    return [sys.executable, "-I", "-B", "-c", bootstrap,
+    # Windows venv's python.exe may be a redirector: the visible Popen.pid is
+    # then NOT the worker PID. Use the verified base interpreter directly.
+    # The isolated bootstrap below still pins exact package-source SHA-256.
+    interpreter = sys.executable
+    if sys.platform == "win32" and sys.prefix != sys.base_prefix:
+        interpreter = getattr(sys, "_base_executable", "")
+        if not isinstance(interpreter, str) or not Path(interpreter).is_file():
+            raise PersonDemoHold("PYTHON_BASE_EXECUTABLE_UNAVAILABLE")
+    return [interpreter, "-I", "-B", "-c", bootstrap,
             str(Path(__file__).resolve().parent.parent), _source_sha256(), *arguments]
 
 

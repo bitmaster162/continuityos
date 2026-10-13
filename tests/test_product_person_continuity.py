@@ -722,3 +722,37 @@ def test_durable_demo_db_tampering_between_real_workers_stops_b(tmp_path, monkey
     assert observations[1]["receipt"]["model_calls"] == 0
     assert observations[1]["direct_child_reaped"] is True
     assert not root.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows venv redirector only")
+def test_venv_child_pid_is_exactly_the_reaped_direct_python_process(monkeypatch):
+    base = getattr(sys, "_base_executable", "")
+    assert isinstance(base, str) and Path(base).is_file()
+    with monkeypatch.context() as m:
+        m.setattr(person_demo.sys, "prefix", "synthetic-venv")
+        m.setattr(person_demo.sys, "base_prefix", "synthetic-base")
+        command = person_demo._child_command("_prepare", "--root", "unused", "--run-id", "0" * 32)
+        assert command[0] == base and command[1:4] == ["-I", "-B", "-c"]
+    observation = person_demo._run_process(
+        [base, "-I", "-B", "-c", "import os; print(os.getpid())"], 15.0)
+    assert observation["returncode"] == 0
+    assert observation["direct_child_reaped"] is True
+    assert observation["stdout"].decode("ascii").strip() == str(observation["process_id"])
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows venv redirector only")
+def test_venv_missing_direct_interpreter_fails_closed(monkeypatch):
+    with monkeypatch.context() as m:
+        m.setattr(person_demo.sys, "prefix", "synthetic-venv")
+        m.setattr(person_demo.sys, "base_prefix", "synthetic-base")
+        m.setattr(person_demo.sys, "_base_executable", "")
+        with pytest.raises(person_demo.PersonDemoHold, match="PYTHON_BASE_EXECUTABLE_UNAVAILABLE"):
+            person_demo._child_command("_prepare", "--root", "unused", "--run-id", "0" * 32)
+
+
+def test_direct_nonvenv_launch_keeps_original_python_executable(monkeypatch):
+    with monkeypatch.context() as m:
+        m.setattr(person_demo.sys, "base_prefix", sys.prefix)
+        command = person_demo._child_command("_prepare", "--root", "unused", "--run-id", "0" * 32)
+        assert command[0] == sys.executable
+        assert command[1:4] == ["-I", "-B", "-c"]
