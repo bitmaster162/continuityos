@@ -91,7 +91,8 @@ def test_fast_aliases_require_and_honor_explicit_opt_in(monkeypatch, tmp_path, m
 
 
 @pytest.mark.parametrize("failure", [ImportError, RuntimeError])
-def test_opted_in_constructor_failure_keeps_legacy_hash_fallback(monkeypatch, tmp_path, failure):
+def test_explicit_fast_failure_is_closed_before_memory(monkeypatch, tmp_path, failure):
+    # R2 deliberately replaces the R1 fallback contract following Claude review.
     set_mode(monkeypatch, "fast")
     calls = []
 
@@ -100,9 +101,11 @@ def test_opted_in_constructor_failure_keeps_legacy_hash_fallback(monkeypatch, tm
         raise failure("synthetic unavailable optional loader")
 
     monkeypatch.setattr(embedders, "FastEmbedEmbedder", unavailable)
-    with opened_server(tmp_path / "memory.db") as server:
-        assert calls == ["constructor"]
-        assert isinstance(server.m.embed, HashingEmbedder)
+    with pytest.raises(RuntimeError, match="FAST_EMBEDDER_UNAVAILABLE"):
+        with opened_server(tmp_path / "memory.db"):
+            pass
+    assert calls == ["constructor"]
+    assert not (tmp_path / "memory.db").exists()
 
 
 @pytest.mark.parametrize("mode", ["auto", "unknown", "0", "hash+fast", "fast\nhash", "fast embed"])
@@ -218,7 +221,7 @@ def test_declared_current_session_denies_before_embedder_or_db(monkeypatch, tmp_
     assert not (tmp_path / "unopened.db").exists()
 
 
-def run_stdio_process(tmp_path, mode, *, required=False):
+def run_stdio_process(tmp_path, mode, *, required=False, loader_failure=False):
     stub = tmp_path / "optional-stub"
     stub.mkdir()
     imported = tmp_path / "optional-imported.txt"
@@ -233,6 +236,10 @@ def run_stdio_process(tmp_path, mode, *, required=False):
         "  for text in texts: yield [1.0] + [0.0] * 383\n",
         encoding="utf-8",
     )
+    if loader_failure:
+        (stub / "fastembed.py").write_text(
+            "raise ImportError('SYNTHETIC_FASTEMBED_IMPORT_FAILURE')\n", encoding="utf-8",
+        )
     env = {k: v for k, v in os.environ.items() if k.upper() in {
         "SYSTEMROOT", "WINDIR", "COMSPEC", "PATH", "PATHEXT"
     }}
@@ -294,3 +301,294 @@ def test_real_stdio_current_boundary_precedes_mode_selection(tmp_path, mode):
     assert "CurrentEffectBoundaryError" in process.stderr
     assert not process.stdout.strip()
     assert not db.exists() and not imported.exists() and not constructed.exists()
+
+
+# R2: guard a complete startup snapshot, not only one sampled vector row.
+def seed_vector_dimensions(db, dimensions, *, separate_namespaces=False):
+    memory = Memory(str(db))
+    try:
+        for index, dimension in enumerate(dimensions):
+            memory.store.add(
+                "synthetic compatibility record " + str(index),
+                namespace=("space-" + str(index)) if separate_namespaces else "notes",
+                vec=None if dimension is None else [1.0] + [0.0] * (dimension - 1),
+            )
+    finally:
+        memory.store.con.close()
+
+
+def read_vector_snapshot(db):
+    import sqlite3
+    connection = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)
+    try:
+        return connection.execute(
+            "SELECT id, namespace, text, meta, vec FROM items ORDER BY id"
+        ).fetchall()
+    finally:
+        connection.close()
+
+
+def track_created_memory(monkeypatch):
+    created = []
+
+    def memory_factory(*args, **kwargs):
+        memory = Memory(*args, **kwargs)
+        created.append(memory)
+        return memory
+
+    monkeypatch.setattr(mcp_server, "Memory", memory_factory)
+    return created
+
+
+def assert_memory_closed(created):
+    import sqlite3
+    assert len(created) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        created[0].store.con.execute("SELECT 1")
+
+
+@pytest.mark.parametrize("mode", OFFLINE_MODES)
+def test_existing_384_rejected_before_first_mcp_write(monkeypatch, tmp_path, mode):
+    db = tmp_path / "legacy-fast.db"
+    seed_vector_dimensions(db, [384])
+    before = read_vector_snapshot(db)
+    before_sha = hashlib.sha256(db.read_bytes()).hexdigest()
+    created = track_created_memory(monkeypatch)
+    set_mode(monkeypatch, mode)
+    with pytest.raises(ValueError, match=r"EMBEDDER_DIMENSION_MISMATCH.*store=384.*selected=256"):
+        with opened_server(db):
+            pass
+    assert_memory_closed(created)
+    # The read-only snapshot observer can itself create WAL sidecars.
+    assert not Path(str(db) + "-wal").exists()
+    assert read_vector_snapshot(db) == before
+    assert hashlib.sha256(db.read_bytes()).hexdigest() == before_sha
+
+
+@pytest.mark.parametrize("mode,dimension", [(None, 256), ("fast", 384)])
+def test_compatible_backend_probed_once_without_record_content(monkeypatch, tmp_path, mode, dimension):
+    db = tmp_path / "compatible.db"
+    seed_vector_dimensions(db, [dimension, dimension])
+    calls = []
+    queries = []
+
+    class RecordingBackend:
+        def __call__(self, text):
+            calls.append(text)
+            return [1.0] + [0.0] * (dimension - 1)
+
+    backend = RecordingBackend()
+    if mode == "fast":
+        monkeypatch.setattr(embedders, "FastEmbedEmbedder", lambda: backend)
+
+    def memory_factory(*args, **kwargs):
+        memory = Memory(*args, **kwargs)
+        if mode is None:
+            actual = memory.embed
+
+            def recorded_hash(text):
+                calls.append(text)
+                return actual(text)
+
+            memory.embed = recorded_hash
+        memory.store.con.set_trace_callback(queries.append)
+        return memory
+
+    monkeypatch.setattr(mcp_server, "Memory", memory_factory)
+    set_mode(monkeypatch, mode)
+    with opened_server(db) as server:
+        assert len(calls) == 1
+        assert calls[0] == "continuityos:mcp-embedding-dimension-probe:v1"
+        reads = [q for q in queries if q.lstrip().upper().startswith("SELECT")]
+        assert len(reads) == 1
+        assert "length(vec)" in reads[0].lower()
+        assert "typeof(vec)" in reads[0].lower()
+        assert " text" not in reads[0].lower()
+        assert " namespace" not in reads[0].lower()
+        assert "LIMIT 1" not in reads[0].upper()
+        assert server.m.store.count() == 2
+        server.call("remember", {"text": "synthetic compatible write"})
+        result = json.loads(server.call("recall", {"query": "synthetic", "k": 10}))
+        assert result
+        assert server.m.store.count() == 3
+
+
+@pytest.mark.parametrize("mode,dimensions", [
+    ("hash", [256, 384]), ("hash", [384, 256]),
+    ("fast", [384, 256]), ("fast", [256, 384]),
+])
+def test_all_namespaces_checked_not_one_sample(monkeypatch, tmp_path, mode, dimensions):
+    db = tmp_path / "mixed.db"
+    seed_vector_dimensions(db, dimensions, separate_namespaces=True)
+    before = read_vector_snapshot(db)
+    if mode == "fast":
+        monkeypatch.setattr(embedders, "FastEmbedEmbedder", lambda: (lambda text: [1.0] + [0.0] * 383))
+    set_mode(monkeypatch, mode)
+    created = track_created_memory(monkeypatch)
+    with pytest.raises(ValueError, match="EMBEDDER_DIMENSION_MISMATCH"):
+        with opened_server(db):
+            pass
+    assert_memory_closed(created)
+    assert read_vector_snapshot(db) == before
+
+
+@pytest.mark.parametrize("bad_blob", [b"", b"x", b"x" * 1025, "not-a-vector", 42])
+def test_invalid_stored_vector_shape_fails_closed(monkeypatch, tmp_path, bad_blob):
+    import sqlite3
+    db = tmp_path / "malformed.db"
+    seed_vector_dimensions(db, [256])
+    connection = sqlite3.connect(db)
+    try:
+        connection.execute("UPDATE items SET vec=?", (bad_blob,))
+        connection.commit()
+    finally:
+        connection.close()
+    before = read_vector_snapshot(db)
+    created = track_created_memory(monkeypatch)
+    with pytest.raises(ValueError, match="EMBEDDER_VECTOR_DATA_INVALID"):
+        with opened_server(db):
+            pass
+    assert_memory_closed(created)
+    assert read_vector_snapshot(db) == before
+
+
+@pytest.mark.parametrize("dimensions", [[], [None], [None, 256]])
+def test_empty_or_vectorless_store_uses_selected_backend_without_fabricated_constraint(tmp_path, dimensions):
+    db = tmp_path / "vectorless.db"
+    seed_vector_dimensions(db, dimensions)
+    with opened_server(db) as server:
+        server.call("remember", {"text": "synthetic first vector"})
+        assert server.m.store.count() == len(dimensions) + 1
+        assert json.loads(server.call("recall", {"query": "synthetic"}))
+
+
+@pytest.mark.parametrize("bad_probe", [None, [], "not-a-vector", b"not-a-vector", True])
+def test_invalid_probe_closes_connection_before_serving(monkeypatch, tmp_path, bad_probe):
+    db = tmp_path / "probe-invalid.db"
+    seed_vector_dimensions(db, [])
+    set_mode(monkeypatch, "fast")
+    monkeypatch.setattr(embedders, "FastEmbedEmbedder", lambda: (lambda text: bad_probe))
+    created = track_created_memory(monkeypatch)
+    with pytest.raises(ValueError, match="EMBEDDER_PROBE_INVALID"):
+        with opened_server(db):
+            pass
+    assert_memory_closed(created)
+    assert read_vector_snapshot(db) == []
+
+
+def test_probe_exception_closes_connection_without_fallback(monkeypatch, tmp_path):
+    db = tmp_path / "probe-error.db"
+    seed_vector_dimensions(db, [384])
+    before = read_vector_snapshot(db)
+    calls = []
+
+    def probe(text):
+        calls.append(text)
+        raise RuntimeError("SYNTHETIC_PROBE_FAILED")
+
+    set_mode(monkeypatch, "fast")
+    monkeypatch.setattr(embedders, "FastEmbedEmbedder", lambda: probe)
+    created = track_created_memory(monkeypatch)
+    with pytest.raises(ValueError, match="EMBEDDER_PROBE_FAILED"):
+        with opened_server(db):
+            pass
+    assert len(calls) == 1
+    assert_memory_closed(created)
+    assert read_vector_snapshot(db) == before
+
+
+def test_vector_scan_error_closes_connection_and_never_serves(monkeypatch, tmp_path):
+    import sqlite3
+    db = tmp_path / "scan-error.db"
+    seed_vector_dimensions(db, [256])
+    real_connections = []
+    attempts = []
+
+    class FailingRead:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def execute(self, sql, *args):
+            attempts.append(sql)
+            raise sqlite3.OperationalError("SYNTHETIC_DIMENSION_SCAN_FAILED")
+
+        def close(self):
+            self.connection.close()
+
+    def memory_factory(*args, **kwargs):
+        memory = Memory(*args, **kwargs)
+        real_connections.append(memory.store.con)
+        memory.store.con = FailingRead(memory.store.con)
+        return memory
+
+    monkeypatch.setattr(mcp_server, "Memory", memory_factory)
+    with pytest.raises(sqlite3.OperationalError, match="SYNTHETIC_DIMENSION_SCAN_FAILED"):
+        with opened_server(db):
+            pass
+    assert len(real_connections) == 1 and len(attempts) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        real_connections[0].execute("SELECT 1")
+
+
+@pytest.mark.parametrize("mode", FAST_MODES)
+def test_explicit_fast_loader_failure_preserves_existing_384_store(monkeypatch, tmp_path, mode):
+    db = tmp_path / "existing-fast.db"
+    seed_vector_dimensions(db, [384])
+    before = hashlib.sha256(db.read_bytes()).hexdigest()
+    memory_calls = []
+
+    def unavailable():
+        raise RuntimeError("SYNTHETIC_FAST_UNAVAILABLE")
+
+    def forbidden(*args, **kwargs):
+        memory_calls.append(True)
+        raise AssertionError("Memory must not open after explicit loader failure")
+
+    set_mode(monkeypatch, mode)
+    monkeypatch.setattr(embedders, "FastEmbedEmbedder", unavailable)
+    monkeypatch.setattr(mcp_server, "Memory", forbidden)
+    with pytest.raises(RuntimeError, match="FAST_EMBEDDER_UNAVAILABLE"):
+        mcp_server.Server(str(db))
+    assert not memory_calls
+    assert hashlib.sha256(db.read_bytes()).hexdigest() == before
+
+
+@pytest.mark.parametrize("mode,dimensions,denied", [
+    (None, [384], True), ("hash", [384], True), ("fast", [256], True),
+    ("hash", [256, 384], True), ("fast", [384, 256], True),
+    (None, [256], False), ("fast", [384], False),
+])
+def test_real_stdio_dimension_barrier_precedes_initialize_and_remember(tmp_path, mode, dimensions, denied):
+    db = tmp_path / "stdio.db"
+    seed_vector_dimensions(db, dimensions)
+    before = read_vector_snapshot(db)
+    process, actual_db, imported, constructed = run_stdio_process(tmp_path, mode)
+    assert actual_db == db
+    if denied:
+        assert process.returncode != 0
+        assert "EMBEDDER_DIMENSION_MISMATCH" in process.stderr
+        assert not process.stdout.strip()
+        assert read_vector_snapshot(db) == before
+    else:
+        assert process.returncode == 0, process.stderr
+        replies = [json.loads(line) for line in process.stdout.splitlines() if line.strip()]
+        assert [r["id"] for r in replies] == [1, 2]
+        assert not replies[1]["result"].get("isError")
+        assert len(read_vector_snapshot(db)) == len(before) + 1
+    assert constructed.exists() is (mode == "fast")
+
+
+@pytest.mark.parametrize("seeded", [False, True])
+def test_real_stdio_fast_import_failure_has_no_ready_response_or_fallback(tmp_path, seeded):
+    db = tmp_path / "stdio.db"
+    if seeded:
+        seed_vector_dimensions(db, [384])
+        before = read_vector_snapshot(db)
+    process, _, _, _ = run_stdio_process(tmp_path, "fast", loader_failure=True)
+    assert process.returncode != 0
+    assert "FAST_EMBEDDER_UNAVAILABLE" in process.stderr
+    assert not process.stdout.strip()
+    if seeded:
+        assert read_vector_snapshot(db) == before
+    else:
+        assert not db.exists()
