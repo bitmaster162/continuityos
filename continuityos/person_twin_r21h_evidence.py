@@ -22,6 +22,9 @@ from .person_twin_privacy_provenance import filter_person_twin_records
 from .sovereign_twin_runtime_r21b import TwinEvidence
 
 
+MEMORY_BINDING_SCHEMA = "continuityos.person-twin.r21h-memory-binding/v1"
+
+
 class PersonTwinEvidenceError(ValueError):
     """Fail-closed, fixed-code error containing no protected input or anchors."""
 
@@ -70,6 +73,16 @@ class PersonReadContextProvider(Protocol):
         ...
 
 
+class PersonAdmissionMemoryReadStore(Protocol):
+    def read_current_memory_binding_bytes(self) -> bytes | None:
+        """Read the saved row binding and CURRENT commitments, never derive from intent.
+
+        Required for R21H, in addition to the unchanged R4 read-store methods.
+        None or an unavailable/malformed read is DENY, not a legacy fallback.
+        """
+        ...
+
+
 class MemoryReadStore(Protocol):
     def get(self, rid: int) -> Any: ...
 
@@ -100,6 +113,29 @@ def _require_current_meta(raw: Any, at: str) -> None:
         current = datetime.fromisoformat(at[:-1] + "+00:00" if at.endswith("Z") else at)
         if current.tzinfo is None or value > current.timestamp():
             raise PersonTwinEvidenceError("PERSON_MEMORY_NOT_YET_CURRENT")
+
+
+def _require_admission_memory_binding(context: Mapping[str, Any], intent: PersonReadIntent) -> None:
+    reader = getattr(context["admission_store"], "read_current_memory_binding_bytes", None)
+    if not callable(reader):
+        raise PersonTwinEvidenceError("PERSON_ADMISSION_MEMORY_BINDING_UNAVAILABLE")
+    try:
+        stored = reader()
+    except Exception:
+        raise PersonTwinEvidenceError("PERSON_ADMISSION_MEMORY_BINDING_READ_FAILED") from None
+    expected = {
+        "schema": MEMORY_BINDING_SCHEMA,
+        "pointer_sha256": _canonical_hash(context["current_pointer"]),
+        "candidate_sha256": _canonical_hash(context["person_record"]),
+        "memory_id": intent.memory_id, "namespace": intent.namespace,
+        "person_record_id": intent.person_record_id, "source_record_id": intent.source_record_id,
+    }
+    expected_bytes = json.dumps(expected, ensure_ascii=False, sort_keys=True,
+                                separators=(",", ":"), allow_nan=False).encode("utf-8")
+    # Exact canonical bytes reject missing/extra fields, duplicates, and bool IDs.
+    # The persisted row binding comes from the read-store, never from the intent.
+    if type(stored) is not bytes or stored != expected_bytes:
+        raise PersonTwinEvidenceError("PERSON_ADMISSION_MEMORY_BINDING_MISMATCH")
 
 
 class PersonTwinR21HEvidenceAdapter:
@@ -184,6 +220,7 @@ class PersonTwinR21HEvidenceAdapter:
             binding = decision.get("binding", {})
             if any(binding.get(key) != value for key, value in expected_binding.items()):
                 raise PersonTwinEvidenceError("PERSON_R4_BINDING_MISMATCH")
+            _require_admission_memory_binding(context, intent)
             payload = source["payload"]
             text = payload.get("text") if isinstance(payload, dict) else None
             if not isinstance(text, str) or not text.strip():

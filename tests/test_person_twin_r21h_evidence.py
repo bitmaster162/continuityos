@@ -52,7 +52,13 @@ def _load_r4_fixture_module():
 
 
 _R4_FIXTURE = _load_r4_fixture_module()
-AdmissionStore = _R4_FIXTURE.Store
+class AdmissionStore(_R4_FIXTURE.Store):
+    """Synthetic R21H fixture with a saved binding; plain R4 protocol is unchanged."""
+    memory_binding_bytes = None
+
+    def read_current_memory_binding_bytes(self):
+        return self.memory_binding_bytes
+
 _hash = _R4_FIXTURE._hash
 _inputs = _R4_FIXTURE._inputs
 _policy = _R4_FIXTURE._policy
@@ -254,6 +260,15 @@ def snapshot(tmp_path):
         current_id = writer.supersede(old_id, CURRENT_TEXT, namespace=NAMESPACE)
     finally:
         writer.store.con.close()
+    # Bind the issued admission to the actual seeded row once, before any intent
+    # or provider exists. Never reconstruct this fixture binding from read pins.
+    admission_store.memory_binding_bytes = json.dumps({
+        "schema": "continuityos.person-twin.r21h-memory-binding/v1",
+        "pointer_sha256": hashlib.sha256(admission_store.pointer).hexdigest(),
+        "candidate_sha256": _hash(record),
+        "memory_id": current_id, "namespace": NAMESPACE,
+        "person_record_id": record["id"], "source_record_id": source["id"],
+    }, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     return SimpleNamespace(
         context=context, db=db, current_id=current_id,
         old_id=old_id, foreign_id=foreign_id,
