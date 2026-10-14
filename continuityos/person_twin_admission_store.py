@@ -24,7 +24,7 @@ from .person_twin_admission_coordinator import (
 )
 from .person_twin_authority_replay import _current_admission
 from .person_twin_privacy_provenance import validate_person_twin_record
-from .person_twin_r21h_evidence import _require_current_meta
+from .person_twin_r21h_evidence import MEMORY_BINDING_SCHEMA, _require_current_meta
 
 SCHEMA = "continuityos.person-twin.durable-admission/v1"
 MAX_RECORD_BYTES = 1024 * 1024  # bounded lab input, not a calibrated production limit
@@ -345,6 +345,25 @@ class PersonTwinAdmissionStore:
             if self._con.in_transaction:
                 self._con.execute("ROLLBACK")
             raise DurableAdmissionError("ADMISSION_CURRENT_READ_FAILED") from None
+
+    def read_current_memory_binding_bytes(self) -> bytes | None:
+        """Project persisted bindings from one verified read-only CURRENT snapshot.
+
+        No intent or caller-supplied row ID is accepted. load_current() validates
+        schema, saved hashes, the actual Memory row, R3 receipt and pointer first.
+        This adds no SQL schema, writes, issuer, or fresh authorization.
+        """
+        snapshot = self.load_current()
+        if snapshot is None:
+            return None
+        binding = snapshot.binding
+        return _canonical({
+            "schema": MEMORY_BINDING_SCHEMA,
+            "pointer_sha256": _hash(snapshot.pointer_bytes),
+            "candidate_sha256": _hash(snapshot.candidate_bytes),
+            "memory_id": binding["memory_id"], "namespace": binding["namespace"],
+            "person_record_id": binding["candidate_id"], "source_record_id": binding["source_record_id"],
+        })
 
     def read_current_pointer_bytes(self) -> bytes | None:
         if self._phase == "PROMOTING" and self._con.in_transaction:

@@ -631,3 +631,184 @@ def test_unverified_rollback_suspends_connection_and_keeps_hold(ready):
             _admit(store, ctx, rid)
     with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"]) as fresh:
         assert fresh.load_current() is None
+
+
+# A4: admission's stored row binding must constrain the existing R21H intent.
+def _a4_attempt(path, identity, *, selected_id=None, cold=False, decorate=None):
+    with durable.PersonTwinAdmissionStore(path, identity=identity) as store:
+        snapshot = store.load_current()
+        context = _context(snapshot, store)
+        if decorate is not None:
+            context["admission_store"] = decorate(store)
+        intent = PersonReadIntent(
+            query_sha256=hashlib.sha256(QUERY.encode()).hexdigest(),
+            current_session_sha256=durable._hash(durable._canonical(context["current_session"])),
+            request_id=context["authorization_request"]["request_id"],
+            packet_id=context["authorization_preflight"]["packet_id"],
+            memory_id=snapshot.binding["memory_id"] if selected_id is None else selected_id,
+            namespace=snapshot.binding["namespace"], person_record_id=snapshot.candidate["id"],
+            source_record_id=snapshot.anchors["source_record"]["id"],
+            principal_id=context["principal_id"], scope=context["requested_scope"],
+            privacy_class=context["requested_privacy_class"], purpose=context["purpose"],
+        )
+        class Provider:
+            reads = 0
+            def read_context(self):
+                self.reads += 1
+                return dict(context)
+        provider = Provider()
+        profile = replace(DEFAULT_PROFILES["fast"], model="synthetic-a4-binding")
+        model = demo._RecordingModel(profile, cold=cold)
+        runtime = SovereignTwinRuntime(str(path), client=model,
+            profiles={**DEFAULT_PROFILES, "fast": profile},
+            person_evidence_adapter=PersonTwinR21HEvidenceAdapter(intent, provider))
+        gets = []
+        original_get = runtime.memory.store.get
+        def traced_get(rid):
+            gets.append(rid)
+            return original_get(rid)
+        runtime.memory.store.get = traced_get
+        try:
+            try:
+                answer = runtime.ask(QUERY)
+            except PersonTwinEvidenceError as exc:
+                return {"decision":"DENY", "reason":str(exc), "calls":len(model.calls),
+                        "memory_gets":gets, "provider_reads":provider.reads}
+            assert len(model.calls) == 1
+            rows = json.loads(model.calls[0]["system_prompt"].split("MEMORY_EVIDENCE_JSON:\n", 1)[1])
+            return {"decision":answer.stats["person_evidence"]["decision"], "calls":len(model.calls),
+                    "memory_gets":gets, "provider_reads":provider.reads,
+                    "refs":[r["ref"] for r in rows], "receipt":answer.stats["person_evidence"]}
+        finally:
+            runtime.close()
+
+
+@pytest.mark.parametrize("cold", [False, True])
+@pytest.mark.parametrize("selection", ["bound", "identical_other_row", "different_text", "different_namespace", "superseded", "missing"])
+def test_a4_exact_stored_row_binding_before_warm_and_streaming_models(ready, cold, selection):
+    from contextlib import closing
+    path, ctx, rid = ready
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"], read_only=False) as writer:
+        assert _admit(writer, ctx, rid)["status"] == "PASS"
+    selected = rid
+    if selection not in {"bound", "missing"}:
+        with closing(sqlite3.connect(path)) as con, con:
+            names = [r[1] for r in con.execute("PRAGMA table_info(items)") if r[1] != "id"]
+            columns = ",".join('"' + n + '"' for n in names)
+            selected = con.execute(f"INSERT INTO items ({columns}) SELECT {columns} FROM items WHERE id=?", (rid,)).lastrowid
+            assert selected != rid
+            if selection == "different_text":
+                con.execute("UPDATE items SET text=? WHERE id=?", ("SYNTHETIC_OTHER_TEXT", selected))
+            elif selection == "different_namespace":
+                con.execute("UPDATE items SET namespace=? WHERE id=?", ("synthetic-other-ns", selected))
+            elif selection == "superseded":
+                con.execute("UPDATE items SET meta=? WHERE id=?", ('{"superseded_by":999}', selected))
+    elif selection == "missing":
+        selected = 999999
+    before = path.read_bytes()
+    value = _a4_attempt(path, ctx["identity"], selected_id=selected, cold=cold)
+    assert path.read_bytes() == before
+    if selection == "bound":
+        assert value["decision"] == "ALLOW" and value["calls"] == 1
+        assert value["refs"] == [f"mem:{rid}"]
+        assert set(value["receipt"]) == demo.PERSON_RECEIPT_KEYS
+    else:
+        assert value["decision"] == "DENY" and value["calls"] == 0, value
+        assert value["memory_gets"] == []
+        assert value["reason"] == "PERSON_ADMISSION_MEMORY_BINDING_MISMATCH"
+
+
+@pytest.mark.parametrize("fault", ["absent", "noncallable", "none", "text", "invalid_json", "duplicate_key", "noncanonical", "bool_id", "memory_id", "namespace", "pointer_sha256", "candidate_sha256", "person_record_id", "source_record_id", "extra", "exception"])
+def test_a4_binding_interface_has_no_fallback_or_caller_override(ready, fault):
+    path, ctx, rid = ready
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"], read_only=False) as writer:
+        assert _admit(writer, ctx, rid)["status"] == "PASS"
+    def decorate(store):
+        class Proxy:
+            def read_current_pointer_bytes(self):
+                return store.read_current_pointer_bytes()
+            def read_candidate_bytes(self, candidate_id):
+                return store.read_candidate_bytes(candidate_id)
+        proxy = Proxy()
+        if fault == "absent":
+            return proxy
+        if fault == "noncallable":
+            proxy.read_current_memory_binding_bytes = b"not-a-callable"
+            return proxy
+        raw = store.read_current_memory_binding_bytes()
+        record = json.loads(raw)
+        def read_binding():
+            if fault == "exception":
+                raise ValueError("SYNTHETIC_PRIVATE_A4_READ_ERROR")
+            if fault == "none": return None
+            if fault == "text": return raw.decode()
+            if fault == "invalid_json": return b"not json"
+            if fault == "duplicate_key": return b'{"memory_id":999,' + raw[1:]
+            if fault == "noncanonical": return json.dumps(record, indent=2).encode()
+            changed = dict(record)
+            if fault == "bool_id": changed["memory_id"] = True
+            elif fault == "extra": changed["unexpected"] = "must deny"
+            elif fault == "memory_id": changed["memory_id"] = rid + 1
+            else: changed[fault] = "SYNTHETIC_WRONG_BINDING"
+            return durable._canonical(changed)
+        proxy.read_current_memory_binding_bytes = read_binding
+        return proxy
+    before = path.read_bytes()
+    result = _a4_attempt(path, ctx["identity"], decorate=decorate)
+    assert result["decision"] == "DENY" and result["calls"] == 0
+    assert result["memory_gets"] == []
+    assert "SYNTHETIC_PRIVATE" not in result["reason"]
+    assert "SYNTHETIC_WRONG" not in result["reason"]
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("cold", [False, True])
+def test_a4_read_binding_is_rechecked_at_the_final_prompt_boundary(ready, cold):
+    path, ctx, rid = ready
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"], read_only=False) as writer:
+        assert _admit(writer, ctx, rid)["status"] == "PASS"
+    reads = []
+    def decorate(store):
+        class Proxy:
+            def read_current_pointer_bytes(self):
+                return store.read_current_pointer_bytes()
+            def read_candidate_bytes(self, candidate_id):
+                return store.read_candidate_bytes(candidate_id)
+            def read_current_memory_binding_bytes(self):
+                raw = store.read_current_memory_binding_bytes()
+                reads.append(raw)
+                if len(reads) == 2:
+                    value = json.loads(raw)
+                    value["memory_id"] = rid + 1
+                    return durable._canonical(value)
+                return raw
+        return Proxy()
+    before = path.read_bytes()
+    value = _a4_attempt(path, ctx["identity"], cold=cold, decorate=decorate)
+    assert value["decision"] == "DENY" and value["calls"] == 0
+    assert len(reads) == 2 and value["provider_reads"] == 2
+    assert value["memory_gets"] == [rid]
+    assert path.read_bytes() == before
+
+
+def test_a4_saved_binding_read_is_fresh_exact_and_nonmutating(ready):
+    path, ctx, rid = ready
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"]) as empty:
+        assert empty.read_current_memory_binding_bytes() is None
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"], read_only=False) as writer:
+        assert _admit(writer, ctx, rid)["status"] == "PASS"
+    before = path.read_bytes()
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"]) as reader:
+        snapshot = reader.load_current()
+        first = reader.read_current_memory_binding_bytes()
+        assert first == reader.read_current_memory_binding_bytes()
+        value = json.loads(first)
+        assert first == durable._canonical(value)
+        assert value["memory_id"] == rid and value["namespace"] == NS
+        assert value["pointer_sha256"] == durable._hash(snapshot.pointer_bytes)
+        assert value["candidate_sha256"] == durable._hash(snapshot.candidate_bytes)
+        assert reader._con.execute("PRAGMA query_only").fetchone()[0] == 1
+        reader._suspended = True
+        with pytest.raises(durable.DurableAdmissionError):
+            reader.read_current_memory_binding_bytes()
+    assert path.read_bytes() == before
