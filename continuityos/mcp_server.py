@@ -112,6 +112,13 @@ class Server:
         r15_controller_profile_sha256: str = "",
         r15_custody_path: str = "",
     ):
+        # Match core cos: optional model construction requires explicit opt-in.
+        # The existing CURRENT wrapper denies before this constructor is entered.
+        embedder_mode = os.environ.get("CONTINUITYOS_EMBEDDER", "").strip().lower()
+        if embedder_mode not in {
+            "", "hash", "hashing", "offline", "local", "fast", "fastembed",
+        }:
+            raise ValueError("UNSUPPORTED_EMBEDDER_MODE")
         resolved = resolve_memory_db(db)
         db = resolved["path"]
         self.db_path = db
@@ -120,11 +127,16 @@ class Server:
             and db != ":memory:"
             and not os.path.isfile(db)
         )
-        try:
-            from .embedders import FastEmbedEmbedder
-            self.m = Memory(db, embedder=FastEmbedEmbedder())
-        except Exception:
-            self.m = Memory(db)  # fallback to HashingEmbedder
+        embedder = None
+        if embedder_mode in {"fast", "fastembed"}:
+            try:
+                from .embedders import FastEmbedEmbedder
+                embedder = FastEmbedEmbedder()
+            except Exception:
+                # Preserve the legacy opt-in loader-failure fallback only.
+                pass
+        # Memory errors must propagate, not reopen the same DB with another model.
+        self.m = Memory(db, embedder=embedder)
         self.c = Continuity(memory=self.m)
         self.c._context_source = db_source or resolved["source"]
         self._governance_context_error = (
