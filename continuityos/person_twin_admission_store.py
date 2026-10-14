@@ -450,7 +450,8 @@ class PersonTwinAdmissionStore:
                     candidate_commit_state=self._candidate_commit_state,
                     commit_state=self._commit_state,
                     possible_persisted_effect=self._candidate_commit_state != "NOT_ATTEMPTED" or self._commit_state != "NOT_ATTEMPTED",
-                    publication_id=self._next_publication,
+                    attempt_publication_id=self._next_publication,
+                    publication_id=(self._next_publication if self._commit_state == "CONFIRMED" else None),
                     admission_receipt=None if snapshot is None else snapshot.receipt,
                     **_CEILING)
 

@@ -812,3 +812,223 @@ def test_a4_saved_binding_read_is_fresh_exact_and_nonmutating(ready):
         with pytest.raises(durable.DurableAdmissionError):
             reader.read_current_memory_binding_bytes()
     assert path.read_bytes() == before
+
+
+# A3: a prospective transaction identifier is not proof of a committed publication.
+def _a3_assert_result_ids(value, *, attempted, confirmed):
+    expected_keys = {
+        "schema", "status", "reason", "candidate_persisted", "candidate_commit_state",
+        "commit_state", "possible_persisted_effect", "publication_id",
+        "attempt_publication_id", "admission_receipt", "production_admission_status",
+        "execution_authority", "can_execute", "can_trade", "capital_permission",
+    }
+    assert set(value) == expected_keys
+    attempt = value["attempt_publication_id"]
+    if attempted:
+        assert type(attempt) is str and len(attempt) == 32
+        assert set(attempt) <= set("0123456789abcdef")
+    else:
+        assert attempt is None
+    assert value["publication_id"] == (attempt if confirmed else None)
+    assert value["production_admission_status"] == "NOT_PRODUCTION_ADMITTED"
+    assert value["execution_authority"] == "NONE"
+    assert value["can_execute"] is False and value["can_trade"] is False
+    assert value["capital_permission"] == "DENY"
+    if value["status"] == "HOLD":
+        assert value["admission_receipt"] is None
+    assert "SYNTHETIC_PRIVATE_A3" not in json.dumps(value)
+
+
+@pytest.mark.parametrize("effect,attempted,candidate", [
+    ("admit", False, False),
+    ("candidate_write", False, False),
+    ("candidate_commit", False, False),
+    ("promotion_begin", False, True),
+    ("pointer_write", True, True),
+    ("promotion_commit", True, True),
+])
+def test_a3_precommit_denial_has_no_confirmed_publication(ready, monkeypatch, effect, attempted, candidate):
+    path, ctx, rid = ready
+    calls = []
+    original = durable.assert_current_effect_allowed
+    def deny_one(name):
+        if name == "person.admission." + effect:
+            calls.append(name)
+            raise RuntimeError("SYNTHETIC_PRIVATE_A3_ADDITIONAL_DENIAL")
+        return original(name)
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"], read_only=False) as store:
+        with monkeypatch.context() as patch:
+            patch.setattr(durable, "assert_current_effect_allowed", deny_one)
+            value = _admit(store, ctx, rid)
+        assert calls == ["person.admission." + effect]
+        assert value["status"] == "HOLD" and value["commit_state"] == "NOT_ATTEMPTED"
+        assert value["publication_id"] is None, value
+        _a3_assert_result_ids(value, attempted=attempted, confirmed=False)
+        assert value["candidate_persisted"] is candidate
+        assert store.load_current() is None
+        assert store._con.execute("SELECT COUNT(*) FROM person_admission_publications").fetchone()[0] == 0
+        assert store._con.execute("SELECT COUNT(*) FROM person_admission_candidates").fetchone()[0] == int(candidate)
+
+
+def test_a3_success_retains_the_same_publication_and_actual_receipt(ready):
+    path, ctx, rid = ready
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"], read_only=False) as store:
+        value = _admit(store, ctx, rid)
+        snapshot = store.load_current()
+        assert value["status"] == "PASS" and value["commit_state"] == "CONFIRMED"
+        _a3_assert_result_ids(value, attempted=True, confirmed=True)
+        assert value["publication_id"] == snapshot.publication_id
+        assert durable._canonical(value["admission_receipt"]) == snapshot.receipt_bytes
+        # Attempt metadata belongs to the outer result, never to saved R3 bytes.
+        assert "attempt_publication_id" not in snapshot.receipt
+        assert snapshot.binding["memory_id"] == rid
+
+
+class _A3CommitOutcomeFault:
+    def __init__(self, store, phase, *, after_sql):
+        self.store, self.real, self.phase = store, store._con, phase
+        self.after_sql, self.calls = after_sql, 0
+    def __getattr__(self, name):
+        return getattr(self.real, name)
+    def execute(self, sql, args=()):
+        if sql == "COMMIT" and self.store._phase == self.phase:
+            self.calls += 1
+            if self.after_sql:
+                self.real.execute(sql, args)
+            raise OSError("SYNTHETIC_PRIVATE_A3_COMMIT_RESPONSE_LOST")
+        return self.real.execute(sql, args)
+
+
+@pytest.mark.parametrize("phase", ["CANDIDATE", "PROMOTING"])
+@pytest.mark.parametrize("after_sql", [False, True])
+def test_a3_uncertain_commit_preserves_attempt_not_confirmed_publication(ready, phase, after_sql):
+    path, ctx, rid = ready
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"], read_only=False) as store:
+        fault = _A3CommitOutcomeFault(store, phase, after_sql=after_sql)
+        store._con = fault
+        value = _admit(store, ctx, rid)
+        assert fault.calls == 1  # Never automatically retry an uncertain commit.
+        assert value["status"] == "HOLD" and value["possible_persisted_effect"] is True
+        assert value["publication_id"] is None, value
+        _a3_assert_result_ids(value, attempted=phase == "PROMOTING", confirmed=False)
+        assert value["commit_state"] == ("UNKNOWN" if phase == "PROMOTING" else "NOT_ATTEMPTED")
+        assert value["candidate_commit_state"] == ("CONFIRMED" if phase == "PROMOTING" else "UNKNOWN")
+        assert value["candidate_persisted"] is (True if phase == "PROMOTING" else None)
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"]) as fresh:
+        snapshot = fresh.load_current()
+        persisted = phase == "PROMOTING" and after_sql
+        assert (snapshot is not None) is persisted
+        if persisted:
+            assert snapshot.publication_id == value["attempt_publication_id"]
+        assert fresh._con.execute("SELECT COUNT(*) FROM person_admission_publications").fetchone()[0] == int(persisted)
+        assert fresh._con.execute("SELECT COUNT(*) FROM person_admission_candidates").fetchone()[0] == int(after_sql or phase == "PROMOTING")
+
+
+@pytest.mark.parametrize("mode", ["unavailable", "mismatched-snapshot"])
+def test_a3_postcommit_hold_preserves_confirmed_id_without_allow_receipt(ready, monkeypatch, mode):
+    path, ctx, rid = ready
+    original = durable.PersonTwinAdmissionStore.load_current
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"], read_only=False) as store:
+        def fault(instance):
+            actual = original(instance)
+            if instance is not store:
+                if mode == "unavailable":
+                    raise OSError("SYNTHETIC_PRIVATE_A3_READBACK_UNAVAILABLE")
+                return replace(actual, publication_id="0" * 32)
+            return actual
+        with monkeypatch.context() as patch:
+            patch.setattr(durable.PersonTwinAdmissionStore, "load_current", fault)
+            value = _admit(store, ctx, rid)
+        assert value["status"] == "HOLD" and value["reason"] == "POSTCOMMIT_READBACK_FAILED"
+        assert value["commit_state"] == "CONFIRMED" and value["possible_persisted_effect"] is True
+        _a3_assert_result_ids(value, attempted=True, confirmed=True)
+        assert store.load_current().publication_id == value["publication_id"]
+        assert store._con.execute("SELECT COUNT(*) FROM person_admission_publications").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("phase", ["promotion_begin", "pointer_write", "promotion_commit", "unknown-before-sql"])
+def test_a3_failed_republication_does_not_report_previous_current_as_its_own(ready, monkeypatch, phase):
+    path, ctx, rid = ready
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"], read_only=False) as store:
+        first = _admit(store, ctx, rid)
+        assert first["status"] == "PASS"
+        before = store.load_current()
+        original = durable.assert_current_effect_allowed
+        def deny(name):
+            if name == "person.admission." + phase:
+                raise RuntimeError("SYNTHETIC_PRIVATE_A3_REPUBLICATION_DENIED")
+            return original(name)
+        with monkeypatch.context() as patch:
+            patch.setattr(durable, "assert_current_effect_allowed", deny)
+            if phase == "unknown-before-sql":
+                fault = _A3CommitOutcomeFault(store, "PROMOTING", after_sql=False)
+                store._con = fault
+            value = _admit(store, ctx, rid)
+        assert value["status"] == "HOLD" and value["publication_id"] is None
+        _a3_assert_result_ids(value, attempted=phase != "promotion_begin", confirmed=False)
+        assert value["attempt_publication_id"] != before.publication_id
+        assert store.load_current() == before
+        assert store._con.execute("SELECT COUNT(*) FROM person_admission_publications").fetchone()[0] == 1
+
+
+def test_a3_attempt_identifier_is_reset_between_explicit_calls(ready, monkeypatch):
+    path, ctx, rid = ready
+    original = durable.assert_current_effect_allowed
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"], read_only=False) as store:
+        def deny_commit(name):
+            if name == "person.admission.promotion_commit":
+                raise RuntimeError("SYNTHETIC_PRIVATE_A3_DENY_COMMIT")
+            return original(name)
+        with monkeypatch.context() as patch:
+            patch.setattr(durable, "assert_current_effect_allowed", deny_commit)
+            first = _admit(store, ctx, rid)
+        _a3_assert_result_ids(first, attempted=True, confirmed=False)
+        def deny_start(name):
+            if name == "person.admission.admit":
+                raise RuntimeError("SYNTHETIC_PRIVATE_A3_DENY_START")
+            return original(name)
+        with monkeypatch.context() as patch:
+            patch.setattr(durable, "assert_current_effect_allowed", deny_start)
+            second = _admit(store, ctx, rid)
+        _a3_assert_result_ids(second, attempted=False, confirmed=False)
+        third = _admit(store, ctx, rid)
+        assert third["status"] == "PASS"
+        _a3_assert_result_ids(third, attempted=True, confirmed=True)
+        assert third["attempt_publication_id"] != first["attempt_publication_id"]
+
+
+def test_a3_unverified_rollback_keeps_attempt_without_confirmation(ready, monkeypatch):
+    path, ctx, rid = ready
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"], read_only=False) as store:
+        class RollbackFault:
+            def __init__(self, real):
+                self.real, self.rollbacks = real, 0
+            def __getattr__(self, name):
+                return getattr(self.real, name)
+            def execute(self, sql, args=()):
+                if sql == "ROLLBACK":
+                    self.rollbacks += 1
+                    raise OSError("SYNTHETIC_PRIVATE_A3_ROLLBACK_UNVERIFIED")
+                return self.real.execute(sql, args)
+        fault = RollbackFault(store._con)
+        store._con = fault
+        original = durable.assert_current_effect_allowed
+        def deny(name):
+            if name == "person.admission.promotion_commit":
+                raise RuntimeError("SYNTHETIC_PRIVATE_A3_DENY_BEFORE_COMMIT")
+            return original(name)
+        with monkeypatch.context() as patch:
+            patch.setattr(durable, "assert_current_effect_allowed", deny)
+            value = _admit(store, ctx, rid)
+        assert fault.rollbacks == 1
+        assert value["status"] == "HOLD" and value["reason"] == "ROLLBACK_UNVERIFIED"
+        assert value["commit_state"] == "NOT_ATTEMPTED" and value["possible_persisted_effect"] is True
+        _a3_assert_result_ids(value, attempted=True, confirmed=False)
+        with pytest.raises(durable.DurableAdmissionError):
+            store.load_current()
+        with pytest.raises(durable.DurableAdmissionError):
+            _admit(store, ctx, rid)
+    # Closing SQLite actually rolled it back, but the returned result must not
+    # retroactively claim a successful rollback that its own code could not verify.
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"]) as fresh:
+        assert fresh.load_current() is None
