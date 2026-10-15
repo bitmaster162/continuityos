@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Northstar Labs — ContinuityOS Company Twin (Fictional Demo)</title>
+<style>
+:root{color-scheme:dark;font:14px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;background:#09111e;color:#e9f1fa}
+*{box-sizing:border-box}body{margin:0}button,select,input{font:inherit}button{cursor:pointer}
+.container{max-width:1240px;margin:0 auto;padding:24px 22px 72px}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.brand{font-weight:750;letter-spacing:.01em;font-size:18px}.brand span{color:#7fc9ff}
+.demo-flag{font-size:11px;text-transform:uppercase;letter-spacing:.12em;border:1px solid #5680a1;padding:7px 12px;border-radius:999px;color:#c2e4ff}
+.hero{margin-top:25px;border:1px solid #24425c;border-radius:20px;padding:28px;background:linear-gradient(125deg,#162e47,#0c1728 72%)}
+.eyebrow{color:#7fc9ff;letter-spacing:.13em;text-transform:uppercase;font-size:11px;font-weight:700}
+h1{font-size:34px;line-height:1.15;letter-spacing:-.03em;margin:10px 0}h2{font-size:17px;margin:0}h3{font-size:13px;margin:0}
+.lead{max-width:730px;color:#b9cadb;line-height:1.65;margin:8px 0 0}
+.hero-stats{display:flex;gap:28px;flex-wrap:wrap;margin-top:25px}.hero-stats strong{font-size:23px;display:block}.hero-stats small{color:#a1bdd1}
+.controls{margin:20px 0;display:flex;align-items:end;gap:12px;flex-wrap:wrap}
+.field{display:flex;flex-direction:column;gap:5px;min-width:190px;flex:1}
+label{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:#9fb3c8}
+select,input{background:#142439;border:1px solid #3e556f;color:#e6f2ff;padding:11px 12px;border-radius:10px;min-height:44px}
+.actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+button{background:#17324d;color:#e6f2ff;border:1px solid #3e617d;padding:10px 13px;border-radius:10px;min-height:44px}
+button:hover,button:focus-visible{background:#235075;border-color:#92c9f8}
+.note{color:#9bb0c6;font-size:12px;margin:2px 0 14px}.error{color:#ffb2b2;min-height:1.5em}
+.kpi{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:18px 0}
+.tile,.panel{border:1px solid #263b51;background:#101d2d;border-radius:15px}
+.tile{padding:17px}.tile span{color:#91adc5;font-size:12px;display:block}.tile strong{font-size:26px;display:block;margin-top:3px}
+.layout{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:14px}
+.panel{padding:19px;min-width:0}.panel-header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:15px}
+.small{color:#9bb2c7;font-size:12px}.scroll{max-height:420px;overflow:auto;scrollbar-color:#3c5672 transparent}
+.item{border-top:1px solid #263a4f;padding:12px 2px}.item:first-child{border-top:0;padding-top:0}
+.item-head{display:flex;gap:12px;align-items:baseline;justify-content:space-between;flex-wrap:wrap}
+.date{color:#79afd9;font-variant-numeric:tabular-nums;font-size:12px}
+.kind{font-size:11px;text-transform:uppercase;color:#b4bfd3;letter-spacing:.06em}
+.item-title{font-weight:650;margin-top:3px}.item-details{color:#b5c7d6;font-size:12px;margin-top:5px}
+.reason{margin-top:8px;color:#c4d4e4}
+.source{display:block;color:#8fb9dd;font-size:12px;margin-top:6px;overflow-wrap:anywhere}
+.state{font-size:10px;letter-spacing:.08em;text-transform:uppercase;border:1px solid #506580;padding:2px 7px;border-radius:999px}
+.state.superseded{color:#c6a5a5;border-color:#7c545a}
+.cap-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 0;border-top:1px solid #263a4f}
+.cap-row:first-child{border:0}.cap-status{font-weight:750;font-size:11px;letter-spacing:.06em}
+.cap-status.allow{color:#8ce4b4}.cap-status.deny{color:#ffc2ab}
+.org-branch{border-left:2px solid #385773;padding:0 0 0 12px;margin-top:8px}
+.org-head{font-weight:700;color:#d3e8fb;margin:14px 0 4px}.org-leaf{color:#b6cada;margin:3px 0;font-size:12px}
+.proposal{border:1px solid #284763;background:#102940;border-radius:11px;padding:13px;margin-top:10px}
+.proposal strong{color:#b8dbf4}.proposal div{font-size:12px;color:#d1e3f0;margin-top:6px}
+.footer{border-top:1px solid #263a4f;margin-top:20px;padding:17px 0;color:#90a9c0;font-size:12px;line-height:1.7}
+.foot-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#7bc5ff;margin-right:7px}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+@media(max-width:800px){.layout{grid-template-columns:1fr}.kpi{grid-template-columns:repeat(2,1fr)}h1{font-size:28px}}
+@media(max-width:480px){.container{padding:14px}.hero{padding:18px}.kpi{grid-template-columns:1fr 1fr}.tile{padding:12px}.tile strong{font-size:21px}.field{min-width:100%}}
+</style>
+</head>
+<body>
+<div class="container">
+<div class="topbar">
+ <div class="brand">Continuity<span>OS</span> <span class="small">/ Company Twin</span></div>
+ <div class="demo-flag">Synthetic demo · Fictional company · Read only</div>
+</div>
+<section class="hero">
+ <div class="eyebrow">Northstar Labs · fictional B2B SaaS · 2025</div>
+ <h1>A company's memory,<br>with decisions you can trace.</h1>
+ <p class="lead">Replay what the organization knew at any date within 2025. See who decided, why, and which fictional records support it. Switch roles to reveal enforced access boundaries—not a chatbot with unrestricted access.</p>
+ <div class="hero-stats">
+  <div><strong>12</strong><small>fictional human staff</small></div>
+  <div><strong>3</strong><small>teams</small></div>
+  <div><strong>1</strong><small>human-supervised research agent</small></div>
+  <div><strong>0</strong><small>live connectors or actions</small></div>
+ </div>
+</section>
+<div class="controls">
+ <div class="field"><label for="principal">View as (role simulation)</label>
+  <select id="principal">
+   <option value="alice">Alice Chen — Director</option>
+   <option value="bob">Bob Reyes — Sales</option>
+   <option value="dana">Dana Moore — Product / Finance</option>
+   <option value="cara">Cara Ionescu — Engineering</option>
+   <option value="agent_atlas">Atlas Research Agent — Managed</option>
+  </select></div>
+ <div class="field"><label for="asof">Company state as of (2025)</label>
+  <input id="asof" type="date" min="2025-01-01" max="2025-12-31" value="2025-12-31"></div>
+ <div class="actions"><button id="q1" type="button">Mar 31</button><button id="year" type="button">Dec 31</button><button id="refresh" type="button">Replay</button></div>
+</div>
+<div class="note">Role selection is a local presentation simulation, not user authentication. All people, messages, tasks, and evidence below are invented.</div>
+<p id="error" class="error" role="alert" aria-live="polite"></p>
+<div class="kpi" aria-label="Authorized view statistics">
+ <div class="tile"><span>Visible decisions</span><strong id="decisions-count">—</strong></div>
+ <div class="tile"><span>Visible evidence</span><strong id="evidence-count">—</strong></div>
+ <div class="tile"><span>Visible events</span><strong id="events-count">—</strong></div>
+ <div class="tile"><span>As-of date</span><strong id="date-value" style="font-size:21px">—</strong></div>
+</div>
+<div class="layout">
+ <section class="panel">
+  <div class="panel-header"><h2>Company timeline</h2><span class="small">Facts · decisions · outcomes</span></div>
+  <div class="scroll" id="timeline"><div class="small">Loading fictional history…</div></div>
+ </section>
+ <section class="panel">
+  <div class="panel-header"><h2>Decision ledger</h2><span class="small">Who · what · why · evidence</span></div>
+  <div class="scroll" id="decisions"><div class="small">Loading decisions…</div></div>
+ </section>
+ <section class="panel">
+  <div class="panel-header"><h2>Authority & access</h2><span class="small">P2C policy receipts</span></div>
+  <div id="actor" class="item-title">—</div><div id="manager" class="small"></div>
+  <div id="capabilities" style="margin-top:14px"></div>
+  <p class="small">READ and PROPOSE are policy capabilities, not executable buttons. APPROVE/EXECUTE cannot be performed by the agent.</p>
+ </section>
+ <section class="panel">
+  <div class="panel-header"><h2>Organization & managed agent</h2><span class="small">Director → people/teams → memory → agent</span></div>
+  <div id="org"></div>
+  <div class="org-head">Human-reviewed proposals</div>
+  <div id="proposals"></div>
+ </section>
+</div>
+<div class="foot-grid footer">
+ <div><span class="dot"></span>P2A: deterministic temporal replay, evidence and decision lineage.</div>
+ <div><span class="dot"></span>P2C: scoped READ/PROPOSE authority, no agent execution.</div>
+ <div><span class="dot"></span>P2D: loopback-only read API, no mutations or external models.</div>
+</div>
+<div class="footer">FICTIONAL DEMO · NOT CUSTOMER DATA · No real company/person, Slack, Drive, email, CRM or GitHub was connected. Historical decision authors are generated demo metadata, not cryptographic attestations. Source records explicitly separate FACT / EVIDENCE / INFERENCE.</div>
+</div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const TEAM = {
+ "Bob Reyes":"Sales","Maya Ford":"Sales","Pavel Neri":"Sales","Sue Calder":"Sales",
+ "Dana Moore":"Product","Lena Vale":"Product","Iris Reed":"Product","Owen Park":"Product",
+ "Cara Ionescu":"Engineering","Eli Hart":"Engineering","Felix Rowan":"Engineering",
+ "Atlas Research Agent":"Engineering"
+};
+function node(tag, text, cls){
+  const e=document.createElement(tag);
+  if(text!==undefined) e.textContent=String(text);
+  if(cls) e.className=cls;
+  return e;
+}
+function clear(el){el.replaceChildren();}
+function empty(el,message){clear(el);el.appendChild(node("div",message,"small"));}
+function nice(date){return String(date||"").slice(0,10);}
+function renderTimeline(d){
+  const box=$("timeline");clear(box);
+  if(!d.timeline.length)return empty(box,"No visible events yet.");
+  for(const item of [...d.timeline].reverse()){
+    const wrap=node("article",undefined,"item");
+    const head=node("div",undefined,"item-head");
+    head.append(node("span",nice(item.time),"date"),node("span",String(item.kind).replaceAll("_"," "),"kind"));
+    wrap.append(head,node("div",item.title,"item-title"));
+    if(item.truth_class)wrap.append(node("div",item.truth_class,"item-details"));
+    box.append(wrap);
+  }
+}
+function renderDecisions(d){
+  const box=$("decisions");clear(box);
+  if(!d.decisions.length)return empty(box,"No authorized decisions for this person and date.");
+  const evidence=new Map(d.evidence.map(x=>[x.id,x]));
+  for(const rec of [...d.decisions].sort((a,b)=>b.decided_at.localeCompare(a.decided_at))){
+    const wrap=node("article",undefined,"item");
+    const head=node("div",undefined,"item-head");
+    head.append(node("span",nice(rec.decided_at),"date"));
+    head.append(node("span",rec.replay_status||"ACTIVE","state"+(rec.replay_status==="SUPERSEDED"?" superseded":"")));
+    wrap.append(head,node("div",rec.title,"item-title"));
+    wrap.append(node("div","Decision by: "+(rec.decided_by_name||"unattributed"),"item-details"));
+    wrap.append(node("div","Why: "+rec.rationale,"reason"));
+    const links=(rec.evidence_ids||[]).map(id=>evidence.get(id)).filter(Boolean);
+    if(links.length){
+      const names=links.map(x=>x.title+" ["+x.truth_class+"]").join("; ");
+      wrap.append(node("div","Evidence: "+names,"source"));
+    }
+    box.append(wrap);
+  }
+}
+function renderAuthority(d){
+  $("actor").textContent=d.actor.name+" · "+d.actor.role;
+  $("manager").textContent=d.actor.manager?"Human manager: "+d.actor.manager.name:"";
+  const box=$("capabilities");clear(box);
+  for(const key of ["READ","PROPOSE","APPROVE","EXECUTE"]){
+    const receipt=d.capabilities[key];
+    const row=node("div",undefined,"cap-row");
+    row.append(node("span",key));
+    row.append(node("span",receipt.allowed?"ALLOWED":"DENIED","cap-status "+(receipt.allowed?"allow":"deny")));
+    box.append(row);
+  }
+}
+function renderOrganization(d){
+  const box=$("org");clear(box);
+  const nodes=d.organization_graph.nodes;
+  const people=nodes.filter(x=>x.actor_kind==="HUMAN");
+  const director=people.filter(x=>x.role==="DIRECTOR");
+  const agent=nodes.filter(x=>x.actor_kind==="AGENT");
+  const byTeam=new Map();
+  for(const person of people.filter(x=>x.role!=="DIRECTOR")){
+    const team=TEAM[person.name]||"Other";
+    if(!byTeam.has(team))byTeam.set(team,[]);
+    byTeam.get(team).push(person.name);
+  }
+  box.append(node("div",director.map(x=>x.name+" (Director)").join(", ")||"Director restricted","item-title"));
+  for(const [team,names] of [...byTeam.entries()].sort(([a],[b])=>a.localeCompare(b))){
+    const branch=node("div",undefined,"org-branch");
+    branch.append(node("div",team+" team","org-head"),node("div",names.join(" · "),"org-leaf"));
+    box.append(branch);
+  }
+  box.append(node("div","Company memory: authorized evidence + decisions","org-head"));
+  box.append(node("div",agent.map(x=>x.name).join(", ")||"Agent outside this view","org-leaf"));
+  const proposal=$("proposals");clear(proposal);
+  if(!d.proposals.length)return empty(proposal,"No proposals visible in this role.");
+  for(const p of d.proposals){
+    const item=node("div",undefined,"proposal");
+    item.append(node("strong",p.status),node("div",p.summary));
+    proposal.append(item);
+  }
+}
+let activeRequest=0;
+async function refresh(){
+  const seq=++activeRequest;
+  $("error").textContent="";
+  const rawDate=$("asof").value;
+  if(!/^2025-\d\d-\d\d$/.test(rawDate)){ $("error").textContent="Choose a date inside 2025.";return;}
+  const q=new URLSearchParams({principal:$("principal").value,as_of:rawDate+"T23:59:59Z"});
+  try{
+    const response=await fetch("/api/snapshot?"+q.toString(),{cache:"no-store",headers:{Accept:"application/json"}});
+    const d=await response.json();
+    if(!response.ok)throw Error(d.error||"Snapshot unavailable");
+    if(seq!==activeRequest)return;
+    if(d.organization.synthetic!==true||d.read_only!==true||d.governance.can_execute!==false){
+      throw Error("Demo integrity gate failed");
+    }
+    $("decisions-count").textContent=d.counts.decisions;
+    $("evidence-count").textContent=d.counts.evidence;
+    $("events-count").textContent=d.counts.events;
+    $("date-value").textContent=nice(d.as_of);
+    renderTimeline(d);renderDecisions(d);renderAuthority(d);renderOrganization(d);
+  }catch(error){
+    if(seq===activeRequest)$("error").textContent="Unable to read this authorized demo snapshot.";
+  }
+}
+$("refresh").addEventListener("click",refresh);
+$("principal").addEventListener("change",refresh);
+$("asof").addEventListener("change",refresh);
+$("q1").addEventListener("click",()=>{$("asof").value="2025-03-31";refresh()});
+$("year").addEventListener("click",()=>{$("asof").value="2025-12-31";refresh()});
+refresh();
+</script>
+</body></html>
