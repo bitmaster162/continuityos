@@ -53,6 +53,16 @@ python -B -m pytest -q -p no:cacheprovider tests/test_company_twin_client_demo.p
 
 No need for Docker, browser extensions, SSH, API keys, a paid model, or credentials.
 
+## Wheel-only qualification boundary
+
+The client presentation adapter lives under `demo/` in a source checkout; it is
+**not packaged into the core ContinuityOS wheel**. CI tests the demo from the
+clean source and editable checkout. When the isolated wheel-only runner copies
+the `tests/` directory without `demo/`, this exact new demo-test module is
+**explicitly skipped** after checking that no source file is available; existing
+wheel-portable P2A/P2C/P2D test coverage remains required. A wheel skip is
+recorded as SKIP, never PASS. This is an intentional packaging boundary, not a
+silent fallback or a claim that the installed wheel serves the demo.
 ## Truth and authorization claims
 
 - **SYNTHETIC DATA ONLY**. Names, company, emails, tasks, source references, roles and decision authors are made up.

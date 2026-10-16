@@ -10,9 +10,21 @@ from urllib.request import Request, urlopen
 import pytest
 
 from continuityos.company_twin_console import CompanyTwinConsoleError, build_snapshot
-from demo.company_twin_client_demo import (
-    BASE_FIXTURE, HTML_FILE, PEOPLE, build_demo_bundle, make_demo_server,
-)
+# The client showcase is intentionally a source-checkout-only presentation
+# adapter, not part of the independently installed ContinuityOS wheel.
+# The wheel-only runner copies tests into an isolated suite with no demo/
+# directory. Skip this one source-only test module there; do not mask an
+# import defect when the expected demo source file is present.
+try:
+    from demo.company_twin_client_demo import (
+        BASE_FIXTURE, HTML_FILE, PEOPLE, build_demo_bundle, make_demo_server,
+    )
+except ModuleNotFoundError as exc:
+    source_demo = Path(__file__).resolve().parent.parent / "demo" / "company_twin_client_demo.py"
+    if exc.name != "demo" or source_demo.is_file():
+        raise
+    pytest.skip("source-checkout-only client demo is absent from installed wheel",
+                allow_module_level=True)
 
 
 @pytest.fixture(scope="module")
