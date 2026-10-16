@@ -2,8 +2,10 @@
 
 R24 composes PostgreSQL replay state with an external append-only witness.  The
 witness is authoritative for monotonic claim history; PostgreSQL can be rebuilt
-from witnessed records after a database snapshot rollback.  No witness backend
-is silently substituted or auto-provisioned.
+from witnessed records after a database snapshot rollback.  R25 adds bounded
+retry hardening for PostgreSQL serialization/deadlock aborts discovered by the
+real qualification harness.  No witness backend is silently substituted or
+auto-provisioned.
 """
 from __future__ import annotations
 
@@ -35,6 +37,47 @@ RECORD_SCHEMA = "continuityos.replay_witness_record/v1"
 ROLLBACK_PROTECTION = "EXTERNAL_APPEND_ONLY_WITNESS"
 WITNESS_SCOPE = "EXTERNAL_APPEND_ONLY"
 GENESIS_DOMAIN = "continuityos.replay_witness_genesis/v1"
+_RETRYABLE_TRANSACTION_SQLSTATES = frozenset({"40001", "40P01"})
+# Review-frozen safety ceilings. These are intentionally not runtime
+# configurable: the reviewed worst-case retry/inspection work stays bounded.
+_DB_TRANSACTION_RETRY_LIMIT = 8
+_LOGICAL_CONTENTION_LIMIT = 8
+_EXCEPTION_CHAIN_LIMIT = 8
+
+
+class _RetryBudget:
+    def __init__(self, limit: int) -> None:
+        self.remaining = limit
+
+    def take(self) -> bool:
+        if self.remaining <= 0:
+            return False
+        self.remaining -= 1
+        return True
+
+
+def _is_retryable_transaction_error(exc: BaseException) -> bool:
+    """Recognize reviewed SQLSTATEs within the bounded explicit cause chain.
+
+    A matching cause deeper than the review-frozen chain ceiling is
+    intentionally treated as non-retryable. That fails closed on availability
+    rather than allowing unbounded or attacker-shaped exception traversal.
+    """
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    for _depth in range(_EXCEPTION_CHAIN_LIMIT):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        sqlstate = getattr(current, "sqlstate", None)
+        if sqlstate is None:
+            sqlstate = getattr(current, "pgcode", None)
+        if sqlstate in _RETRYABLE_TRANSACTION_SQLSTATES:
+            return True
+        # Retry only through an explicit causal chain. Implicit __context__
+        # can contain an unrelated prior serialization/deadlock exception.
+        current = current.__cause__
+    return False
 
 
 def _generation(value: object) -> int:
@@ -539,68 +582,93 @@ class PostgresWitnessedApprovalReplayAuthority:
                 "witnessed replay: database state CAS failed"
             )
 
-    def _snapshot_database(self) -> dict[str, Any]:
-        con = self._open()
-        cur = None
-        try:
-            cur = con.cursor()
-            cur.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
-            self._require_schema_meta(cur)
-            value = self._read_state_for_update(cur)
-            self._audit_database(cur, value)
-            con.commit()
-            return dict(value)
-        except MultiHostApprovalReplayError:
+    def _snapshot_database(
+        self, *, retry_budget: _RetryBudget | None = None
+    ) -> dict[str, Any]:
+        """Read one serializable snapshot under the bounded retry budget."""
+        # The limit historically means at most 8 total transaction attempts:
+        # one initial attempt plus up to 7 retryable failures. Successful
+        # snapshots must not consume the shared retry budget.
+        budget = retry_budget or _RetryBudget(_DB_TRANSACTION_RETRY_LIMIT - 1)
+        while True:
+            con = self._open()
+            cur = None
             try:
-                con.rollback()
-            except Exception:
-                pass
-            raise
-        except Exception as exc:
-            try:
-                con.rollback()
-            except Exception:
-                pass
-            raise MultiHostApprovalReplayError(
-                "witnessed replay: database snapshot failed"
-            ) from exc
-        finally:
-            _close_quietly(cur)
-            _close_quietly(con)
+                cur = con.cursor()
+                cur.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+                self._require_schema_meta(cur)
+                value = self._read_state_for_update(cur)
+                self._audit_database(cur, value)
+                con.commit()
+                return dict(value)
+            except MultiHostApprovalReplayError:
+                try:
+                    con.rollback()
+                except Exception:
+                    pass
+                raise
+            except Exception as exc:
+                try:
+                    con.rollback()
+                except Exception:
+                    pass
+                if _is_retryable_transaction_error(exc):
+                    if budget.take():
+                        continue
+                    raise MultiHostApprovalReplayError(
+                        "witnessed replay: database snapshot contention"
+                    ) from exc
+                raise MultiHostApprovalReplayError(
+                    "witnessed replay: database snapshot failed"
+                ) from exc
+            finally:
+                _close_quietly(cur)
+                _close_quietly(con)
 
-    def _read_claim_row(self, approval_id: str) -> tuple[str, str, str, str] | None:
-        con = self._open()
-        cur = None
-        try:
-            cur = con.cursor()
-            cur.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
-            self._require_schema_meta(cur)
-            cur.execute(
-                "SELECT subject_json, subject_sha256, nonce, digest_sha256 "
-                "FROM continuityos_approval_claims "
-                "WHERE namespace=%s AND approval_id=%s",
-                (self.namespace, approval_id),
-            )
-            row = cur.fetchone()
-            con.commit()
-            return None if row is None else tuple(row)
-        except MultiHostApprovalReplayError:
+    def _read_claim_row(
+        self, approval_id: str
+    ) -> tuple[str, str, str, str] | None:
+        """Read a claim with the same review-frozen transaction ceiling."""
+        for _attempt in range(_DB_TRANSACTION_RETRY_LIMIT):
+            con = self._open()
+            cur = None
             try:
-                con.rollback()
-            except Exception:
-                pass
-            raise
-        except Exception as exc:
-            try:
-                con.rollback()
-            except Exception:
-                pass
-            raise MultiHostApprovalReplayError(
-                "witnessed replay: claim read failed"
-            ) from exc
-        finally:
-            _close_quietly(cur)
-            _close_quietly(con)
+                cur = con.cursor()
+                cur.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+                self._require_schema_meta(cur)
+                cur.execute(
+                    "SELECT subject_json, subject_sha256, nonce, digest_sha256 "
+                    "FROM continuityos_approval_claims "
+                    "WHERE namespace=%s AND approval_id=%s",
+                    (self.namespace, approval_id),
+                )
+                row = cur.fetchone()
+                con.commit()
+                return None if row is None else tuple(row)
+            except MultiHostApprovalReplayError:
+                try:
+                    con.rollback()
+                except Exception:
+                    pass
+                raise
+            except Exception as exc:
+                try:
+                    con.rollback()
+                except Exception:
+                    pass
+                if _is_retryable_transaction_error(exc):
+                    continue
+                raise MultiHostApprovalReplayError(
+                    "witnessed replay: claim read failed"
+                ) from exc
+            finally:
+                _close_quietly(cur)
+                _close_quietly(con)
+        # Exhausting the DB transaction budget is terminal fail-closed for
+        # this call. The caller must not turn this into another retry budget.
+        raise MultiHostApprovalReplayError(
+            "witnessed replay: claim read contention"
+        )
 
     def _receipt_for_existing(
         self,
@@ -627,8 +695,14 @@ class PostgresWitnessedApprovalReplayAuthority:
         )
 
     def synchronize(self) -> dict[str, Any]:
-        for _attempt in range(8):
-            db_snapshot = self._snapshot_database()
+        """Reconcile PostgreSQL with the witness under bounded contention."""
+        # Share one retryable-failure budget across the whole logical
+        # operation. Successful snapshot calls do not consume it.
+        snapshot_retry_budget = _RetryBudget(_DB_TRANSACTION_RETRY_LIMIT - 1)
+        for _attempt in range(_LOGICAL_CONTENTION_LIMIT):
+            db_snapshot = self._snapshot_database(
+                retry_budget=snapshot_retry_budget
+            )
 
             # External witness I/O is deliberately outside every PostgreSQL
             # transaction/row lock. The witness CAS is the global monotonic
@@ -708,6 +782,8 @@ class PostgresWitnessedApprovalReplayAuthority:
                     con.rollback()
                 except Exception:
                     pass
+                if _is_retryable_transaction_error(exc):
+                    continue
                 raise MultiHostApprovalReplayError(
                     "witnessed replay: synchronization failed"
                 ) from exc
@@ -735,7 +811,7 @@ class PostgresWitnessedApprovalReplayAuthority:
         digest_value = _hex64("digest_sha256", digest_sha256)
 
         last_append_error: MultiHostApprovalReplayError | None = None
-        for _attempt in range(8):
+        for _attempt in range(_LOGICAL_CONTENTION_LIMIT):
             state_value = self.synchronize()
             existing = self._read_claim_row(identifier)
             if existing is not None:
