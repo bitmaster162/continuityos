@@ -2,7 +2,7 @@
 
 **Status:** local synthetic-only client showcase candidate / not production admitted.
 **Git baseline:** protected master `517c7b48e270a3077e53d890e907c9cb2b3ce491` (tree `fcb37ef8d9af2c349a62c576b5634798881a7fbe`).
-**Scope:** one isolated demo branch and one Draft PR; no merge, deploy, scheduler/TPM, live connectors, real model, external API, or real data.
+**Scope:** one isolated demo branch and one PR (Draft until checks and review-ready gate); no merge, deploy, scheduler/TPM, live connectors, real model, external API, or real data.
 
 ## Product in one sentence
 
@@ -32,7 +32,7 @@ This PR adds NO new memory/policy/agent/runtime core and modifies NO existing tr
 
 Dates are selectable within **2025**, the period of the provided historical dataset. Dates outside this dataset are not claimed to be supported.
 
-## Local demo commands (no cloud Actions minutes)
+## Local demo commands (local execution, no cloud dependencies)
 
 From a clean verified source checkout on Windows or Linux:
 
@@ -79,9 +79,18 @@ silent fallback or a claim that the installed wheel serves the demo.
 
 A customer demo should only be called ready after deterministic local tests and a live local 10-minute walkthrough (browser visual quality / client presentation) are checked. An offline HTTP smoke is not a production penetration test.
 
-Actions budget is **$0 until 2026-11-01**, so the proposed Draft PR should be created with a `[skip ci]` commit marker. That is **not a successful CI run**; full Ubuntu/Windows/CodeQL gates must run later if budget permits and before any separately authorized merge. Do not bypass protected-master requirements. No manual workflows, push to existing release branches, merge or deployment are authorized by this demo.
+### Verified CI on exact reviewed HEAD (2026-10-16)
 
-**Estimate (engineering effort, not elapsed guarantee):** 1–2 focused days for presentation, fixtures, tests and Draft PR; 0.5–1 additional day for recorded browser walkthrough, visual fixes and full CI when available. Time to publication depends on available approvals and Actions budget.
+The exact reviewed code HEAD `82bb250c36e25c35df8890c29c5d920dc4e4c3a8` completed all five GitHub checks with **SUCCESS**:
+- `review-gates` [run 38837817465](https://github.com/bitmaster162/continuityos/actions/runs/38837817465): Ubuntu / Python 3.11 **SUCCESS** and Windows / Python 3.11 **SUCCESS**.
+- `CodeQL` [run 38837817437](https://github.com/bitmaster162/continuityos/actions/runs/38837817437): CodeQL **SUCCESS**, Analyze Python **SUCCESS**.
+- `P0 Unified Shadow Continuity` [run 38837817510](https://github.com/bitmaster162/continuityos/actions/runs/38837817510): offline-shadow-continuity **SUCCESS**.
+
+Ubuntu source/editable: 2502 passed / 67 skipped; isolated wheel: 2419 passed / 118 skipped. Windows source/editable: 2510 passed / 59 skipped; isolated wheel: 2420 passed / 117 skipped. Each test mode also recorded 870 passing subtests. Wheel-only deliberately skips the checkout-only demo test; it does not mark that module as passed.
+
+These checks are evidence for the **named HEAD only**. After the documentation-only follow-up commit, all required checks must complete successfully on the **new exact HEAD** before Draft is changed to Ready for review. Full CI is not permission to merge. Merge requires a separate human decision bound to base/head/tree and ordinary merge-commit method. Do not bypass protected-master requirements. No manual workflow reruns, merges, releases, deployment or branch deletion are authorized by this document.
+
+**Historical planning estimate (not an elapsed-time claim):** initially 1–2 focused engineering days for the fixture/presentation/tests and 0.5–1 additional day for visual review. The demo implementation and the listed exact-HEAD CI now exist; client presentation signoff, fresh new-HEAD checks, human review and merge authorization remain separate gates.
 
 ## Stop conditions
 
@@ -89,6 +98,6 @@ Actions budget is **$0 until 2026-11-01**, so the proposed Draft PR should be cr
 - Any real input, production authorization, external connection or delegated agent EXECUTE emerges.
 - A non-loopback host is requested.
 - Any P2A/P2C/P2D permission regression is observed.
-- CI cannot run: keep as Draft and clearly label CI UNEXECUTED. Never call this production-qualified.
+- CI absent, failed, or not associated with the current exact HEAD: keep as Draft/HOLD until all required checks pass. Never treat a prior-head success as current-head qualification, or call this production-qualified.
 
 Unchanged / on HOLD: H3 PR #209/#210, Person Twin PR #212–#215, production admission C0/T11/T12 and all capital/TPM/Scheduler authority.
