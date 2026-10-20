@@ -81,6 +81,8 @@ def _authorize_actor(actor: Mapping[str, Any], operation: str) -> None:
     elif operation == "EXPORT" and actor_kind == "HUMAN":
         if authority not in {"OWNER", "WORKER", "READ_ONLY"}:
             raise LifecycleAuthorizationError("unsupported human export authority")
+    elif operation == "EXPORT":
+        raise LifecycleAuthorizationError("unsupported export actor kind")
 
 
 def retention_state(
