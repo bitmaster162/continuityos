@@ -631,3 +631,404 @@ def test_unverified_rollback_suspends_connection_and_keeps_hold(ready):
             _admit(store, ctx, rid)
     with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"]) as fresh:
         assert fresh.load_current() is None
+
+
+# A4: admission's stored row binding must constrain the existing R21H intent.
+def _a4_attempt(path, identity, *, selected_id=None, cold=False, decorate=None):
+    with durable.PersonTwinAdmissionStore(path, identity=identity) as store:
+        snapshot = store.load_current()
+        context = _context(snapshot, store)
+        if decorate is not None:
+            context["admission_store"] = decorate(store)
+        intent = PersonReadIntent(
+            query_sha256=hashlib.sha256(QUERY.encode()).hexdigest(),
+            current_session_sha256=durable._hash(durable._canonical(context["current_session"])),
+            request_id=context["authorization_request"]["request_id"],
+            packet_id=context["authorization_preflight"]["packet_id"],
+            memory_id=snapshot.binding["memory_id"] if selected_id is None else selected_id,
+            namespace=snapshot.binding["namespace"], person_record_id=snapshot.candidate["id"],
+            source_record_id=snapshot.anchors["source_record"]["id"],
+            principal_id=context["principal_id"], scope=context["requested_scope"],
+            privacy_class=context["requested_privacy_class"], purpose=context["purpose"],
+        )
+        class Provider:
+            reads = 0
+            def read_context(self):
+                self.reads += 1
+                return dict(context)
+        provider = Provider()
+        profile = replace(DEFAULT_PROFILES["fast"], model="synthetic-a4-binding")
+        model = demo._RecordingModel(profile, cold=cold)
+        runtime = SovereignTwinRuntime(str(path), client=model,
+            profiles={**DEFAULT_PROFILES, "fast": profile},
+            person_evidence_adapter=PersonTwinR21HEvidenceAdapter(intent, provider))
+        gets = []
+        original_get = runtime.memory.store.get
+        def traced_get(rid):
+            gets.append(rid)
+            return original_get(rid)
+        runtime.memory.store.get = traced_get
+        try:
+            try:
+                answer = runtime.ask(QUERY)
+            except PersonTwinEvidenceError as exc:
+                return {"decision":"DENY", "reason":str(exc), "calls":len(model.calls),
+                        "memory_gets":gets, "provider_reads":provider.reads}
+            assert len(model.calls) == 1
+            rows = json.loads(model.calls[0]["system_prompt"].split("MEMORY_EVIDENCE_JSON:\n", 1)[1])
+            return {"decision":answer.stats["person_evidence"]["decision"], "calls":len(model.calls),
+                    "memory_gets":gets, "provider_reads":provider.reads,
+                    "refs":[r["ref"] for r in rows], "receipt":answer.stats["person_evidence"]}
+        finally:
+            runtime.close()
+
+
+@pytest.mark.parametrize("cold", [False, True])
+@pytest.mark.parametrize("selection", ["bound", "identical_other_row", "different_text", "different_namespace", "superseded", "missing"])
+def test_a4_exact_stored_row_binding_before_warm_and_streaming_models(ready, cold, selection):
+    from contextlib import closing
+    path, ctx, rid = ready
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"], read_only=False) as writer:
+        assert _admit(writer, ctx, rid)["status"] == "PASS"
+    selected = rid
+    if selection not in {"bound", "missing"}:
+        with closing(sqlite3.connect(path)) as con, con:
+            names = [r[1] for r in con.execute("PRAGMA table_info(items)") if r[1] != "id"]
+            columns = ",".join('"' + n + '"' for n in names)
+            selected = con.execute(f"INSERT INTO items ({columns}) SELECT {columns} FROM items WHERE id=?", (rid,)).lastrowid
+            assert selected != rid
+            if selection == "different_text":
+                con.execute("UPDATE items SET text=? WHERE id=?", ("SYNTHETIC_OTHER_TEXT", selected))
+            elif selection == "different_namespace":
+                con.execute("UPDATE items SET namespace=? WHERE id=?", ("synthetic-other-ns", selected))
+            elif selection == "superseded":
+                con.execute("UPDATE items SET meta=? WHERE id=?", ('{"superseded_by":999}', selected))
+    elif selection == "missing":
+        selected = 999999
+    before = path.read_bytes()
+    value = _a4_attempt(path, ctx["identity"], selected_id=selected, cold=cold)
+    assert path.read_bytes() == before
+    if selection == "bound":
+        assert value["decision"] == "ALLOW" and value["calls"] == 1
+        assert value["refs"] == [f"mem:{rid}"]
+        assert set(value["receipt"]) == demo.PERSON_RECEIPT_KEYS
+    else:
+        assert value["decision"] == "DENY" and value["calls"] == 0, value
+        assert value["memory_gets"] == []
+        assert value["reason"] == "PERSON_ADMISSION_MEMORY_BINDING_MISMATCH"
+
+
+@pytest.mark.parametrize("fault", ["absent", "noncallable", "none", "text", "invalid_json", "duplicate_key", "noncanonical", "bool_id", "memory_id", "namespace", "pointer_sha256", "candidate_sha256", "person_record_id", "source_record_id", "extra", "exception"])
+def test_a4_binding_interface_has_no_fallback_or_caller_override(ready, fault):
+    path, ctx, rid = ready
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"], read_only=False) as writer:
+        assert _admit(writer, ctx, rid)["status"] == "PASS"
+    def decorate(store):
+        class Proxy:
+            def read_current_pointer_bytes(self):
+                return store.read_current_pointer_bytes()
+            def read_candidate_bytes(self, candidate_id):
+                return store.read_candidate_bytes(candidate_id)
+        proxy = Proxy()
+        if fault == "absent":
+            return proxy
+        if fault == "noncallable":
+            proxy.read_current_memory_binding_bytes = b"not-a-callable"
+            return proxy
+        raw = store.read_current_memory_binding_bytes()
+        record = json.loads(raw)
+        def read_binding():
+            if fault == "exception":
+                raise ValueError("SYNTHETIC_PRIVATE_A4_READ_ERROR")
+            if fault == "none": return None
+            if fault == "text": return raw.decode()
+            if fault == "invalid_json": return b"not json"
+            if fault == "duplicate_key": return b'{"memory_id":999,' + raw[1:]
+            if fault == "noncanonical": return json.dumps(record, indent=2).encode()
+            changed = dict(record)
+            if fault == "bool_id": changed["memory_id"] = True
+            elif fault == "extra": changed["unexpected"] = "must deny"
+            elif fault == "memory_id": changed["memory_id"] = rid + 1
+            else: changed[fault] = "SYNTHETIC_WRONG_BINDING"
+            return durable._canonical(changed)
+        proxy.read_current_memory_binding_bytes = read_binding
+        return proxy
+    before = path.read_bytes()
+    result = _a4_attempt(path, ctx["identity"], decorate=decorate)
+    assert result["decision"] == "DENY" and result["calls"] == 0
+    assert result["memory_gets"] == []
+    assert "SYNTHETIC_PRIVATE" not in result["reason"]
+    assert "SYNTHETIC_WRONG" not in result["reason"]
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("cold", [False, True])
+def test_a4_read_binding_is_rechecked_at_the_final_prompt_boundary(ready, cold):
+    path, ctx, rid = ready
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"], read_only=False) as writer:
+        assert _admit(writer, ctx, rid)["status"] == "PASS"
+    reads = []
+    def decorate(store):
+        class Proxy:
+            def read_current_pointer_bytes(self):
+                return store.read_current_pointer_bytes()
+            def read_candidate_bytes(self, candidate_id):
+                return store.read_candidate_bytes(candidate_id)
+            def read_current_memory_binding_bytes(self):
+                raw = store.read_current_memory_binding_bytes()
+                reads.append(raw)
+                if len(reads) == 2:
+                    value = json.loads(raw)
+                    value["memory_id"] = rid + 1
+                    return durable._canonical(value)
+                return raw
+        return Proxy()
+    before = path.read_bytes()
+    value = _a4_attempt(path, ctx["identity"], cold=cold, decorate=decorate)
+    assert value["decision"] == "DENY" and value["calls"] == 0
+    assert len(reads) == 2 and value["provider_reads"] == 2
+    assert value["memory_gets"] == [rid]
+    assert path.read_bytes() == before
+
+
+def test_a4_saved_binding_read_is_fresh_exact_and_nonmutating(ready):
+    path, ctx, rid = ready
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"]) as empty:
+        assert empty.read_current_memory_binding_bytes() is None
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"], read_only=False) as writer:
+        assert _admit(writer, ctx, rid)["status"] == "PASS"
+    before = path.read_bytes()
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"]) as reader:
+        snapshot = reader.load_current()
+        first = reader.read_current_memory_binding_bytes()
+        assert first == reader.read_current_memory_binding_bytes()
+        value = json.loads(first)
+        assert first == durable._canonical(value)
+        assert value["memory_id"] == rid and value["namespace"] == NS
+        assert value["pointer_sha256"] == durable._hash(snapshot.pointer_bytes)
+        assert value["candidate_sha256"] == durable._hash(snapshot.candidate_bytes)
+        assert reader._con.execute("PRAGMA query_only").fetchone()[0] == 1
+        reader._suspended = True
+        with pytest.raises(durable.DurableAdmissionError):
+            reader.read_current_memory_binding_bytes()
+    assert path.read_bytes() == before
+
+
+# A3: a prospective transaction identifier is not proof of a committed publication.
+def _a3_assert_result_ids(value, *, attempted, confirmed):
+    expected_keys = {
+        "schema", "status", "reason", "candidate_persisted", "candidate_commit_state",
+        "commit_state", "possible_persisted_effect", "publication_id",
+        "attempt_publication_id", "admission_receipt", "production_admission_status",
+        "execution_authority", "can_execute", "can_trade", "capital_permission",
+    }
+    assert set(value) == expected_keys
+    attempt = value["attempt_publication_id"]
+    if attempted:
+        assert type(attempt) is str and len(attempt) == 32
+        assert set(attempt) <= set("0123456789abcdef")
+    else:
+        assert attempt is None
+    assert value["publication_id"] == (attempt if confirmed else None)
+    assert value["production_admission_status"] == "NOT_PRODUCTION_ADMITTED"
+    assert value["execution_authority"] == "NONE"
+    assert value["can_execute"] is False and value["can_trade"] is False
+    assert value["capital_permission"] == "DENY"
+    if value["status"] == "HOLD":
+        assert value["admission_receipt"] is None
+    assert "SYNTHETIC_PRIVATE_A3" not in json.dumps(value)
+
+
+@pytest.mark.parametrize("effect,attempted,candidate", [
+    ("admit", False, False),
+    ("candidate_write", False, False),
+    ("candidate_commit", False, False),
+    ("promotion_begin", False, True),
+    ("pointer_write", True, True),
+    ("promotion_commit", True, True),
+])
+def test_a3_precommit_denial_has_no_confirmed_publication(ready, monkeypatch, effect, attempted, candidate):
+    path, ctx, rid = ready
+    calls = []
+    original = durable.assert_current_effect_allowed
+    def deny_one(name):
+        if name == "person.admission." + effect:
+            calls.append(name)
+            raise RuntimeError("SYNTHETIC_PRIVATE_A3_ADDITIONAL_DENIAL")
+        return original(name)
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"], read_only=False) as store:
+        with monkeypatch.context() as patch:
+            patch.setattr(durable, "assert_current_effect_allowed", deny_one)
+            value = _admit(store, ctx, rid)
+        assert calls == ["person.admission." + effect]
+        assert value["status"] == "HOLD" and value["commit_state"] == "NOT_ATTEMPTED"
+        assert value["publication_id"] is None, value
+        _a3_assert_result_ids(value, attempted=attempted, confirmed=False)
+        assert value["candidate_persisted"] is candidate
+        assert store.load_current() is None
+        assert store._con.execute("SELECT COUNT(*) FROM person_admission_publications").fetchone()[0] == 0
+        assert store._con.execute("SELECT COUNT(*) FROM person_admission_candidates").fetchone()[0] == int(candidate)
+
+
+def test_a3_success_retains_the_same_publication_and_actual_receipt(ready):
+    path, ctx, rid = ready
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"], read_only=False) as store:
+        value = _admit(store, ctx, rid)
+        snapshot = store.load_current()
+        assert value["status"] == "PASS" and value["commit_state"] == "CONFIRMED"
+        _a3_assert_result_ids(value, attempted=True, confirmed=True)
+        assert value["publication_id"] == snapshot.publication_id
+        assert durable._canonical(value["admission_receipt"]) == snapshot.receipt_bytes
+        # Attempt metadata belongs to the outer result, never to saved R3 bytes.
+        assert "attempt_publication_id" not in snapshot.receipt
+        assert snapshot.binding["memory_id"] == rid
+
+
+class _A3CommitOutcomeFault:
+    def __init__(self, store, phase, *, after_sql):
+        self.store, self.real, self.phase = store, store._con, phase
+        self.after_sql, self.calls = after_sql, 0
+    def __getattr__(self, name):
+        return getattr(self.real, name)
+    def execute(self, sql, args=()):
+        if sql == "COMMIT" and self.store._phase == self.phase:
+            self.calls += 1
+            if self.after_sql:
+                self.real.execute(sql, args)
+            raise OSError("SYNTHETIC_PRIVATE_A3_COMMIT_RESPONSE_LOST")
+        return self.real.execute(sql, args)
+
+
+@pytest.mark.parametrize("phase", ["CANDIDATE", "PROMOTING"])
+@pytest.mark.parametrize("after_sql", [False, True])
+def test_a3_uncertain_commit_preserves_attempt_not_confirmed_publication(ready, phase, after_sql):
+    path, ctx, rid = ready
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"], read_only=False) as store:
+        fault = _A3CommitOutcomeFault(store, phase, after_sql=after_sql)
+        store._con = fault
+        value = _admit(store, ctx, rid)
+        assert fault.calls == 1  # Never automatically retry an uncertain commit.
+        assert value["status"] == "HOLD" and value["possible_persisted_effect"] is True
+        assert value["publication_id"] is None, value
+        _a3_assert_result_ids(value, attempted=phase == "PROMOTING", confirmed=False)
+        assert value["commit_state"] == ("UNKNOWN" if phase == "PROMOTING" else "NOT_ATTEMPTED")
+        assert value["candidate_commit_state"] == ("CONFIRMED" if phase == "PROMOTING" else "UNKNOWN")
+        assert value["candidate_persisted"] is (True if phase == "PROMOTING" else None)
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"]) as fresh:
+        snapshot = fresh.load_current()
+        persisted = phase == "PROMOTING" and after_sql
+        assert (snapshot is not None) is persisted
+        if persisted:
+            assert snapshot.publication_id == value["attempt_publication_id"]
+        assert fresh._con.execute("SELECT COUNT(*) FROM person_admission_publications").fetchone()[0] == int(persisted)
+        assert fresh._con.execute("SELECT COUNT(*) FROM person_admission_candidates").fetchone()[0] == int(after_sql or phase == "PROMOTING")
+
+
+@pytest.mark.parametrize("mode", ["unavailable", "mismatched-snapshot"])
+def test_a3_postcommit_hold_preserves_confirmed_id_without_allow_receipt(ready, monkeypatch, mode):
+    path, ctx, rid = ready
+    original = durable.PersonTwinAdmissionStore.load_current
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"], read_only=False) as store:
+        def fault(instance):
+            actual = original(instance)
+            if instance is not store:
+                if mode == "unavailable":
+                    raise OSError("SYNTHETIC_PRIVATE_A3_READBACK_UNAVAILABLE")
+                return replace(actual, publication_id="0" * 32)
+            return actual
+        with monkeypatch.context() as patch:
+            patch.setattr(durable.PersonTwinAdmissionStore, "load_current", fault)
+            value = _admit(store, ctx, rid)
+        assert value["status"] == "HOLD" and value["reason"] == "POSTCOMMIT_READBACK_FAILED"
+        assert value["commit_state"] == "CONFIRMED" and value["possible_persisted_effect"] is True
+        _a3_assert_result_ids(value, attempted=True, confirmed=True)
+        assert store.load_current().publication_id == value["publication_id"]
+        assert store._con.execute("SELECT COUNT(*) FROM person_admission_publications").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("phase", ["promotion_begin", "pointer_write", "promotion_commit", "unknown-before-sql"])
+def test_a3_failed_republication_does_not_report_previous_current_as_its_own(ready, monkeypatch, phase):
+    path, ctx, rid = ready
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"], read_only=False) as store:
+        first = _admit(store, ctx, rid)
+        assert first["status"] == "PASS"
+        before = store.load_current()
+        original = durable.assert_current_effect_allowed
+        def deny(name):
+            if name == "person.admission." + phase:
+                raise RuntimeError("SYNTHETIC_PRIVATE_A3_REPUBLICATION_DENIED")
+            return original(name)
+        with monkeypatch.context() as patch:
+            patch.setattr(durable, "assert_current_effect_allowed", deny)
+            if phase == "unknown-before-sql":
+                fault = _A3CommitOutcomeFault(store, "PROMOTING", after_sql=False)
+                store._con = fault
+            value = _admit(store, ctx, rid)
+        assert value["status"] == "HOLD" and value["publication_id"] is None
+        _a3_assert_result_ids(value, attempted=phase != "promotion_begin", confirmed=False)
+        assert value["attempt_publication_id"] != before.publication_id
+        assert store.load_current() == before
+        assert store._con.execute("SELECT COUNT(*) FROM person_admission_publications").fetchone()[0] == 1
+
+
+def test_a3_attempt_identifier_is_reset_between_explicit_calls(ready, monkeypatch):
+    path, ctx, rid = ready
+    original = durable.assert_current_effect_allowed
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"], read_only=False) as store:
+        def deny_commit(name):
+            if name == "person.admission.promotion_commit":
+                raise RuntimeError("SYNTHETIC_PRIVATE_A3_DENY_COMMIT")
+            return original(name)
+        with monkeypatch.context() as patch:
+            patch.setattr(durable, "assert_current_effect_allowed", deny_commit)
+            first = _admit(store, ctx, rid)
+        _a3_assert_result_ids(first, attempted=True, confirmed=False)
+        def deny_start(name):
+            if name == "person.admission.admit":
+                raise RuntimeError("SYNTHETIC_PRIVATE_A3_DENY_START")
+            return original(name)
+        with monkeypatch.context() as patch:
+            patch.setattr(durable, "assert_current_effect_allowed", deny_start)
+            second = _admit(store, ctx, rid)
+        _a3_assert_result_ids(second, attempted=False, confirmed=False)
+        third = _admit(store, ctx, rid)
+        assert third["status"] == "PASS"
+        _a3_assert_result_ids(third, attempted=True, confirmed=True)
+        assert third["attempt_publication_id"] != first["attempt_publication_id"]
+
+
+def test_a3_unverified_rollback_keeps_attempt_without_confirmation(ready, monkeypatch):
+    path, ctx, rid = ready
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"], read_only=False) as store:
+        class RollbackFault:
+            def __init__(self, real):
+                self.real, self.rollbacks = real, 0
+            def __getattr__(self, name):
+                return getattr(self.real, name)
+            def execute(self, sql, args=()):
+                if sql == "ROLLBACK":
+                    self.rollbacks += 1
+                    raise OSError("SYNTHETIC_PRIVATE_A3_ROLLBACK_UNVERIFIED")
+                return self.real.execute(sql, args)
+        fault = RollbackFault(store._con)
+        store._con = fault
+        original = durable.assert_current_effect_allowed
+        def deny(name):
+            if name == "person.admission.promotion_commit":
+                raise RuntimeError("SYNTHETIC_PRIVATE_A3_DENY_BEFORE_COMMIT")
+            return original(name)
+        with monkeypatch.context() as patch:
+            patch.setattr(durable, "assert_current_effect_allowed", deny)
+            value = _admit(store, ctx, rid)
+        assert fault.rollbacks == 1
+        assert value["status"] == "HOLD" and value["reason"] == "ROLLBACK_UNVERIFIED"
+        assert value["commit_state"] == "NOT_ATTEMPTED" and value["possible_persisted_effect"] is True
+        _a3_assert_result_ids(value, attempted=True, confirmed=False)
+        with pytest.raises(durable.DurableAdmissionError):
+            store.load_current()
+        with pytest.raises(durable.DurableAdmissionError):
+            _admit(store, ctx, rid)
+    # Closing SQLite actually rolled it back, but the returned result must not
+    # retroactively claim a successful rollback that its own code could not verify.
+    with durable.PersonTwinAdmissionStore(path, identity=ctx["identity"]) as fresh:
+        assert fresh.load_current() is None
