@@ -402,7 +402,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         prog="cos demo",
         description="Run self-contained product proofs without touching your normal memory DB",
     )
-    parser.add_argument("demo", choices=["continuity"])
+    parser.add_argument("demo", choices=["continuity", "person-continuity"])
     parser.add_argument("--json", action="store_true", dest="as_json")
     parser.add_argument("--timeout", type=float, default=20.0, help="fresh-process probe timeout in seconds")
     parser.add_argument("--db", dest="forbidden_db", default=None, help=argparse.SUPPRESS)
@@ -411,11 +411,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.forbidden_db is not None:
         value = _hold("USER_DB_ARGUMENT_NOT_ALLOWED", effects=_effects(cleanup_pass=True))
         code = 2
+    elif args.demo == "person-continuity":
+        from .person_twin_demo import run_person_continuity
+        value, code = run_person_continuity(timeout=args.timeout)
     else:
         value, code = run_continuity(timeout=max(1.0, args.timeout))
 
     if args.as_json:
         print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
+    elif args.demo == "person-continuity" and args.forbidden_db is None:
+        from .person_twin_demo import render_person_continuity
+        print(render_person_continuity(value))
     else:
         print(_render(value))
     return code
