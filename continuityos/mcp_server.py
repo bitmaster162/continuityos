@@ -112,6 +112,13 @@ class Server:
         r15_controller_profile_sha256: str = "",
         r15_custody_path: str = "",
     ):
+        # Match core cos: optional model construction requires explicit opt-in.
+        # The existing CURRENT wrapper denies before this constructor is entered.
+        embedder_mode = os.environ.get("CONTINUITYOS_EMBEDDER", "").strip().lower()
+        if embedder_mode not in {
+            "", "hash", "hashing", "offline", "local", "fast", "fastembed",
+        }:
+            raise ValueError("UNSUPPORTED_EMBEDDER_MODE")
         resolved = resolve_memory_db(db)
         db = resolved["path"]
         self.db_path = db
@@ -120,11 +127,54 @@ class Server:
             and db != ":memory:"
             and not os.path.isfile(db)
         )
+        embedder = None
+        if embedder_mode in {"fast", "fastembed"}:
+            try:
+                from .embedders import FastEmbedEmbedder
+                embedder = FastEmbedEmbedder()
+            except Exception as exc:
+                raise RuntimeError(
+                    "FAST_EMBEDDER_UNAVAILABLE: explicit fast mode cannot fall back to hash"
+                ) from exc
+        # Memory errors must propagate, not reopen the same DB with another model.
+        self.m = Memory(db, embedder=embedder)
         try:
-            from .embedders import FastEmbedEmbedder
-            self.m = Memory(db, embedder=FastEmbedEmbedder())
-        except Exception:
-            self.m = Memory(db)  # fallback to HashingEmbedder
+            # Synthetic probe only: never send a stored record to the embedder here.
+            try:
+                probe = self.m.embed("continuityos:mcp-embedding-dimension-probe:v1")
+            except Exception as exc:
+                raise ValueError("EMBEDDER_PROBE_FAILED") from exc
+            if not isinstance(probe, (list, tuple)) or not probe:
+                raise ValueError("EMBEDDER_PROBE_INVALID")
+            selected_dimension = len(probe)
+            # All non-NULL vectors, across namespaces; no text or BLOB payload reads.
+            cursor = self.m.store.con.execute(
+                "SELECT MIN(length(vec)), MAX(length(vec)), "
+                "COALESCE(SUM(CASE WHEN typeof(vec) <> 'blob' "
+                "OR length(vec) = 0 OR length(vec) % 4 <> 0 "
+                "THEN 1 ELSE 0 END), 0) FROM items WHERE vec IS NOT NULL"
+            )
+            try:
+                minimum_bytes, maximum_bytes, malformed = cursor.fetchone()
+            finally:
+                cursor.close()
+            if malformed:
+                raise ValueError("EMBEDDER_VECTOR_DATA_INVALID: non-empty float32 BLOB required")
+            if minimum_bytes is not None and (
+                minimum_bytes != maximum_bytes or minimum_bytes != selected_dimension * 4
+            ):
+                stored = str(minimum_bytes // 4)
+                if minimum_bytes != maximum_bytes:
+                    stored += ".." + str(maximum_bytes // 4) + " (mixed)"
+                raise ValueError(
+                    f"EMBEDDER_DIMENSION_MISMATCH store={stored} selected={selected_dimension}; "
+                    "set CONTINUITYOS_EMBEDDER to the original compatible backend; "
+                    "restore or re-embed separately, never mix vector spaces"
+                )
+        except BaseException:
+            # A failed startup must not leave its opened Memory connection alive.
+            self.m.store.con.close()
+            raise
         self.c = Continuity(memory=self.m)
         self.c._context_source = db_source or resolved["source"]
         self._governance_context_error = (
