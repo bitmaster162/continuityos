@@ -49,8 +49,8 @@ def test_exact_id_and_field_discrepancy(tmp_path):
     assert result["unexpected_runtime_ids"] == [17]
     assert result["changed_fields"] == [{"id": 1, "fields": ["next_turn"]}]
     assert result["version_mismatch"] is True
-    assert "changed" not in json.dumps(result)
-    assert "extra" not in json.dumps(result)
+    assert '"changed"' not in json.dumps(result)
+    assert '"extra"' not in json.dumps(result)
 
 
 def test_reference_requires_all_16(tmp_path):
