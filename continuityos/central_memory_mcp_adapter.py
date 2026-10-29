@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .mcp_server import PROTOCOL  # Constant only: never instantiate/import Server.
+PROTOCOL = "2024-11-05"  # Pinned protocol; no import of legacy MCP modules.
 
 POLICY_SCHEMA = "central-memory.r2.agent-safepolicy-r61/v1"
 RECEIPT_SCHEMA = "central-memory.r2.r61.offline-review-receipt/v1"
