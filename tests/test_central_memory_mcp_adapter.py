@@ -144,3 +144,30 @@ def test_adapter_never_imports_legacy_core_or_writes_to_disk():
                       "write_text(", "os.open(", "os.O_CREAT", "preflight_exec",
                       "journal_append", "execute_preflight", "self._core.call("):
         assert forbidden not in source, forbidden
+
+def test_oversized_policy_fails_closed(tmp_path):
+    root = make_view(tmp_path)
+    (root / "AGENT_POLICY_R61.json").write_bytes(b"x" * (mod.MAX_FILE_BYTES + 1))
+    with pytest.raises(ValueError, match="TOO_LARGE"):
+        mod.CentralMemoryMCPAdapter(str(root)).call("agent_view_status", {})
+
+
+def test_duplicate_json_keys_fail_closed(tmp_path):
+    root = make_view(tmp_path)
+    (root / "AGENT_POLICY_R61.json").write_text(
+        '{"schema":"x","schema":"y"}', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="DUPLICATE_JSON_FIELD"):
+        mod.CentralMemoryMCPAdapter(str(root)).call("agent_view_status", {})
+
+
+def test_policy_schema_mismatch_fails_closed(tmp_path):
+    root = make_view(tmp_path, policy_changes={"schema": "wrong"})
+    with pytest.raises(ValueError, match="SCHEMA_MISMATCH"):
+        mod.CentralMemoryMCPAdapter(str(root)).call("agent_view_status", {})
+
+
+def test_unapproved_receipt_state_fails_closed(tmp_path):
+    root = make_view(tmp_path, receipt_changes={"owner_sqlite_changed": True})
+    with pytest.raises(PermissionError, match="ADMISSION_GUARD_FAILED"):
+        mod.CentralMemoryMCPAdapter(str(root)).call("agent_view_status", {})
