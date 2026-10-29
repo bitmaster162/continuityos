@@ -24,3 +24,19 @@ Stop before connection for missing authorization, stale evidence, changed source
 
 ## COS-R3 status
 No client connections, no production admission and no server or key changes are authorized by PR #217 or #218.
+
+## Independent Central Memory line runbook reconciliation (R3)
+The private owner-side runbook on the laptop additionally requires per-client identity, expiry,
+revocation, metadata-only read journal, independently reviewed R6.2 projection,
+and denied unauthenticated/expired/revoked/overscoped access tests.
+This R3 adapter is deliberately a *status-only offline DENY probe* and implements
+NONE of those client-admission capabilities. Its green CI is NOT connection readiness.
+The 16-line LINES_REGISTRY_CURRENT source is not part of R6.1 agent_view and
+must not be copied into that projection without a separate signed owner decision.
+
+For an EVIDENCE_ONLY reconciliation, first obtain a fresh owner-authorized bounded
+read-only **runtime line-registry export** with 16 stable IDs and the agreed seven
+fields, a source/version timestamp and provenance receipt. Compare against the current
+canonical LINES_REGISTRY_CURRENT source offline; issue field-level differences,
+missing/extra IDs and stale records. Do not query the owner SQLite or authenticated
+gateway using this runbook. Without this export, mark runtime reconciliation INCOMPLETE.
