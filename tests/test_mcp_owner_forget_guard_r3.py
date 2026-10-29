@@ -62,9 +62,18 @@ def test_owner_mode_requires_explicit_capability():
 
 
 def test_default_constructor_never_enables_forget():
-    import inspect
-    param = inspect.signature(Server).parameters["allow_owner_forget"]
-    assert param.default is False
+    # Source contract independent of legacy tests that monkeypatch Server.__init__.
+    import ast
+    from pathlib import Path
+    import continuityos.mcp_server as mcp_module
+    tree = ast.parse(Path(mcp_module.__file__).read_text(encoding="utf-8"))
+    klass = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Server")
+    initializer = next(n for n in klass.body if isinstance(n, ast.FunctionDef) and n.name == "__init__")
+    defaults = dict(zip(
+        [arg.arg for arg in initializer.args.kwonlyargs], initializer.args.kw_defaults
+    ))
+    assert isinstance(defaults["allow_owner_forget"], ast.Constant)
+    assert defaults["allow_owner_forget"].value is False
 
 
 def test_error_does_not_echo_capability():
