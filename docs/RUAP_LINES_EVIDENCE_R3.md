@@ -10,7 +10,7 @@ Runtime source: NOT AVAILABLE TO AGENT. R6.1 agent_view contains 10 offline poli
 - R6.1 policy snapshot is stale relative to R6.2 and must not be silently updated or promoted.
 
 ## Safe offline tool (without any runtime call)
-`python -m tools.ruap_lines_evidence_compare_r3 --reference <approved-reference-export.json> --runtime <approved-runtime-export.json>`
+`python -m continuityos.ruap_lines_evidence_compare_r3 --reference <approved-reference-export.json> --runtime <approved-runtime-export.json>`
 
 Each JSON export has schema `continuityos.ruap_lines_evidence/v1`, `source_version` string,
 and `records` containing a stable integer `id` and seven string fields:
