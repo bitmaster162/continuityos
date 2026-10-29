@@ -12,7 +12,7 @@ from continuityos import central_memory_mcp_adapter as mod
 
 def make_view(tmp_path, policy_changes=None, receipt_changes=None):
     root = tmp_path / "agent_view"
-    root.mkdir()
+    root.mkdir(parents=True)
     sources = {name: {"sha256": name + "-digest"} for name in ("rozi", "shaytan", "sharmanka")}
     policy = {
         "schema": mod.POLICY_SCHEMA,
