@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.ruap_lines_evidence_compare_r3 import SCHEMA, FIELDS, load_export, compare
+from continuityos.ruap_lines_evidence_compare_r3 import SCHEMA, FIELDS, load_export, compare
 
 
 def _entries():
