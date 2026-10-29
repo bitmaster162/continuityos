@@ -88,3 +88,40 @@ def test_catalog_tool_schema_has_no_extra_args():
     schema = OWNER_FORGET_TOOL["inputSchema"]
     assert schema["additionalProperties"] is False
     assert set(schema["properties"]) == {"id", "owner_capability"}
+
+def test_stdio_default_tool_list_and_forget_dispatch(monkeypatch):
+    """Validate JSON-RPC surface, not only the exported TOOLS constant."""
+    import io
+    import sys
+    import continuityos.mcp_server as module
+
+    class SyntheticServer:
+        def __init__(self, *args, **kwargs):
+            self._owner_forget_enabled = False
+            self.m = FakeMemory()
+            self.turns = 0
+
+        def call(self, name, args):
+            return Server.call(self, name, args)
+
+    monkeypatch.setattr(module, "Server", SyntheticServer)
+    monkeypatch.setattr(sys, "argv", ["mcp_server", "--db", ":memory:"])
+    inputs = [
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+         "params": {"name": "forget", "arguments": {"id": 7}}},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+         "params": {"name": "forget",
+                    "arguments": {"id": 7, "owner_capability": "x" * 40}}},
+    ]
+    output = io.StringIO()
+    monkeypatch.setattr(sys, "stdin", io.StringIO(
+        "".join(json.dumps(req) + "\n" for req in inputs)))
+    monkeypatch.setattr(sys, "stdout", output)
+    module.main()
+    replies = [json.loads(line) for line in output.getvalue().splitlines()]
+    assert "forget" not in {t["name"] for t in replies[0]["result"]["tools"]}
+    assert replies[1]["result"]["isError"]
+    assert replies[2]["result"]["isError"]
+    assert "OWNER_FORGET_DISABLED" in replies[1]["result"]["content"][0]["text"]
+    assert "OWNER_FORGET_DISABLED" in replies[2]["result"]["content"][0]["text"]
