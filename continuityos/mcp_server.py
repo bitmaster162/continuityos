@@ -5,7 +5,7 @@ Exposes durable memory to any MCP client (Claude Desktop, Claude Code, etc.):
   - recall(query, k?, namespace?)        -> hybrid (structural+semantic) recall
   - upsert(text, namespace?, key)        -> create-or-update by semantic key (idempotent)
   - find(namespace?, key)                -> exact key lookup (deterministic point-read)
-  - forget(id)                           -> delete a memory
+  - forget(id, owner_capability)          -> disabled unless OWNER explicitly opts in
   - list_namespaces()                    -> folder-like overview
   - context(query, k?)                   -> ready-to-inject context block
 
@@ -13,7 +13,7 @@ Run:  python -m continuityos.mcp_server --db ~/.continuityos/memory.db [--policy
 Newline-delimited JSON-RPC over stdin/stdout (MCP stdio transport).
 """
 from __future__ import annotations
-import sys, json, os, argparse
+import sys, json, os, argparse, hashlib, hmac, re
 from .memory import Memory
 from .continuity import Continuity
 from .twin import Twin
@@ -63,8 +63,6 @@ TOOLS = [
    "required":["key"]}},
  {"name":"context","description":"Return a ready-to-inject context block of the most relevant memories for a query.",
   "inputSchema":{"type":"object","properties":{"query":{"type":"string"},"k":{"type":"integer","default":6}},"required":["query"]}},
- {"name":"forget","description":"Delete a memory by id.",
-  "inputSchema":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}},
  {"name":"list_namespaces","description":"List folder-like namespaces and how many memories each holds.",
   "inputSchema":{"type":"object","properties":{}}} ,
  {"name":"checkpoint","description":"Close a session: record a delta, the next irreversible action, and a proof artifact path.",
@@ -104,6 +102,12 @@ TOOLS = [
   "inputSchema":{"type":"object","properties":{"devil":{"type":"boolean","default":False}}}}
 ]
 
+OWNER_FORGET_TOOL = {"name":"forget","description":"OWNER-only deletion; disabled by default.",
+    "inputSchema":{"type":"object","additionalProperties":False,"properties":{
+        "id":{"type":"integer","minimum":1},
+        "owner_capability":{"type":"string","minLength":32,"maxLength":256}},
+        "required":["id","owner_capability"]}}
+
 class Server:
     def __init__(
         self, db=None, policy_path: str = "", db_source: str = "",
@@ -111,6 +115,8 @@ class Server:
         r15_controller_profile_path: str = "",
         r15_controller_profile_sha256: str = "",
         r15_custody_path: str = "",
+        allow_owner_forget: bool = False,
+        owner_capability_sha256: str = "",
     ):
         # Match core cos: optional model construction requires explicit opt-in.
         # The existing CURRENT wrapper denies before this constructor is entered.
@@ -229,6 +235,10 @@ class Server:
                         "R15 runtime binding failed: "
                         f"{type(exc).__name__}: {exc}"
                     )
+        self._owner_forget_enabled = bool(allow_owner_forget)
+        self._owner_forget_sha256 = owner_capability_sha256 if self._owner_forget_enabled else ""
+        if self._owner_forget_enabled and not re.fullmatch(r"[0-9a-f]{64}", self._owner_forget_sha256):
+            raise ValueError("OWNER_FORGET_CAPABILITY_CONFIGURATION_INVALID")
         self._broker = None
         self.turns = 0
         self.std = 10  # Safe Turn Depth: re-inject canon before omission-rules ("never do X") decay (long-session SRD research)
@@ -250,7 +260,21 @@ class Server:
             hit = self.m.find(args.get("namespace","facts"), args["key"])
             return json.dumps(hit.to_dict(), ensure_ascii=False, indent=2) if hit else "null"
         if name == "forget":
-            self.m.forget(int(args["id"])); return f"forgot #{args['id']}"
+            # Deny before any access to memory, including direct Server.call.
+            if not getattr(self, "_owner_forget_enabled", False):
+                raise PermissionError("OWNER_FORGET_DISABLED")
+            if not isinstance(args, dict) or set(args) != {"id", "owner_capability"}:
+                raise PermissionError("OWNER_FORGET_CAPABILITY_REQUIRED")
+            cap = args.get("owner_capability")
+            memory_id = args.get("id")
+            if (not isinstance(cap, str) or not (32 <= len(cap) <= 256)
+                    or type(memory_id) is not int or memory_id < 1):
+                raise PermissionError("OWNER_FORGET_CAPABILITY_REQUIRED")
+            actual = hashlib.sha256(cap.encode("utf-8")).hexdigest()
+            if not hmac.compare_digest(actual, getattr(self, "_owner_forget_sha256", "")):
+                raise PermissionError("OWNER_FORGET_CAPABILITY_INVALID")
+            self.m.forget(memory_id)
+            return f"forgot #{memory_id}"
         if name == "list_namespaces":
             return json.dumps(self.m.namespaces(), ensure_ascii=False, indent=2)
         if name == "checkpoint":
@@ -430,13 +454,18 @@ def main():
         "--r15-custody", default="",
         help="Explicit DPAPI custody envelope path for the provisioned R15 NV index",
     )
+    ap.add_argument("--enable-owner-forget", action="store_true", default=False,
+                    help="Explicit OWNER opt-in; requires capability SHA-256 supplied in environment")
     a = ap.parse_args()
+    owner_hash = os.environ.get("CONTINUITYOS_OWNER_FORGET_SHA256", "") if a.enable_owner_forget else ""
     srv = Server(
         a.db, a.policy,
         governance_witness_path=a.governance_witness,
         r15_controller_profile_path=a.r15_controller_profile,
         r15_controller_profile_sha256=a.r15_controller_profile_sha256,
         r15_custody_path=a.r15_custody,
+        allow_owner_forget=a.enable_owner_forget,
+        owner_capability_sha256=owner_hash,
     )
     for line in sys.stdin:
         line = line.strip()
@@ -454,7 +483,7 @@ def main():
         elif method == "notifications/initialized":
             continue
         elif method == "tools/list":
-            _send({"jsonrpc":"2.0","id":mid,"result":{"tools":TOOLS}})
+            _send({"jsonrpc":"2.0","id":mid,"result":{"tools":TOOLS + ([OWNER_FORGET_TOOL] if srv._owner_forget_enabled else [])}})
         elif method == "tools/call":
             p = req.get("params",{}) or {}
             try:
