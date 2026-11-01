@@ -171,3 +171,100 @@ def test_unapproved_receipt_state_fails_closed(tmp_path):
     root = make_view(tmp_path, receipt_changes={"owner_sqlite_changed": True})
     with pytest.raises(PermissionError, match="ADMISSION_GUARD_FAILED"):
         mod.CentralMemoryMCPAdapter(str(root)).call("agent_view_status", {})
+
+
+# COS-ORCH-05: synthetic security regression tests, C-drive pytest fixtures only.
+
+def test_mcp_exception_text_and_private_path_redacted_after_json(monkeypatch, tmp_path):
+    root = make_view(tmp_path)
+    marker = "SYNTHETIC_PRIVATE_CREDENTIAL_MARKER"
+    def raise_private(*args, **kwargs):
+        raise PermissionError("C:\\\\SYNTHETIC_PRIVATE\\\\" + marker)
+    monkeypatch.setattr(mod, "read_bounded_file", raise_private)
+    req = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+           "params": {"name": "agent_view_status", "arguments": {}}}
+    output = io.StringIO()
+    monkeypatch.setattr(sys, "argv", ["adapter", "--agent-view", str(root)])
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(req) + "\n"))
+    monkeypatch.setattr(sys, "stdout", output)
+    mod.main()
+    decoded = json.loads(output.getvalue().splitlines()[0])
+    message = decoded["result"]["content"][0]["text"]
+    assert decoded["result"]["isError"] is True
+    assert marker not in message
+    assert "SYNTHETIC_PRIVATE" not in message
+    assert message == "STATUS_READ_FAILED"
+
+
+def test_parent_junction_escape_denied_windows(tmp_path):
+    import os
+    import subprocess
+    if sys.platform != "win32":
+        pytest.skip("Windows junction test")
+    external = make_view(tmp_path / "external")
+    junction = tmp_path / "linked_parent"
+    result = subprocess.run(
+        ["cmd", "/d", "/c", "mklink", "/J", str(junction), str(external.parent)],
+        capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    try:
+        with pytest.raises(ValueError, match="DIRECTORY_INVALID"):
+            mod.CentralMemoryMCPAdapter(str(junction / "agent_view")).call("agent_view_status", {})
+    finally:
+        os.rmdir(junction)
+
+
+def test_file_symlink_or_reparse_attribute_denied(tmp_path, monkeypatch):
+    import os
+    real_root = make_view(tmp_path / "real")
+    root = tmp_path / "normal" / "agent_view"
+    root.mkdir(parents=True)
+    (root / "R61_LOCAL_REVIEW_RECEIPT.json").write_bytes(
+        (real_root / "R61_LOCAL_REVIEW_RECEIPT.json").read_bytes())
+    try:
+        (root / "AGENT_POLICY_R61.json").symlink_to(real_root / "AGENT_POLICY_R61.json")
+    except OSError:
+        # Windows without symlink privilege: exercise the equivalent reparse
+        # attribute branch synthetically, without elevated privileges.
+        from types import SimpleNamespace
+        victim = root / "AGENT_POLICY_R61.json"
+        victim.write_bytes((real_root / "AGENT_POLICY_R61.json").read_bytes())
+        original_lstat = Path.lstat
+        def synthetic_reparse(path):
+            info = original_lstat(path)
+            if path == victim:
+                return SimpleNamespace(st_mode=info.st_mode, st_file_attributes=0x400)
+            return info
+        monkeypatch.setattr(Path, "lstat", synthetic_reparse)
+    with pytest.raises(ValueError, match="FILE_MISSING_OR_LINKED"):
+        mod.CentralMemoryMCPAdapter(str(root)).call("agent_view_status", {})
+
+
+def test_handle_identity_rejects_preopen_atomic_swap(tmp_path, monkeypatch):
+    import os
+    from continuityos import _offline_path_guard as guard
+    root = make_view(tmp_path)
+    victim = root / "AGENT_POLICY_R61.json"
+    original_open = guard.os.open
+    swapped = False
+    def swap_then_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if not swapped and Path(path) == victim:
+            swapped = True
+            replacement = root / "synthetic_replacement.json"
+            replacement.write_bytes(b'{"secret":"SYNTHETIC_NEVER_DISCLOSE"}')
+            os.replace(replacement, victim)
+        return original_open(path, flags, *args, **kwargs)
+    monkeypatch.setattr(guard.os, "open", swap_then_open)
+    with pytest.raises(ValueError, match="FILE_MISSING_OR_LINKED"):
+        mod.CentralMemoryMCPAdapter(str(root)).call("agent_view_status", {})
+    assert swapped
+
+
+def test_source_guard_still_rejects_effect_tool_without_disk(tmp_path, monkeypatch):
+    from continuityos import _offline_path_guard as guard
+    def no_open(*args, **kwargs):
+        raise AssertionError("FORBIDDEN_TOOL_TOUCHED_FILE")
+    monkeypatch.setattr(guard.os, "open", no_open)
+    with pytest.raises(PermissionError, match="TOOL_NOT_EXPOSED"):
+        mod.CentralMemoryMCPAdapter(str(tmp_path / "agent_view")).call("forget", {"id": 1})

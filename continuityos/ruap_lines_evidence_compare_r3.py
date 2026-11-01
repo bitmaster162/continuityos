@@ -7,13 +7,25 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Any
+
+from ._offline_path_guard import read_bounded_file
 
 SCHEMA = "continuityos.ruap_lines_evidence/v1"
 FIELDS = ("line", "executor_chat", "bucket", "current_state", "next_turn", "evidence", "updated_at")
 MAX_BYTES = 131_072
 EXPECTED_REFERENCE_IDS = frozenset(range(1, 17))
+# Source versions are public identifiers, never arbitrary source-provided text.
+_VERSION_RE = re.compile(r"R[0-9]{1,4}(?:\.[0-9]{1,3})?(?:/R[0-9]{1,4}(?:\.[0-9]{1,3})?)?\Z")
+
+
+def _safe_version(value: Any) -> str:
+    if not isinstance(value, str) or not _VERSION_RE.fullmatch(value):
+        raise ValueError("SOURCE_VERSION_INVALID")
+    return value
+
 
 
 def _unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -26,16 +38,12 @@ def _unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def load_export(path: str, *, reference: bool) -> dict[str, Any]:
-    target = Path(path)
-    if target.is_symlink() or not target.is_file():
-        raise ValueError("EXPORT_NOT_REGULAR_FILE")
-    before = target.stat()
-    if before.st_size > MAX_BYTES:
-        raise ValueError("EXPORT_TOO_LARGE")
-    raw = target.read_bytes()
-    after = target.stat()
-    if len(raw) > MAX_BYTES or (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
-        raise ValueError("EXPORT_CHANGED_OR_TOO_LARGE")
+    try:
+        raw = read_bounded_file(Path(path), MAX_BYTES)
+    except ValueError as exc:
+        if str(exc) == "OFFLINE_FILE_TOO_LARGE":
+            raise ValueError("EXPORT_TOO_LARGE") from None
+        raise ValueError("EXPORT_NOT_REGULAR_FILE") from None
     try:
         obj = json.loads(raw.decode("utf-8-sig"), object_pairs_hook=_unique)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -45,8 +53,7 @@ def load_export(path: str, *, reference: bool) -> dict[str, Any]:
     records = obj.get("records")
     if not isinstance(records, list) or len(records) > 64:
         raise ValueError("EXPORT_RECORDS_INVALID")
-    if not isinstance(obj.get("source_version"), str) or not obj["source_version"].strip():
-        raise ValueError("SOURCE_VERSION_REQUIRED")
+    version = _safe_version(obj.get("source_version"))
     mapped = {}
     for record in records:
         if not isinstance(record, dict) or set(record) != {"id", *FIELDS}:
@@ -59,10 +66,13 @@ def load_export(path: str, *, reference: bool) -> dict[str, Any]:
         mapped[rid] = record
     if reference and frozenset(mapped) != EXPECTED_REFERENCE_IDS:
         raise ValueError("REFERENCE_MUST_HAVE_16_LINES")
-    return {"source_version": obj["source_version"], "records": mapped}
+    return {"source_version": version, "records": mapped}
 
 
 def compare(reference: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:
+    # Also enforce the boundary for direct in-process callers.
+    ref_version = _safe_version(reference.get("source_version"))
+    run_version = _safe_version(runtime.get("source_version"))
     expected, observed = reference["records"], runtime["records"]
     missing = sorted(set(expected) - set(observed))
     unexpected = sorted(set(observed) - set(expected))
@@ -71,14 +81,14 @@ def compare(reference: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any
         for rid in sorted(set(expected) & set(observed))
     ]
     changed = [item for item in changed if item["fields"]]
-    version_mismatch = reference["source_version"] != runtime["source_version"]
+    version_mismatch = ref_version != run_version
     return {
         "schema": "continuityos.ruap_lines_comparison_receipt/v1",
         "status": "DIFF" if missing or unexpected or changed or version_mismatch else "FIELD_MATCH_UNATTESTED",
         "reference_count": len(expected),
         "runtime_count": len(observed),
-        "reference_source_version": reference["source_version"],
-        "runtime_source_version": runtime["source_version"],
+        "reference_source_version": ref_version,
+        "runtime_source_version": run_version,
         "version_mismatch": version_mismatch,
         "missing_runtime_ids": missing,
         "unexpected_runtime_ids": unexpected,

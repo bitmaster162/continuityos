@@ -83,3 +83,58 @@ def test_no_runtime_source_does_not_become_complete(tmp_path):
     path = tmp_path / "missing.json"
     with pytest.raises(ValueError, match="NOT_REGULAR"):
         load_export(str(path), reference=False)
+
+
+
+@pytest.mark.parametrize("bad_version", [
+    "R6.2_SYNTHETIC_PRIVATE_TOKEN",
+    "C:/SYNTHETIC_PRIVATE_PATH",
+    "R6.2\\nSECRET",
+    "R6.2\\r\\nSTATUS=COMPLETE",
+    "R6.2" + "A" * 256,
+    "",
+    "R6.2\\\\windows",
+])
+def test_ruap_rejects_untrusted_source_version(tmp_path, bad_version):
+    from continuityos.ruap_lines_evidence_compare_r3 import load_export
+    path = tmp_path / "export.json"
+    _write(path, _entries(), version=bad_version)
+    with pytest.raises(ValueError, match="SOURCE_VERSION_INVALID"):
+        load_export(str(path), reference=True)
+
+
+def test_direct_compare_cannot_echo_source_version_secret():
+    from continuityos.ruap_lines_evidence_compare_r3 import compare
+    dirty = {"source_version": "R6.2_SENSITIVE_SECRET", "records": {}}
+    clean = {"source_version": "R6.2", "records": {}}
+    with pytest.raises(ValueError, match="SOURCE_VERSION_INVALID"):
+        compare(dirty, clean)
+
+
+def test_ruap_parent_junction_export_denied(tmp_path):
+    import subprocess
+    import sys
+    import os
+    if sys.platform != "win32":
+        pytest.skip("Windows junction test")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _write(outside / "data.json", _entries())
+    junction = tmp_path / "junction"
+    result = subprocess.run(
+        ["cmd", "/d", "/c", "mklink", "/J", str(junction), str(outside)],
+        capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    try:
+        with pytest.raises(ValueError, match="NOT_REGULAR"):
+            load_export(str(junction / "data.json"), reference=True)
+    finally:
+        os.rmdir(junction)
+
+
+
+@pytest.mark.parametrize("version", ["R6.2", "R4/R6.2", "R270", "R271"])
+def test_ruap_accepts_bounded_public_version_identifiers(tmp_path, version):
+    path = tmp_path / "validated.json"
+    _write(path, _entries(), version=version)
+    assert load_export(str(path), reference=True)["source_version"] == version

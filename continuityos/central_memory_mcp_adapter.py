@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from ._offline_path_guard import read_bounded_file, require_plain_dir
 PROTOCOL = "2024-11-05"  # Pinned protocol; no import of legacy MCP modules.
 
 POLICY_SCHEMA = "central-memory.r2.agent-safepolicy-r61/v1"
@@ -35,13 +36,12 @@ def _unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def _load_json(path: Path) -> tuple[dict[str, Any], str]:
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("AGENT_VIEW_FILE_MISSING_OR_LINKED")
-    if path.stat().st_size > MAX_FILE_BYTES:
-        raise ValueError("AGENT_VIEW_FILE_TOO_LARGE")
-    raw = path.read_bytes()
-    if len(raw) > MAX_FILE_BYTES:
-        raise ValueError("AGENT_VIEW_FILE_TOO_LARGE")
+    try:
+        raw = read_bounded_file(path, MAX_FILE_BYTES)
+    except ValueError as exc:
+        if str(exc) == "OFFLINE_FILE_TOO_LARGE":
+            raise ValueError("AGENT_VIEW_FILE_TOO_LARGE") from None
+        raise ValueError("AGENT_VIEW_FILE_MISSING_OR_LINKED") from None
     try:
         data = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_pairs)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -62,11 +62,19 @@ class CentralMemoryMCPAdapter:
             raise PermissionError("TOOL_NOT_EXPOSED_BY_CENTRAL_MEMORY_ADAPTER")
         if arguments != {}:
             raise ValueError("STATUS_TAKES_NO_ARGUMENTS")
-        if self._root.name != "agent_view" or self._root.is_symlink() or not self._root.is_dir():
+        if self._root.name != "agent_view":
             raise ValueError("AGENT_VIEW_DIRECTORY_INVALID")
+        try:
+            require_plain_dir(self._root)
+        except ValueError:
+            raise ValueError("AGENT_VIEW_DIRECTORY_INVALID") from None
 
         policy, digest = _load_json(self._root / "AGENT_POLICY_R61.json")
         receipt, _ = _load_json(self._root / "R61_LOCAL_REVIEW_RECEIPT.json")
+        try:
+            require_plain_dir(self._root)
+        except ValueError:
+            raise ValueError("AGENT_VIEW_DIRECTORY_INVALID") from None
         if policy.get("schema") != POLICY_SCHEMA or receipt.get("schema") != RECEIPT_SCHEMA:
             raise ValueError("AGENT_VIEW_SCHEMA_MISMATCH")
         if digest != receipt.get("projection_sha256"):
@@ -103,6 +111,30 @@ class CentralMemoryMCPAdapter:
             "projection_sha256": digest,
         }
         return json.dumps(result, sort_keys=True, separators=(",", ":"))
+
+
+# Never format an arbitrary exception into JSON-RPC (paths/credentials can be in it).
+_PUBLIC_ERRORS = frozenset({
+    "TOOL_NOT_EXPOSED_BY_CENTRAL_MEMORY_ADAPTER",
+    "STATUS_TAKES_NO_ARGUMENTS",
+    "AGENT_VIEW_DIRECTORY_INVALID",
+    "AGENT_VIEW_FILE_MISSING_OR_LINKED",
+    "AGENT_VIEW_FILE_TOO_LARGE",
+    "AGENT_VIEW_INVALID_JSON",
+    "AGENT_VIEW_INVALID_OBJECT",
+    "AGENT_VIEW_SCHEMA_MISMATCH",
+    "AGENT_VIEW_SHA256_MISMATCH",
+    "R61_ADMISSION_GUARD_FAILED",
+    "AGENT_VIEW_PROVENANCE_INVALID",
+    "AGENT_VIEW_PROVENANCE_MISMATCH",
+    "AGENT_VIEW_POLICY_COUNT_INVALID",
+    "DUPLICATE_JSON_FIELD",
+})
+
+
+def _public_error(exc: Exception) -> str:
+    text = str(exc)
+    return text if text in _PUBLIC_ERRORS else "STATUS_READ_FAILED"
 
 
 def _send(response: dict[str, Any]) -> None:
@@ -144,7 +176,7 @@ def main() -> None:
             except Exception as exc:
                 _send({"jsonrpc": "2.0", "id": mid, "result": {
                     "isError": True, "content": [{"type": "text",
-                    "text": f"{type(exc).__name__}: {exc}"}]}})
+                    "text": _public_error(exc)}]}})
         elif method == "ping":
             _send({"jsonrpc": "2.0", "id": mid, "result": {}})
         elif mid is not None:
