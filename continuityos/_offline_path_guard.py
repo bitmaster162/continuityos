@@ -174,8 +174,15 @@ if os.name == "nt":
             with _win_anchored(path, directory=False) as handles:
                 handle = handles[-1]
                 fd = msvcrt.open_osfhandle(handle.value if hasattr(handle, "value") else handle, os.O_RDONLY | os.O_BINARY)
-                handles[-1] = None  # CRT now owns this handle.
-                with os.fdopen(fd, "rb") as stream:
+                handles[-1] = None  # CRT owns the HANDLE after open_osfhandle.
+                try:
+                    stream = os.fdopen(fd, "rb")
+                except BaseException:
+                    # fdopen may fail before adopting the CRT descriptor.
+                    # Do not leak the descriptor or double-close the HANDLE.
+                    os.close(fd)
+                    raise
+                with stream:
                     before = os.fstat(stream.fileno())
                     if before.st_size > limit:
                         raise ValueError("OFFLINE_FILE_TOO_LARGE")

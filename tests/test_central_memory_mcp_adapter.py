@@ -363,15 +363,38 @@ def test_source_guard_still_rejects_effect_tool_without_disk(tmp_path, monkeypat
         mod.CentralMemoryMCPAdapter(str(tmp_path / "agent_view")).call("forget", {"id": 1})
 
 @pytest.mark.parametrize("unsafe_path", [
-    r"\\\\localhost\\C$\\outside\\agent_view",
-    r"\\\\?\\C:\\outside\\agent_view",
-    r"C:\\temp\\..\\outside\\agent_view",
-    r"C:\\temp\\special:stream\\agent_view",
+    r"\\server\share\agent_view",      # genuine UNC, two leading backslashes
+    r"\\?\C:\outside\agent_view",      # genuine Win32 device namespace
+    r"\\.\C:\outside\agent_view",      # alternate Win32 device namespace
+    r"\??\C:\outside\agent_view",      # NT namespace spelling
+    r"C:\temp\..\outside\agent_view",
+    r"C:\temp\special:stream\agent_view",
 ])
 def test_windows_adversarial_path_forms_denied(unsafe_path):
     import os
     if os.name != "nt":
         pytest.skip("Windows path semantics")
     from continuityos._offline_path_guard import require_plain_dir
+    if unsafe_path.startswith("\\\\"):
+        assert not unsafe_path.startswith("\\\\\\"), "not a genuine two-slash UNC/NT prefix"
     with pytest.raises(ValueError, match="OFFLINE_PATH_UNSAFE"):
         require_plain_dir(Path(unsafe_path))
+
+
+def test_windows_fdopen_failure_closes_transferred_crt_descriptor(tmp_path, monkeypatch):
+    import os
+    import msvcrt
+    from continuityos import _offline_path_guard as guard
+    root = make_view(tmp_path)
+    captured = []
+    def synthetic_fdopen_failure(fd, *args, **kwargs):
+        captured.append(fd)
+        # Ensure the CRT descriptor owns an actual Windows HANDLE first.
+        assert msvcrt.get_osfhandle(fd) != -1
+        raise OSError("SYNTHETIC_FDOPEN_FAILURE")
+    monkeypatch.setattr(guard.os, "fdopen", synthetic_fdopen_failure)
+    with pytest.raises(ValueError, match="FILE_MISSING_OR_LINKED"):
+        mod.CentralMemoryMCPAdapter(str(root)).call("agent_view_status", {})
+    assert len(captured) == 1
+    with pytest.raises(OSError):
+        msvcrt.get_osfhandle(captured[0])
