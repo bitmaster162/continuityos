@@ -216,49 +216,142 @@ def test_parent_junction_escape_denied_windows(tmp_path):
 
 def test_file_symlink_or_reparse_attribute_denied(tmp_path, monkeypatch):
     import os
+    from continuityos import _offline_path_guard as guard
     real_root = make_view(tmp_path / "real")
     root = tmp_path / "normal" / "agent_view"
     root.mkdir(parents=True)
     (root / "R61_LOCAL_REVIEW_RECEIPT.json").write_bytes(
         (real_root / "R61_LOCAL_REVIEW_RECEIPT.json").read_bytes())
+    victim = root / "AGENT_POLICY_R61.json"
     try:
-        (root / "AGENT_POLICY_R61.json").symlink_to(real_root / "AGENT_POLICY_R61.json")
+        victim.symlink_to(real_root / "AGENT_POLICY_R61.json")
     except OSError:
-        # Windows without symlink privilege: exercise the equivalent reparse
-        # attribute branch synthetically, without elevated privileges.
+        # Privilege-free synthetic reparse attribute from an actual opened handle.
         from types import SimpleNamespace
-        victim = root / "AGENT_POLICY_R61.json"
         victim.write_bytes((real_root / "AGENT_POLICY_R61.json").read_bytes())
-        original_lstat = Path.lstat
-        def synthetic_reparse(path):
-            info = original_lstat(path)
-            if path == victim:
-                return SimpleNamespace(st_mode=info.st_mode, st_file_attributes=0x400)
-            return info
-        monkeypatch.setattr(Path, "lstat", synthetic_reparse)
+        actual_info = guard._kernel32.GetFileInformationByHandle
+        def synthetic_reparse(handle, pointer):
+            ok = actual_info(handle, pointer)
+            if ok and guard._win_handle_path(handle).casefold() == str(victim).casefold():
+                pointer._obj.attributes |= 0x400
+            return ok
+        monkeypatch.setattr(guard._kernel32, "GetFileInformationByHandle",
+                            synthetic_reparse)
     with pytest.raises(ValueError, match="FILE_MISSING_OR_LINKED"):
         mod.CentralMemoryMCPAdapter(str(root)).call("agent_view_status", {})
 
 
-def test_handle_identity_rejects_preopen_atomic_swap(tmp_path, monkeypatch):
+def test_anchored_parent_swap_does_not_follow_replaced_absolute_path(tmp_path, monkeypatch):
     import os
+    import subprocess
     from continuityos import _offline_path_guard as guard
     root = make_view(tmp_path)
-    victim = root / "AGENT_POLICY_R61.json"
-    original_open = guard.os.open
-    swapped = False
-    def swap_then_open(path, flags, *args, **kwargs):
-        nonlocal swapped
-        if not swapped and Path(path) == victim:
-            swapped = True
-            replacement = root / "synthetic_replacement.json"
-            replacement.write_bytes(b'{"secret":"SYNTHETIC_NEVER_DISCLOSE"}')
-            os.replace(replacement, victim)
-        return original_open(path, flags, *args, **kwargs)
-    monkeypatch.setattr(guard.os, "open", swap_then_open)
-    with pytest.raises(ValueError, match="FILE_MISSING_OR_LINKED"):
-        mod.CentralMemoryMCPAdapter(str(root)).call("agent_view_status", {})
-    assert swapped
+    external = make_view(tmp_path / "external", policy_changes={"synthetic": "outside"})
+    moved = tmp_path / "moved_agent_view"
+    original = guard._win_open_relative
+    swapped = []
+    def replace_parent_with_junction(parent, name, *, directory):
+        if name == "AGENT_POLICY_R61.json" and not swapped:
+            os.rename(root, moved)
+            command = subprocess.run(
+                ["cmd", "/d", "/c", "mklink", "/J", str(root), str(external)],
+                capture_output=True, text=True, timeout=5)
+            assert command.returncode == 0, command.stderr
+            swapped.append(True)
+        return original(parent, name, directory=directory)
+    monkeypatch.setattr(guard, "_win_open_relative", replace_parent_with_junction)
+    try:
+        with pytest.raises(ValueError, match="FILE_MISSING_OR_LINKED"):
+            mod.CentralMemoryMCPAdapter(str(root)).call("agent_view_status", {})
+        assert swapped == [True], "real junction attack was not executed"
+    finally:
+        if moved.exists() and root.exists():
+            assert root.lstat().st_file_attributes & 0x400, "non-junction at attack path"
+            os.rmdir(root)
+        if moved.exists():
+            os.rename(moved, root)
+
+
+def test_concurrent_parent_junction_swap_never_reads_external(tmp_path):
+    import os
+    import subprocess
+    import sys
+    import threading
+    import time
+    if sys.platform != "win32":
+        pytest.skip("Windows junction race")
+    parent = tmp_path / "switch_parent"
+    safe = make_view(parent)
+    outside = make_view(tmp_path / "outside", policy_changes={"custom": "external-data"})
+    original_digest = json.loads(
+        mod.CentralMemoryMCPAdapter(str(safe)).call("agent_view_status", {})
+    )["projection_sha256"]
+    external_digest = json.loads(
+        mod.CentralMemoryMCPAdapter(str(outside)).call("agent_view_status", {})
+    )["projection_sha256"]
+    assert original_digest != external_digest
+    parked = tmp_path / "parked_parent"
+    stop = threading.Event()
+    attempts = []
+    errors = []
+    def changer():
+        for _ in range(20):
+            if stop.is_set():
+                break
+            try:
+                os.rename(parent, parked)
+            except OSError:
+                attempts.append("locked")
+                time.sleep(0.001)
+                continue
+            junction = False
+            try:
+                command = subprocess.run(
+                    ["cmd", "/d", "/c", "mklink", "/J", str(parent), str(outside.parent)],
+                    capture_output=True, text=True, timeout=5)
+                if command.returncode != 0:
+                    errors.append("create-junction-failed")
+                    continue
+                junction = True
+                attempts.append("junction")
+                time.sleep(0.008)
+            except Exception:
+                errors.append("junction-transition-error")
+            finally:
+                if junction:
+                    try:
+                        os.rmdir(parent)
+                    except OSError:
+                        errors.append("junction-remove-failed")
+                if parked.exists():
+                    try:
+                        os.rename(parked, parent)
+                    except OSError:
+                        errors.append("restore-failed")
+    thread = threading.Thread(target=changer, daemon=True)
+    thread.start()
+    seen = []
+    try:
+        for _ in range(180):
+            try:
+                response = json.loads(mod.CentralMemoryMCPAdapter(str(parent / "agent_view")).call("agent_view_status", {}))
+                seen.append(response["projection_sha256"])
+            except ValueError:
+                pass  # fail closed during a rename or junction window
+            time.sleep(0.0004)
+    finally:
+        stop.set()
+        thread.join(timeout=10)
+    assert not thread.is_alive(), "attacker fixture did not terminate"
+    assert not errors, "adversary fixture incomplete: " + ",".join(errors)
+    assert attempts, "no rename attempts were executed"
+    assert "junction" in attempts, "no adversarial junction actually created"
+    assert all(d == original_digest for d in seen), "external junction data was accepted"
+    assert external_digest not in seen
+    restored = json.loads(mod.CentralMemoryMCPAdapter(str(parent / "agent_view")).call("agent_view_status", {}))
+    assert restored["projection_sha256"] == original_digest
+
+
 
 
 def test_source_guard_still_rejects_effect_tool_without_disk(tmp_path, monkeypatch):
@@ -268,3 +361,17 @@ def test_source_guard_still_rejects_effect_tool_without_disk(tmp_path, monkeypat
     monkeypatch.setattr(guard.os, "open", no_open)
     with pytest.raises(PermissionError, match="TOOL_NOT_EXPOSED"):
         mod.CentralMemoryMCPAdapter(str(tmp_path / "agent_view")).call("forget", {"id": 1})
+
+@pytest.mark.parametrize("unsafe_path", [
+    r"\\\\localhost\\C$\\outside\\agent_view",
+    r"\\\\?\\C:\\outside\\agent_view",
+    r"C:\\temp\\..\\outside\\agent_view",
+    r"C:\\temp\\special:stream\\agent_view",
+])
+def test_windows_adversarial_path_forms_denied(unsafe_path):
+    import os
+    if os.name != "nt":
+        pytest.skip("Windows path semantics")
+    from continuityos._offline_path_guard import require_plain_dir
+    with pytest.raises(ValueError, match="OFFLINE_PATH_UNSAFE"):
+        require_plain_dir(Path(unsafe_path))
