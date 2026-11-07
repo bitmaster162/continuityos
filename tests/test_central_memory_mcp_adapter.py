@@ -241,6 +241,7 @@ def test_file_symlink_or_reparse_attribute_denied(tmp_path, monkeypatch):
         mod.CentralMemoryMCPAdapter(str(root)).call("agent_view_status", {})
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only native handle regression")
 def test_anchored_parent_swap_does_not_follow_replaced_absolute_path(tmp_path, monkeypatch):
     import os
     import subprocess
@@ -381,6 +382,7 @@ def test_windows_adversarial_path_forms_denied(unsafe_path):
         require_plain_dir(Path(unsafe_path))
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only native handle regression")
 def test_windows_fdopen_failure_closes_transferred_crt_descriptor(tmp_path, monkeypatch):
     import os
     import msvcrt
