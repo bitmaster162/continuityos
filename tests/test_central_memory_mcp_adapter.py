@@ -286,6 +286,28 @@ def test_anchored_parent_swap_does_not_follow_replaced_absolute_path(tmp_path, m
             os.rename(moved, root)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only native handle regression")
+def test_windows_open_handle_final_path_mismatch_denied(tmp_path, monkeypatch):
+    """Second guardrail: a handle whose final path differs must fail closed."""
+    from continuityos import _offline_path_guard as guard
+
+    root = make_view(tmp_path)
+    original_path = guard._win_handle_path
+    mismatches = []
+
+    def substitute_final_path(handle):
+        actual = original_path(handle)
+        if actual.casefold().endswith("\\AGENT_POLICY_R61.json".casefold()):
+            mismatches.append(actual)
+            return str(tmp_path / "synthetic_other_parent" / "AGENT_POLICY_R61.json")
+        return actual
+
+    monkeypatch.setattr(guard, "_win_handle_path", substitute_final_path)
+    with pytest.raises(ValueError, match="AGENT_VIEW_FILE_MISSING_OR_LINKED"):
+        mod.CentralMemoryMCPAdapter(str(root)).call("agent_view_status", {})
+    assert mismatches, "test never exercised the open-handle final-path check"
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows junction race")
 def test_concurrent_parent_junction_swap_never_reads_external(tmp_path):
     import os
@@ -317,6 +339,25 @@ def test_concurrent_parent_junction_swap_never_reads_external(tmp_path):
     stop = threading.Event()
     attempts = []
     errors = []
+
+    # Prove at least one REAL junction substitution deterministically before
+    # stressing concurrent readers. Under the hardened Windows directory
+    # handles, in-race renames can all be correctly blocked (WinError 32),
+    # which must not make the fixture claim an untested junction existed.
+    try:
+        os.rename(parent, parked)
+        os.rename(staged_link, parent)
+        assert parent.lstat().st_file_attributes & 0x400, "no actual junction installed"
+        attempts.append("junction")
+        with pytest.raises(ValueError, match="AGENT_VIEW_DIRECTORY_INVALID"):
+            mod.CentralMemoryMCPAdapter(
+                str(parent / "agent_view")).call("agent_view_status", {})
+    finally:
+        if parked.exists():
+            if os.path.lexists(parent):
+                assert parent.lstat().st_file_attributes & 0x400
+                os.rename(parent, staged_link)
+            os.rename(parked, parent)
 
     def restore_fixture():
         for _retry in range(500):
@@ -389,6 +430,7 @@ def test_concurrent_parent_junction_swap_never_reads_external(tmp_path):
     assert not thread.is_alive(), "attacker fixture did not terminate"
     assert not errors, "adversary fixture incomplete: " + ",".join(errors)
     assert attempts, "attacker did not attempt a rename"
+    assert "junction" in attempts, "no adversarial junction was actually installed"
     assert ("rename-blocked" in attempts or "rename-succeeded" in attempts)
     assert all(d == original_digest for d in seen), "external junction data was accepted"
     assert external_digest not in seen
