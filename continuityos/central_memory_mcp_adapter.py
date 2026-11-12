@@ -147,8 +147,18 @@ def main() -> None:
     parser.add_argument("--agent-view", required=True, help="Local R6.1 agent_view directory only")
     args = parser.parse_args()
     adapter = CentralMemoryMCPAdapter(args.agent_view)
-    for raw in sys.stdin:
+    while True:
+        # Bound allocation before parsing, then discard the rest of an
+        # oversized JSON-RPC line so its suffix cannot become a new request.
+        raw = sys.stdin.readline(MAX_FILE_BYTES + 1)
+        if not raw:
+            break
         if len(raw) > MAX_FILE_BYTES:
+            if not raw.endswith("\n"):
+                while True:
+                    tail = sys.stdin.readline(MAX_FILE_BYTES + 1)
+                    if not tail or tail.endswith("\n"):
+                        break
             continue
         try:
             req = json.loads(raw)

@@ -253,18 +253,31 @@ def test_anchored_parent_swap_does_not_follow_replaced_absolute_path(tmp_path, m
     swapped = []
     def replace_parent_with_junction(parent, name, *, directory):
         if name == "AGENT_POLICY_R61.json" and not swapped:
-            os.rename(root, moved)
-            command = subprocess.run(
-                ["cmd", "/d", "/c", "mklink", "/J", str(root), str(external)],
-                capture_output=True, text=True, timeout=5)
-            assert command.returncode == 0, command.stderr
-            swapped.append(True)
+            try:
+                os.rename(root, moved)
+            except OSError as exc:
+                assert getattr(exc, "winerror", None) == 32
+                swapped.append("rename_blocked")
+            else:
+                command = subprocess.run(
+                    ["cmd", "/d", "/c", "mklink", "/J", str(root), str(external)],
+                    capture_output=True, text=True, timeout=5)
+                assert command.returncode == 0, command.stderr
+                swapped.append("junction_created")
         return original(parent, name, directory=directory)
     monkeypatch.setattr(guard, "_win_open_relative", replace_parent_with_junction)
     try:
-        with pytest.raises(ValueError, match="FILE_MISSING_OR_LINKED"):
-            mod.CentralMemoryMCPAdapter(str(root)).call("agent_view_status", {})
-        assert swapped == [True], "real junction attack was not executed"
+        # Both are fail-closed: the OS blocks rename, or the handle-bound
+        # reader rejects a successfully substituted external path.
+        try:
+            result = mod.CentralMemoryMCPAdapter(str(root)).call("agent_view_status", {})
+        except ValueError as exc:
+            assert swapped == ["junction_created"]
+            assert "FILE_MISSING_OR_LINKED" in str(exc)
+        else:
+            assert swapped == ["rename_blocked"]
+            assert json.loads(result)["agent_access"] == "DENY"
+        assert len(swapped) == 1
     finally:
         if moved.exists() and root.exists():
             assert root.lstat().st_file_attributes & 0x400, "non-junction at attack path"
@@ -320,14 +333,24 @@ def test_concurrent_parent_junction_swap_never_reads_external(tmp_path):
                 errors.append("junction-transition-error")
             finally:
                 if junction:
-                    try:
-                        os.rmdir(parent)
-                    except OSError:
+                    # A concurrent validated reader may briefly hold a share
+                    # lock. Retry only cleanup of this disposable fixture.
+                    for _retry in range(100):
+                        try:
+                            os.rmdir(parent)
+                            break
+                        except OSError:
+                            time.sleep(0.005)
+                    else:
                         errors.append("junction-remove-failed")
                 if parked.exists():
-                    try:
-                        os.rename(parked, parent)
-                    except OSError:
+                    for _retry in range(100):
+                        try:
+                            os.rename(parked, parent)
+                            break
+                        except OSError:
+                            time.sleep(0.005)
+                    else:
                         errors.append("restore-failed")
     thread = threading.Thread(target=changer, daemon=True)
     thread.start()
@@ -400,3 +423,61 @@ def test_windows_fdopen_failure_closes_transferred_crt_descriptor(tmp_path, monk
     assert len(captured) == 1
     with pytest.raises(OSError):
         msvcrt.get_osfhandle(captured[0])
+
+def test_stdio_drops_oversized_line_in_bounded_chunks_and_resumes(monkeypatch, tmp_path):
+    import io
+    import sys
+
+    class BoundedStdin(io.StringIO):
+        def readline(self, size=-1):
+            assert 0 < size <= mod.MAX_FILE_BYTES + 1, "unbounded stdin read"
+            return super().readline(size)
+
+    huge = '{"jsonrpc":"2.0","id":91,"method":"initialize","pad":"' + (
+        "x" * (2 * mod.MAX_FILE_BYTES)) + '"}\n'
+    valid = json.dumps({"jsonrpc": "2.0", "id": 92, "method": "initialize"}) + "\n"
+    output = io.StringIO()
+    monkeypatch.setattr(sys, "stdin", BoundedStdin(huge + valid))
+    monkeypatch.setattr(sys, "stdout", output)
+    monkeypatch.setattr(sys, "argv", [
+        "central_memory_mcp_adapter", "--agent-view", str(tmp_path / "agent_view")])
+    mod.main()
+    responses = [json.loads(line) for line in output.getvalue().splitlines()]
+    assert [item["id"] for item in responses] == [92]
+    assert responses[0]["result"]["serverInfo"]["name"] == "continuityos-r61-status-only"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows native handle semantics")
+def test_windows_directory_handle_denies_rename_while_held(tmp_path):
+    import os
+    from continuityos import _offline_path_guard as guard
+    root = make_view(tmp_path)
+    moved = tmp_path / "moved_agent_view"
+    with guard._win_anchored(root / "AGENT_POLICY_R61.json", directory=False):
+        with pytest.raises(OSError) as denied:
+            os.rename(root, moved)
+        assert denied.value.winerror == 32
+    assert root.is_dir()
+    assert not moved.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows hardlink semantics")
+def test_windows_hardlinked_projection_file_denied(tmp_path):
+    import os
+    root = make_view(tmp_path)
+    source = root / "AGENT_POLICY_R61.json"
+    alias = tmp_path / "synthetic_hardlink.json"
+    os.link(source, alias)
+    with pytest.raises(ValueError, match="FILE_MISSING_OR_LINKED"):
+        mod.CentralMemoryMCPAdapter(str(root)).call("agent_view_status", {})
+    assert alias.is_file()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows path semantics")
+@pytest.mark.parametrize("suffix", [".", " "])
+def test_windows_trailing_dot_or_space_component_denied(tmp_path, suffix):
+    from continuityos._offline_path_guard import require_plain_dir
+    root = tmp_path / "agent_view"
+    root.mkdir()
+    with pytest.raises(ValueError, match="OFFLINE_PATH_UNSAFE"):
+        require_plain_dir(Path(str(root) + suffix))

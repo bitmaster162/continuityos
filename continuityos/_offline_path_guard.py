@@ -82,7 +82,8 @@ if os.name == "nt":
     _ntdll.NtCreateFile.restype = ctypes.c_long
 
     def _win_open_relative(parent, name: str, *, directory: bool):
-        if not name or name in (".", "..") or any(c in name for c in "\\/:"):
+        if (not name or name in (".", "..") or name.endswith((".", " "))
+                or any(c in name for c in "\\/:")):
             raise ValueError("OFFLINE_PATH_UNSAFE")
         text_buf = ctypes.create_unicode_buffer(name)
         obj_name = _UnicodeString(len(name) * 2, (len(name) + 1) * 2,
@@ -94,7 +95,9 @@ if os.name == "nt":
         handle = wintypes.HANDLE()
         options = (0x00200000 | 0x20
                    | (0x01 | 0x4000 if directory else 0x40))
-        access = 0x80 | 0x100000 | (0 if directory else 0x01)
+        # Match CM-R9: requested directory LIST/TRAVERSE enables Windows
+        # sharing enforcement; READ_ATTRIBUTES alone does not pin renames.
+        access = 0x80 | 0x100000 | (0x01 | 0x20 if directory else 0x01)
         status = _ntdll.NtCreateFile(
             ctypes.byref(handle), access, ctypes.byref(object_attributes),
             ctypes.byref(iosb), None, 0, 0x01, 1, options, None, 0)
@@ -119,7 +122,8 @@ if os.name == "nt":
 
     def _win_open_handle(path: str, *, directory: bool):
         flags = _WIN_FLAG_OPEN_REPARSE | (_WIN_FLAG_DIRECTORY if directory else 0)
-        access = _WIN_ACCESS_ATTR | (0 if directory else _WIN_ACCESS_READ)
+        access = (_WIN_ACCESS_ATTR | 0x100000 |
+                  (0x01 | 0x20 if directory else _WIN_ACCESS_READ))
         handle = _kernel32.CreateFileW(path, access, 0x01, None, 3, flags, None)
         if ctypes.c_void_p(handle).value == _INVALID_HANDLE or not handle:
             raise ValueError("OFFLINE_PATH_UNSAFE")
@@ -137,7 +141,8 @@ if os.name == "nt":
             if (len(drive) != 2 or drive[1] != ":"
                     or not drive[0].isalpha()
                     or not tail.startswith("\\")
-                    or any(part in (".", "..") or ":" in part
+                    or any(part in (".", "..") or part.endswith((".", " "))
+                           or ":" in part
                            for part in tail.split("\\") if part)):
                 raise ValueError("OFFLINE_PATH_UNSAFE")
             parts = [part for part in tail.split("\\") if part]
@@ -158,6 +163,8 @@ if os.name == "nt":
                 if info.attributes & _REPARSE:
                     raise ValueError("OFFLINE_PATH_UNSAFE")
                 if bool(info.attributes & 0x10) != is_dir:
+                    raise ValueError("OFFLINE_PATH_UNSAFE")
+                if not is_dir and info.links > 1:
                     raise ValueError("OFFLINE_PATH_UNSAFE")
                 if os.path.normcase(_win_handle_path(handle)) != os.path.normcase(candidate):
                     raise ValueError("OFFLINE_PATH_UNSAFE")
