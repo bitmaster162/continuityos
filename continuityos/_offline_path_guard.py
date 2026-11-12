@@ -227,7 +227,7 @@ def read_bounded_file(path: Path, limit: int) -> bytes:
         return _win_read_bounded(path, limit)
     try:
         before = _snapshot(path)
-        if not stat.S_ISREG(before.st_mode):
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
             raise ValueError("OFFLINE_PATH_UNSAFE")
         if before.st_size > limit:
             raise ValueError("OFFLINE_FILE_TOO_LARGE")
@@ -235,11 +235,14 @@ def read_bounded_file(path: Path, limit: int) -> bytes:
         fd = os.open(path, flags)
         with os.fdopen(fd, "rb") as handle:
             opened = os.fstat(handle.fileno())
-            if not _identity(before, opened):
+            if opened.st_nlink != 1 or not _identity(before, opened):
                 raise ValueError("OFFLINE_PATH_UNSAFE")
             raw = handle.read(limit + 1)
+            after_fd = os.fstat(handle.fileno())
+            if after_fd.st_nlink != 1 or not _identity(opened, after_fd):
+                raise ValueError("OFFLINE_PATH_UNSAFE")
             after = _snapshot(path)
-            if not _identity(opened, after):
+            if after.st_nlink != 1 or not _identity(after_fd, after):
                 raise ValueError("OFFLINE_PATH_UNSAFE")
         if len(raw) > limit:
             raise ValueError("OFFLINE_FILE_TOO_LARGE")
