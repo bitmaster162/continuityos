@@ -125,3 +125,64 @@ def test_stdio_default_tool_list_and_forget_dispatch(monkeypatch):
     assert replies[2]["result"]["isError"]
     assert "OWNER_FORGET_DISABLED" in replies[1]["result"]["content"][0]["text"]
     assert "OWNER_FORGET_DISABLED" in replies[2]["result"]["content"][0]["text"]
+
+@pytest.mark.parametrize("invalid", ["", "x", "A" * 64, None, 7])
+def test_invalid_owner_config_rejected_before_database_resolution(monkeypatch, invalid):
+    import continuityos.mcp_server as module
+    calls = []
+    def forbidden_resolver(*args, **kwargs):
+        calls.append("db")
+        raise AssertionError("owner config touched database resolution")
+    def forbidden_memory(*args, **kwargs):
+        calls.append("memory")
+        raise AssertionError("owner config opened SQLite")
+    monkeypatch.setattr(module, "resolve_memory_db", forbidden_resolver)
+    monkeypatch.setattr(module, "Memory", forbidden_memory)
+    monkeypatch.setenv("CONTINUITYOS_EMBEDDER", "hash")
+    with pytest.raises(ValueError, match="OWNER_FORGET_CAPABILITY_CONFIGURATION_INVALID"):
+        module.Server(":memory:", allow_owner_forget=True, owner_capability_sha256=invalid)
+    assert calls == []
+
+
+def test_valid_owner_config_reaches_resolver_without_database_open(monkeypatch):
+    import continuityos.mcp_server as module
+    called = []
+    def stop_at_resolver(*args, **kwargs):
+        called.append("resolver")
+        raise RuntimeError("SYNTHETIC_RESOLVER_STOP")
+    monkeypatch.setattr(module, "resolve_memory_db", stop_at_resolver)
+    monkeypatch.setenv("CONTINUITYOS_EMBEDDER", "hash")
+    with pytest.raises(RuntimeError, match="SYNTHETIC_RESOLVER_STOP"):
+        module.Server(":memory:", allow_owner_forget=True,
+                      owner_capability_sha256="a" * 64)
+    assert called == ["resolver"]
+
+
+def test_stdio_bounded_oversized_line_discards_all_chunks(monkeypatch):
+    import io
+    import sys
+    import continuityos.mcp_server as module
+
+    class BoundedStdin(io.StringIO):
+        def readline(self, size=-1):
+            assert 0 < size <= module.MAX_STDIN_LINE_CHARS + 1
+            return super().readline(size)
+
+    class SyntheticServer:
+        def __init__(self, *args, **kwargs):
+            self._owner_forget_enabled = False
+        def call(self, name, args):
+            raise AssertionError("unexpected tools/call after oversized frame")
+
+    huge = '{"jsonrpc":"2.0","id":91,"method":"tools/call","pad":"' + (
+        "X" * (2 * module.MAX_STDIN_LINE_CHARS)) + '"}\n'
+    valid = json.dumps({"jsonrpc": "2.0", "id": 92, "method": "tools/list"}) + "\n"
+    output = io.StringIO()
+    monkeypatch.setattr(module, "Server", SyntheticServer)
+    monkeypatch.setattr(sys, "stdin", BoundedStdin(huge + valid))
+    monkeypatch.setattr(sys, "stdout", output)
+    monkeypatch.setattr(sys, "argv", ["mcp_server", "--db", ":memory:"])
+    module.main()
+    replies = [json.loads(line) for line in output.getvalue().splitlines()]
+    assert [item["id"] for item in replies] == [92]
+    assert "forget" not in {item["name"] for item in replies[0]["result"]["tools"]}

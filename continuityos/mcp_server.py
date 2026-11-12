@@ -108,6 +108,9 @@ OWNER_FORGET_TOOL = {"name":"forget","description":"OWNER-only deletion; disable
         "owner_capability":{"type":"string","minLength":32,"maxLength":256}},
         "required":["id","owner_capability"]}}
 
+MAX_STDIN_LINE_CHARS = 131_072  # Local MCP stdio input cap; no unbounded readline.
+
+
 class Server:
     def __init__(
         self, db=None, policy_path: str = "", db_source: str = "",
@@ -125,6 +128,13 @@ class Server:
             "", "hash", "hashing", "offline", "local", "fast", "fastembed",
         }:
             raise ValueError("UNSUPPORTED_EMBEDDER_MODE")
+        # Fail before resolve_memory_db or Memory(db) can touch SQLite.
+        self._owner_forget_enabled = bool(allow_owner_forget)
+        self._owner_forget_sha256 = owner_capability_sha256 if self._owner_forget_enabled else ""
+        if (self._owner_forget_enabled and (
+                not isinstance(self._owner_forget_sha256, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", self._owner_forget_sha256))):
+            raise ValueError("OWNER_FORGET_CAPABILITY_CONFIGURATION_INVALID")
         resolved = resolve_memory_db(db)
         db = resolved["path"]
         self.db_path = db
@@ -235,10 +245,6 @@ class Server:
                         "R15 runtime binding failed: "
                         f"{type(exc).__name__}: {exc}"
                     )
-        self._owner_forget_enabled = bool(allow_owner_forget)
-        self._owner_forget_sha256 = owner_capability_sha256 if self._owner_forget_enabled else ""
-        if self._owner_forget_enabled and not re.fullmatch(r"[0-9a-f]{64}", self._owner_forget_sha256):
-            raise ValueError("OWNER_FORGET_CAPABILITY_CONFIGURATION_INVALID")
         self._broker = None
         self.turns = 0
         self.std = 10  # Safe Turn Depth: re-inject canon before omission-rules ("never do X") decay (long-session SRD research)
@@ -467,7 +473,18 @@ def main():
         allow_owner_forget=a.enable_owner_forget,
         owner_capability_sha256=owner_hash,
     )
-    for line in sys.stdin:
+    # Read at most one bounded JSON-RPC frame and drain oversized lines.
+    while True:
+        line = sys.stdin.readline(MAX_STDIN_LINE_CHARS + 1)
+        if not line:
+            break
+        if len(line) > MAX_STDIN_LINE_CHARS:
+            if not line.endswith("\n"):
+                while True:
+                    remainder = sys.stdin.readline(MAX_STDIN_LINE_CHARS + 1)
+                    if not remainder or remainder.endswith("\n"):
+                        break
+            continue
         line = line.strip()
         if not line: continue
         try:
