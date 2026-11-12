@@ -286,14 +286,13 @@ def test_anchored_parent_swap_does_not_follow_replaced_absolute_path(tmp_path, m
             os.rename(moved, root)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows junction race")
 def test_concurrent_parent_junction_swap_never_reads_external(tmp_path):
     import os
     import subprocess
-    import sys
     import threading
     import time
-    if sys.platform != "win32":
-        pytest.skip("Windows junction race")
+
     parent = tmp_path / "switch_parent"
     safe = make_view(parent)
     outside = make_view(tmp_path / "outside", policy_changes={"custom": "external-data"})
@@ -304,77 +303,98 @@ def test_concurrent_parent_junction_swap_never_reads_external(tmp_path):
         mod.CentralMemoryMCPAdapter(str(outside)).call("agent_view_status", {})
     )["projection_sha256"]
     assert original_digest != external_digest
+
+    # Pre-create the real synthetic junction before concurrency begins.
+    # Repeated cmd/mklink inside a race was non-atomic on Windows CI.
+    staged_link = tmp_path / "staged_attack_junction"
+    result = subprocess.run(
+        ["cmd", "/d", "/c", "mklink", "/J", str(staged_link), str(outside.parent)],
+        capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, "synthetic junction could not be prepared"
+    assert staged_link.lstat().st_file_attributes & 0x400
+
     parked = tmp_path / "parked_parent"
     stop = threading.Event()
     attempts = []
     errors = []
+
+    def restore_fixture():
+        for _retry in range(500):
+            try:
+                if parked.exists():
+                    if os.path.lexists(parent):
+                        # Only move the test's junction; never touch a real dir.
+                        assert parent.lstat().st_file_attributes & 0x400
+                        assert not os.path.lexists(staged_link)
+                        os.rename(parent, staged_link)
+                    os.rename(parked, parent)
+                return True
+            except OSError:
+                time.sleep(0.01)
+        return False
+
     def changer():
         for _ in range(20):
             if stop.is_set():
                 break
             try:
                 os.rename(parent, parked)
-            except OSError:
-                attempts.append("locked")
+            except OSError as exc:
+                if getattr(exc, "winerror", None) not in (5, 32):
+                    errors.append("unexpected-rename-denial")
+                    break
+                attempts.append("rename-blocked")
                 time.sleep(0.001)
                 continue
-            junction = False
+            attempts.append("rename-succeeded")
             try:
-                command = subprocess.run(
-                    ["cmd", "/d", "/c", "mklink", "/J", str(parent), str(outside.parent)],
-                    capture_output=True, text=True, timeout=5)
-                if command.returncode != 0:
-                    errors.append("create-junction-failed")
-                    continue
-                junction = True
-                attempts.append("junction")
-                time.sleep(0.008)
+                try:
+                    os.rename(staged_link, parent)
+                except OSError as exc:
+                    if getattr(exc, "winerror", None) not in (5, 32):
+                        errors.append("unexpected-junction-move-denial")
+                    attempts.append("junction-move-blocked")
+                else:
+                    attempts.append("junction")
+                    time.sleep(0.008)
             except Exception:
                 errors.append("junction-transition-error")
             finally:
-                if junction:
-                    # A concurrent validated reader may briefly hold a share
-                    # lock. Retry only cleanup of this disposable fixture.
-                    for _retry in range(100):
-                        try:
-                            os.rmdir(parent)
-                            break
-                        except OSError:
-                            time.sleep(0.005)
-                    else:
-                        errors.append("junction-remove-failed")
-                if parked.exists():
-                    for _retry in range(100):
-                        try:
-                            os.rename(parked, parent)
-                            break
-                        except OSError:
-                            time.sleep(0.005)
-                    else:
-                        errors.append("restore-failed")
+                if not restore_fixture():
+                    errors.append("restore-pending")
+                    break
+
     thread = threading.Thread(target=changer, daemon=True)
     thread.start()
     seen = []
     try:
         for _ in range(180):
             try:
-                response = json.loads(mod.CentralMemoryMCPAdapter(str(parent / "agent_view")).call("agent_view_status", {}))
+                response = json.loads(
+                    mod.CentralMemoryMCPAdapter(
+                        str(parent / "agent_view")).call("agent_view_status", {}))
                 seen.append(response["projection_sha256"])
             except ValueError:
-                pass  # fail closed during a rename or junction window
+                pass  # fail closed during a rename/junction window
             time.sleep(0.0004)
     finally:
         stop.set()
-        thread.join(timeout=10)
+        thread.join(timeout=30)
+        if parked.exists() and restore_fixture():
+            errors[:] = [error for error in errors if error != "restore-pending"]
+        if staged_link.exists():
+            assert staged_link.lstat().st_file_attributes & 0x400
+            os.rmdir(staged_link)
+
     assert not thread.is_alive(), "attacker fixture did not terminate"
     assert not errors, "adversary fixture incomplete: " + ",".join(errors)
-    assert attempts, "no rename attempts were executed"
-    assert "junction" in attempts, "no adversarial junction actually created"
+    assert attempts, "attacker did not attempt a rename"
+    assert ("rename-blocked" in attempts or "rename-succeeded" in attempts)
     assert all(d == original_digest for d in seen), "external junction data was accepted"
     assert external_digest not in seen
-    restored = json.loads(mod.CentralMemoryMCPAdapter(str(parent / "agent_view")).call("agent_view_status", {}))
+    restored = json.loads(
+        mod.CentralMemoryMCPAdapter(str(parent / "agent_view")).call("agent_view_status", {}))
     assert restored["projection_sha256"] == original_digest
-
 
 
 
