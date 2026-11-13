@@ -1,0 +1,230 @@
+# ContinuityOS H3 G2 compiler-stage PROPOSAL. NOT AUTHORIZED IN GITHUB.
+# This single, independent workflow contains source-locked LAB IDL only.
+# Do not commit, open a PR, or trigger CI without exact owner approval.
+name: H3 G2 LAB-only IDL to C stub generation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/h3-g2-midl-compile-only.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: h3-g2-midl-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  compile-lab-idl:
+    name: win-2025 / MIDL synthetic IDL compile only
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'agent/h3-g2-midl-compile-only-r1' && github.event.pull_request.base.ref == 'master' }}
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 6
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Verify pinned G1 toolchain and compile exact LAB IDL only
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+
+          # Exact PR/repository context.  The merge SHA is not treated as an authoritative source SHA.
+          if ($env:GITHUB_REPOSITORY -cne 'bitmaster162/continuityos') { throw 'G2_REPOSITORY_DRIFT' }
+          if ($env:GITHUB_EVENT_NAME -cne 'pull_request') { throw 'G2_UNAPPROVED_TRIGGER' }
+          if ($env:PR_BASE_REF -cne 'master') { throw 'G2_BASE_REF_DRIFT' }
+          if ($env:PR_BASE_SHA -cne '719ed32a64301fc8083a5aad0c4ed7bed316040e') { throw 'G2_PROTECTED_BASE_SHA_DRIFT' }
+          if ($env:PR_HEAD_REPO -cne $env:GITHUB_REPOSITORY) { throw 'G2_EXTERNAL_HEAD_BLOCKED' }
+          if ($env:PR_HEAD_REF -cne 'agent/h3-g2-midl-compile-only-r1') { throw 'G2_HEAD_BRANCH_DRIFT' }
+          if ($env:PR_HEAD_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'G2_HEAD_SHA_INVALID' }
+          if ($env:RUNNER_OS -cne 'Windows' -or $env:RUNNER_ARCH -cne 'X64') { throw 'G2_RUNNER_PLATFORM_DRIFT' }
+          if ($env:ImageOS -cne 'win25-vs2026' -or $env:ImageVersion -cne '20260925.250.1') {
+            throw 'G2_RUNNER_IMAGE_DRIFT_REQUIRES_FRESH_G1'
+          }
+
+          # All tool binaries/digests copied from *measured* G1-R5 receipt at head 82d72753.
+          $pf86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+          if ([string]::IsNullOrWhiteSpace($pf86)) { throw 'G2_PROGRAMFILES_X86_NOT_FOUND' }
+          $sdk = Join-Path $pf86 'Windows Kits\10'
+          $sdkVersion = '10.0.26100.0'
+          $um = Join-Path $sdk 'Include\10.0.26100.0\um'
+          $shared = Join-Path $sdk 'Include\10.0.26100.0\shared'
+          $ucrt = Join-Path $sdk 'Include\10.0.26100.0\ucrt'
+          $bin = Join-Path $sdk 'bin\10.0.26100.0\x64'
+          $vc = 'C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231'
+          $vcBin = Join-Path $vc 'bin\Hostx64\x64'
+          $vcInclude = Join-Path $vc 'include'
+          $toolEntries = @(
+            @{ label = 'midl.exe'; path = (Join-Path $bin 'midl.exe'); sha = 'c3e800b8e3555476511df81e3d260409ff92e119e4c4e353ac6f4728ab34c8a0' },
+            @{ label = 'midlc.exe'; path = (Join-Path $bin 'midlc.exe'); sha = '209447b250c33b8b458210e6d3d8b0089b596ebf9b4da18c4228af9b025acffa' },
+            @{ label = 'rpcdce.h'; path = (Join-Path $shared 'rpcdce.h'); sha = '991883893134c8ecbe6af8335df0781bfb779c11684b3367def514136241b866' },
+            @{ label = 'Rpcrt4.lib'; path = (Join-Path $sdk 'Lib\10.0.26100.0\um\x64\Rpcrt4.lib'); sha = 'bfe69184c180bf6ade840ac5279b53aa67b0eda43c82bcd86596db0309faeef3' },
+            @{ label = 'cl.exe'; path = (Join-Path $vcBin 'cl.exe'); sha = 'b0a1818ebae6da7f18230a84e76ce839212584ac4c2ab55b97a0d5268085da57' },
+            @{ label = 'link.exe'; path = (Join-Path $vcBin 'link.exe'); sha = 'a8c42e25c91ca2453e1110540ac08f0fc12d7539454a11b9af8baeecb469837d' }
+          )
+          foreach ($item in $toolEntries) {
+            if (-not (Test-Path -LiteralPath $item.path -PathType Leaf)) { throw ('G2_REQUIRED_TOOL_MISSING: ' + $item.label) }
+            $x = Get-Item -LiteralPath $item.path -ErrorAction Stop
+            if (($x.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw ('G2_REPARSE_TOOL_BLOCKED: ' + $item.label) }
+            $actual = (Get-FileHash -LiteralPath $item.path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -cne $item.sha) { throw ('G2_TOOLCHAIN_DIGEST_DRIFT: ' + $item.label) }
+          }
+          foreach ($dir in @($um, $shared, $ucrt, $vcInclude)) {
+            if (-not (Test-Path -LiteralPath $dir -PathType Container)) { throw ('G2_INCLUDE_DIR_MISSING: ' + $dir) }
+          }
+
+          $receipt = [ordered]@{
+            schema = 'continuityos.h3.g2.midl-compile-only/v1-DESIGN'
+            stage = 'G2_COMPILE_ONLY_NOT_RUNTIME'
+            repo = $env:GITHUB_REPOSITORY
+            base_sha = $env:PR_BASE_SHA
+            head_sha = $env:PR_HEAD_SHA
+            runner_image = $env:ImageOS
+            runner_image_version = $env:ImageVersion
+            sdk_version = $sdkVersion
+            source_file = 'h3_r7b1c_lab.idl'
+            source_sha256 = '67915aa4c68d7bf8d8dd3a8879f7abed0c12a5262e577f4e4bf9c8c7fe87fe09'
+            source_bytes = 1555
+            toolchain_digest_match = $true
+            midl_invocations = 0
+            midl_exit_code = $null
+            compiler_output_sha256 = $null
+            compiler_output_excerpt = $null
+            generated = @()
+            compiler_warning_count = $null
+            temp_cleanup_verified = $false
+            no_git_checkout = $true
+            no_network_command = $true
+            no_sdk_install = $true
+            no_c_or_cpp_binary_build = $true
+            no_rpc_server_client_or_endpoint = $true
+            no_artifact_upload = $true
+            security_C0 = 'UNVERIFIED_HOLD'
+            native_T11_T12 = 'UNEXECUTED'
+            production = 'HOLD'
+            verdict = 'HOLD'
+            reason = 'UNEXECUTED'
+          }
+
+          # Temp creation and cleanup apply ONLY to this ephemeral runner. Never on owner workstation.
+          if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { throw 'G2_RUNNER_TEMP_MISSING' }
+          $scratch = Join-Path $env:RUNNER_TEMP 'continuityos_h3_g2_midl_compile_only'
+          if (Test-Path -LiteralPath $scratch) { throw 'G2_TEMP_PATH_PREEXISTS_FAIL_CLOSED' }
+          $created = $false
+          $proc = $null
+          $compileText = ''
+          try {
+            $null = New-Item -ItemType Directory -Path $scratch -ErrorAction Stop
+            $created = $true
+            $outDir = Join-Path $scratch 'generated'
+            $tempDir = Join-Path $scratch 'tmp'
+            $null = New-Item -ItemType Directory -Path $outDir -ErrorAction Stop
+            $null = New-Item -ItemType Directory -Path $tempDir -ErrorAction Stop
+            $sourcePath = Join-Path $scratch 'h3_r7b1c_lab.idl'
+            $sourceBytes = [Convert]::FromBase64String('LyoKICogQ29udGludWl0eU9TIEgzLVI3QjFDIExBQi1PTkxZIElETCBTS0VUQ0gg4oCUIE5PVCBDT01QSUxFRCBPUiBBVVRIT1JJWkVELgogKiBUaGlzIGlzIGEgZnJlc2gsIHNlcGFyYXRlIHN5bnRoZXRpYyBpbnRlcmZhY2U7IE5PVCBIMyB3aXJlIHYzLgogKiBObyBEQiwgZ3JhbnRzLCB3aXRuZXNzLCBtZW1vcnkgcGF5bG9hZCwgY3JlZGVudGlhbHMsIG9yIHByb2R1Y3Rpb24ga2V5cy4KICogVGhlIHB1YmxpYyBwcm9iZSBpcyBOT1Qgc2VydmVyIGF1dGhlbnRpY2F0aW9uOyBDMCByZW1haW5zIEhPTEQuCiAqIEgzTGFiU3VibWl0U3ludGhldGljIE1VU1QgcmV0dXJuIGEgY29udGVudC1mcmVlIExBQl9ESVNBQkxFRCBzdGF0dXMKICogdW50aWwgc2VwYXJhdGVseSBhcHByb3ZlZCwgaW5kZXBlbmRlbnRseSB2ZXJpZmllZCBzYW1lLWJpbmRpbmcgQzAgZXhpc3RzLgogKiBObyBSUEMgcHJvY2VzcywgZW5kcG9pbnQsIG9yIHNlcnZpY2UgaXMgY3JlYXRlZCBieSB0aGlzIGRlc2lnbiBmaWxlLgogKi8KClsKICAgIHV1aWQoMGIwYTA1OGEtZjVkMS01ZTdiLWEyOWMtOGJiYzY3ODc5NDE4KSwKICAgIHZlcnNpb24oMS4wKSwKICAgIHBvaW50ZXJfZGVmYXVsdChyZWYpCl0KaW50ZXJmYWNlIEgzUjdCMUNfTGFiVjEKewogICAgLyogUHVibGljIGRpc2NvdmVyeTogYSBub25jZSBleGNoYW5nZSBXSVRIT1VUIHByb29mIG9mIHNlcnZlciBpZGVudGl0eS4gKi8KICAgIHZvaWQgSDNMYWJQdWJsaWNQcm9iZSgKICAgICAgICBbaW5dIGhhbmRsZV90IGJpbmRpbmcsCiAgICAgICAgW2luXSBieXRlIGNsaWVudF9ub25jZVszMl0sCiAgICAgICAgW291dF0gYnl0ZSBzZXJ2ZXJfbm9uY2VbMzJdLAogICAgICAgIFtvdXQsIHJlZl0gdW5zaWduZWQgbG9uZyAqbGFiX3N0YXR1cwogICAgKTsKCiAgICAvKiBPbmx5IG5vbi1zZW5zaXRpdmUgc3ludGhldGljIGZpeHR1cmUgYnl0ZXMgbWF5IGVudGVyIHRoaXMgbWV0aG9kLgogICAgICogQSBmdXR1cmUgcmVhbCBicm9rZXIgTVVTVCB1c2UgYSBzZXBhcmF0ZWx5IHJldmlld2VkL2F1dGhlbnRpY2F0ZWQKICAgICAqIHByb3RvY29sLCBhbmQgTVVTVCBOT1QgdHJlYXQgdGhpcyBhcyBhIHYzIG1lbW9yeSBtZXRob2QuCiAgICAgKiBGaXhlZCBhcnJheXMgZGVsaWJlcmF0ZWx5IGF2b2lkIGNhbGxlci1zaXplZCBhbGxvY2F0aW9ucyBpbiBJREwuCiAgICAgKiBUaGUgYnl0ZS1sZW5ndGggZmllbGQgaXMgdmFsaWRhdGVkIGJ5IC9yb2J1c3QgQU5EIGluc2lkZSBoYW5kbGVyLgogICAgICovCiAgICB2b2lkIEgzTGFiU3VibWl0U3ludGhldGljKAogICAgICAgIFtpbl0gaGFuZGxlX3QgYmluZGluZywKICAgICAgICBbaW4sIHJhbmdlKDEsIDE2Mzg0KV0gdW5zaWduZWQgbG9uZyByZXF1ZXN0X2xlbiwKICAgICAgICBbaW5dIGJ5dGUgcmVxdWVzdF9zbG90WzE2Mzg0XSwKICAgICAgICBbb3V0LCByZWZdIHVuc2lnbmVkIGxvbmcgKnJlcGx5X2xlbiwKICAgICAgICBbb3V0XSBieXRlIHJlcGx5X3Nsb3RbODE5Ml0sCiAgICAgICAgW291dCwgcmVmXSB1bnNpZ25lZCBsb25nICpsYWJfc3RhdHVzCiAgICApOwp9Cg==')
+            if ($sourceBytes.Length -ne 1555) { throw 'G2_SOURCE_SIZE_DRIFT' }
+            if ([Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($sourceBytes)).ToLowerInvariant() -cne '67915aa4c68d7bf8d8dd3a8879f7abed0c12a5262e577f4e4bf9c8c7fe87fe09') {
+              throw 'G2_SOURCE_PREWRITE_SHA_DRIFT'
+            }
+            [System.IO.File]::WriteAllBytes($sourcePath, $sourceBytes)
+            if ((Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne '67915aa4c68d7bf8d8dd3a8879f7abed0c12a5262e577f4e4bf9c8c7fe87fe09') {
+              throw 'G2_SOURCE_READBACK_SHA_DRIFT'
+            }
+            # MIDL may use the Microsoft C preprocessor (cl.exe /E); it must not compile C objects.
+            $env:INCLUDE = @($um, $shared, $ucrt, $vcInclude) -join ';'
+            $env:PATH = @($vcBin, $bin, (Join-Path $env:SystemRoot 'System32'), $env:SystemRoot) -join ';'
+            $env:TMP = $tempDir
+            $env:TEMP = $tempDir
+
+            $args = @('/nologo', '/robust', '/Oicf', '/env', 'amd64', '/out', $outDir,
+                      '/I', $um, '/I', $shared, '/I', $ucrt, $sourcePath)
+            $start = [System.Diagnostics.ProcessStartInfo]::new()
+            $start.FileName = (Join-Path $bin 'midl.exe')
+            $start.UseShellExecute = $false
+            $start.CreateNoWindow = $true
+            $start.RedirectStandardOutput = $true
+            $start.RedirectStandardError = $true
+            $start.WorkingDirectory = $scratch
+            foreach ($arg in $args) { $start.ArgumentList.Add([string]$arg) }
+            $proc = [System.Diagnostics.Process]::new()
+            $proc.StartInfo = $start
+            if (-not $proc.Start()) { throw 'G2_MIDL_PROCESS_START_FAILED' }
+            $receipt.midl_invocations = 1
+            $stdOutTask = $proc.StandardOutput.ReadToEndAsync()
+            $stdErrTask = $proc.StandardError.ReadToEndAsync()
+            if (-not $proc.WaitForExit(90000)) {
+              try { $proc.Kill($true) } catch { }
+              $null = $proc.WaitForExit(5000)
+              throw 'G2_MIDL_TIMEOUT_90S'
+            }
+            $receipt.midl_exit_code = [int]$proc.ExitCode
+            $compileText = $stdOutTask.GetAwaiter().GetResult() + $stdErrTask.GetAwaiter().GetResult()
+            $receipt.compiler_output_excerpt = $compileText.Substring(0, [Math]::Min(1024, $compileText.Length))
+            if ($compileText.Length -gt 8192) { throw 'G2_COMPILER_DIAGNOSTIC_TOO_LARGE' }
+            $receipt.compiler_output_sha256 = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($compileText))).ToLowerInvariant()
+            if ($proc.ExitCode -ne 0) { throw ('G2_MIDL_COMPILE_ERROR_EXIT_' + $proc.ExitCode) }
+            if ($compileText -match '(?i)\bwarning\b|\bMIDL\d{4}\b') { throw 'G2_MIDL_DIAGNOSTIC_WARNING_OR_ERROR' }
+
+            $expectedOutputs = @('h3_r7b1c_lab.h', 'h3_r7b1c_lab_c.c', 'h3_r7b1c_lab_s.c')
+            $actualFiles = @(Get-ChildItem -LiteralPath $outDir -File -Force)
+            if ($actualFiles.Count -ne $expectedOutputs.Count) { throw 'G2_GENERATED_FILE_COUNT_UNEXPECTED' }
+            $generatedReceipt = @()
+            $totalBytes = [long]0
+            foreach ($file in $actualFiles) {
+              if ($file.Name -cnotin $expectedOutputs) { throw ('G2_GENERATED_UNAPPROVED_FILENAME: ' + $file.Name) }
+              if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'G2_OUTPUT_REPARSE_BLOCKED' }
+              if ($file.Length -le 0 -or $file.Length -gt 262144) { throw 'G2_OUTPUT_SINGLE_FILE_BOUND' }
+              $totalBytes += [long]$file.Length
+              $generatedReceipt += [ordered]@{
+                filename = $file.Name
+                bytes = [long]$file.Length
+                sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              }
+            }
+            if ($totalBytes -gt 1048576) { throw 'G2_OUTPUT_TOTAL_BYTES_BOUND' }
+            foreach ($filename in $expectedOutputs) { if ($filename -cnotin @($actualFiles | ForEach-Object Name)) { throw 'G2_OUTPUT_REQUIRED_FILE_ABSENT' } }
+            $generatedHeader = [System.IO.File]::ReadAllText((Join-Path $outDir 'h3_r7b1c_lab.h'))
+            if (-not $generatedHeader.Contains('H3LabPublicProbe') -or -not $generatedHeader.Contains('H3LabSubmitSynthetic')) {
+              throw 'G2_REQUIRED_SYMBOLS_NOT_IN_GENERATED_HEADER'
+            }
+            $receipt.generated = @($generatedReceipt | Sort-Object filename)
+            $receipt.compiler_warning_count = 0
+            $receipt.verdict = 'PASS_COMPILE_ONLY'
+            $receipt.reason = 'MIDL_C_STUBS_GENERATED_NOT_BUILT_OR_RUN'
+          } catch {
+            $receipt.verdict = 'HOLD'
+            $receipt.reason = [string]$_.Exception.Message
+          } finally {
+            if ($null -ne $proc) {
+              try { if (-not $proc.HasExited) { $proc.Kill($true) } } catch { }
+              try { $proc.Dispose() } catch { }
+            }
+            if ($created) {
+              try { Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction Stop } catch {
+                $receipt.verdict = 'HOLD'
+                $receipt.reason = 'G2_TEMP_CLEANUP_EXCEPTION'
+              }
+              if (Test-Path -LiteralPath $scratch) {
+                $receipt.verdict = 'HOLD'
+                $receipt.reason = 'G2_TEMP_CLEANUP_NOT_VERIFIED'
+              } else {
+                $receipt.temp_cleanup_verified = $true
+              }
+            }
+          }
+
+          # Exactly one bounded machine-readable receipt. Do not publish generated C or real data.
+          Write-Output ('H3_G2_COMPILE_RECEIPT=' + ($receipt | ConvertTo-Json -Compress -Depth 8))
+          if ($receipt.verdict -cne 'PASS_COMPILE_ONLY' -or -not $receipt.temp_cleanup_verified) {
+            throw ('H3_G2_COMPILE_HOLD: ' + $receipt.reason)
+          }
+          Write-Output 'H3_G2_MIDL_COMPILE_ONLY=PASS_NOT_RPC_SECURITY_PASS'
