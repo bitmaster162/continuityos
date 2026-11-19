@@ -833,10 +833,16 @@ def _bound_execution_result(ledger_path, command, args, rollback_plan=None):
         "agent": "test",
         "meta": {},
     }
+    from continuityos.gate.effects import classify_effects
+    spec = ActionSpec(
+        tool=action["tool"], command=action["command"], args=action["args"],
+        paths=action["paths"], cwd=action["cwd"], agent=action["agent"], meta=action["meta"],
+    )
     with Ledger(str(ledger_path)) as ledger:
         preflight_hash = ledger.append("preflight", {
             "action": action,
             "decision": "ALLOW",
+            "effect": classify_effects(spec),
             "rollback_plan": rollback_plan,
         })
     return {
@@ -1112,3 +1118,178 @@ def test_cli_dry_run_is_single_structured_non_success_result(
     assert output["exit_code"] == 3
     assert output["preflight_hash"] == "d" * 64
     assert calls == []
+
+from continuityos.gate.ledger import Ledger as LegacyLedger
+
+
+def test_execution_replay_is_cached_and_subprocess_runs_once(tmp_path, monkeypatch, capsys):
+    import continuityos.gate.cli as cli
+
+    ledger_path = tmp_path / "replay-once.db"
+    monkeypatch.setattr(cli, "LEDGER", str(ledger_path))
+    calls = []
+    monkeypatch.setattr(cli.subprocess, "call", lambda *args, **kwargs: calls.append((args, kwargs)) or 0)
+    command = "python --version"
+    argv = ["python", "--version"]
+    result = _bound_execution_result(ledger_path, command, argv)
+
+    assert cli._execute_approved(command, "exec", result, argv=argv) == 0
+    assert cli._execute_approved(command, "exec", result, argv=argv) == 0
+    output = capsys.readouterr().out
+    assert "[CACHED]" in output
+    assert len(calls) == 1
+    assert [e["kind"] for e in _execution_events(ledger_path)] == [
+        "execution_started", "execution_completed"
+    ]
+    with LegacyLedger(str(ledger_path)) as ledger:
+        row = dict(ledger._attempt_row(result["ledger_hash"]))
+        assert row["phase"] == "TERMINAL"
+
+
+def _preclaim_result(cli, ledger_path, command, argv, result):
+    binding = cli._execution_binding_sha256(command, "exec", result, argv)
+    with LegacyLedger(str(ledger_path)) as ledger:
+        claim = ledger.claim_execution_attempt(
+            preflight_hash=result["ledger_hash"], binding_sha256=binding,
+            expected_action=result["action"], expected_rollback_plan=result["rollback_plan"],
+            expected_decision=result["decision"],
+        )
+    assert claim["status"] == "CLAIMED_NEW"
+    return binding
+
+
+def test_preclaimed_approval_holds_without_subprocess(tmp_path, monkeypatch):
+    import continuityos.gate.cli as cli
+
+    ledger_path = tmp_path / "preclaimed.db"
+    monkeypatch.setattr(cli, "LEDGER", str(ledger_path))
+    calls = []
+    monkeypatch.setattr(cli.subprocess, "call", lambda *a, **k: calls.append((a, k)) or 0)
+    command = "python --version"
+    argv = ["python", "--version"]
+    result = _bound_execution_result(ledger_path, command, argv)
+    _preclaim_result(cli, ledger_path, command, argv, result)
+
+    assert cli._execute_approved(command, "exec", result, argv=argv) == 1
+    assert calls == []
+    with LegacyLedger(str(ledger_path)) as ledger:
+        assert dict(ledger._attempt_row(result["ledger_hash"]))["phase"] == "CLAIMED"
+
+
+def test_started_without_terminal_holds_without_subprocess(tmp_path, monkeypatch):
+    import continuityos.gate.cli as cli
+
+    ledger_path = tmp_path / "started-hold.db"
+    monkeypatch.setattr(cli, "LEDGER", str(ledger_path))
+    calls = []
+    monkeypatch.setattr(cli.subprocess, "call", lambda *a, **k: calls.append((a, k)) or 0)
+    command = "python --version"
+    argv = ["python", "--version"]
+    result = _bound_execution_result(ledger_path, command, argv)
+    binding = _preclaim_result(cli, ledger_path, command, argv, result)
+    with LegacyLedger(str(ledger_path)) as ledger:
+        ledger.start_execution_attempt(
+            preflight_hash=result["ledger_hash"], binding_sha256=binding,
+            payload={
+                "preflight_hash": result["ledger_hash"], "action": result["action"],
+                "rollback_receipt": {"required": False, "status": "not_required"},
+                "executed": False, "execution_attempted": True, "mode": "exec",
+            },
+        )
+    assert cli._execute_approved(command, "exec", result, argv=argv) == 1
+    assert calls == []
+    with LegacyLedger(str(ledger_path)) as ledger:
+        assert dict(ledger._attempt_row(result["ledger_hash"]))["phase"] == "ATTEMPT_STARTED"
+
+
+def test_rollback_failure_consumes_approval_and_retry_does_not_execute(tmp_path, monkeypatch):
+    import continuityos.gate.cli as cli
+
+    ledger_path = tmp_path / "rollback-consumed.db"
+    monkeypatch.setattr(cli, "LEDGER", str(ledger_path))
+    calls = []
+    monkeypatch.setattr(cli.subprocess, "call", lambda *a, **k: calls.append((a, k)) or 0)
+    command = "rm *.txt"
+    argv = ["rm", "*.txt"]
+    original_plan = {
+        "snapshot_required": True,
+        "targets": [str(tmp_path / "*.txt")],
+    }
+    result = _bound_execution_result(ledger_path, command, argv, rollback_plan=dict(original_plan))
+    assert cli._execute_approved(command, "exec", result, argv=argv) == 1
+    assert calls == []
+    retry = {
+        "decision": "ALLOW",
+        "action": result["action"],
+        "ledger_hash": result["ledger_hash"],
+        "rollback_plan": dict(original_plan),
+    }
+    assert cli._execute_approved(command, "exec", retry, argv=argv) == 1
+    assert calls == []
+    with LegacyLedger(str(ledger_path)) as ledger:
+        row = dict(ledger._attempt_row(result["ledger_hash"]))
+        assert row["phase"] == "TERMINAL"
+        assert row["terminal_kind"] == "execution_failed"
+    assert [e["kind"] for e in _execution_events(ledger_path)] == ["execution_failed"]
+
+
+def test_terminal_receipt_failure_retry_never_reexecutes(tmp_path, monkeypatch):
+    import continuityos.gate.cli as cli
+
+    ledger_path = tmp_path / "receipt-failure-retry.db"
+    monkeypatch.setattr(cli, "LEDGER", str(ledger_path))
+    calls = []
+    monkeypatch.setattr(cli.subprocess, "call", lambda *a, **k: calls.append((a, k)) or 0)
+    command = "python --version"
+    argv = ["python", "--version"]
+    result = _bound_execution_result(ledger_path, command, argv)
+    real_append = cli._append_execution
+
+    def fail_terminal(kind, *args, **kwargs):
+        if kind == "execution_completed":
+            raise OSError("injected terminal receipt failure")
+        return real_append(kind, *args, **kwargs)
+
+    monkeypatch.setattr(cli, "_append_execution", fail_terminal)
+    assert cli._execute_approved(command, "exec", result, argv=argv) == cli.EXIT_RECEIPT_FAILURE == 4
+    assert len(calls) == 1
+    with LegacyLedger(str(ledger_path)) as ledger:
+        row = dict(ledger._attempt_row(result["ledger_hash"]))
+        assert row["phase"] == "ATTEMPT_STARTED"
+        assert row["terminal_hash"] is None
+
+    assert cli._execute_approved(command, "exec", result, argv=argv) == 1
+    assert len(calls) == 1
+    assert [e["kind"] for e in _execution_events(ledger_path)] == ["execution_started"]
+
+
+def test_execute_approved_retry_after_attempt_row_deletion_fails_closed(tmp_path, monkeypatch):
+    import continuityos.gate.cli as cli
+    from continuityos.gate.ledger import Ledger as LegacyLedger
+    ledger_path = tmp_path / "retry-after-delete.db"
+    monkeypatch.setattr(cli, "LEDGER", str(ledger_path))
+    calls = []
+    monkeypatch.setattr(cli.subprocess, "call", lambda *a, **k: calls.append((a, k)) or 0)
+    command = "python --version"
+    argv = ["python", "--version"]
+    result = _bound_execution_result(ledger_path, command, argv)
+    assert cli._execute_approved(command, "exec", result, argv=argv) == 0
+    assert len(calls) == 1
+    preflight_hash = result["ledger_hash"]
+    # delete only execution_attempts row while preserving events/hash-chain
+    with LegacyLedger(str(ledger_path)) as ledger:
+        assert ledger.con.execute(
+            "SELECT COUNT(*) FROM events WHERE kind='attempt_claimed' AND payload LIKE ?",
+            ('%' + preflight_hash + '%',)
+        ).fetchone()[0] == 1
+        ledger.con.execute("DELETE FROM execution_attempts WHERE preflight_hash=?", (preflight_hash,))
+        ledger.con.commit()
+    # retry must hold (exit code 1), must not re-execute, must not recreate the row
+    assert cli._execute_approved(command, "exec", result, argv=argv) == 1
+    assert len(calls) == 1
+    with LegacyLedger(str(ledger_path)) as ledger:
+        assert ledger._attempt_row(preflight_hash) is None
+        assert ledger.con.execute(
+            "SELECT COUNT(*) FROM events WHERE kind='attempt_claimed' AND payload LIKE ?",
+            ('%' + preflight_hash + '%',)
+        ).fetchone()[0] == 1

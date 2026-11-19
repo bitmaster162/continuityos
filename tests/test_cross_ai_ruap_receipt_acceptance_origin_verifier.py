@@ -12,16 +12,18 @@ import pytest
 import continuityos.cross_ai_ruap_receipt_acceptance_origin_verifier as verifier
 
 
-TRUSTED_REGISTRY_SHA256 = "50723ea6b6764bef723cb2b1805cf101e68ab362afbeb6ad03702e03071206ce"
-TRUSTED_PUBLIC_KEY_B64U = "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+TRUSTED_REGISTRY_SHA256 = "a8ff59202759b53999e7ce69e79d8c8f0d7619c32b1f4b65ee8f87d998f19f11"
+TRUSTED_PUBLIC_KEY_B64U = "0EqyMnQrtKs6E2i9RhXk5tAiSrcaAWuvhSCjMsl3hzc"
+TRUSTED_KEY_ID = "ed25519-sha256:10ba682c8ad13513971e8b56881aab8bd702bb807796eca81932c735a94d6e6d"
 TRUSTED_SIGNATURE_B64U = (
-    "RE8oS5ftZtbZ6Vd7I34PHnGZmTD8PYed0QBchZI6-6YSgdfLcoCmNccJGD4pj1Qn"
-    "bruOoIvNGKsyutMQWRm0Dw"
+    "DEvnyKwqkNIn42YSDmRsBGJAX03zNQdpAVYTl2JUH_ltYzm8jtDP4f-E-oKBHihi"
+    "lZRJs9F481EFz1TFbTtWCw"
 )
-ATTACKER_PUBLIC_KEY_B64U = "PUAXw-hDiVqStwqnTRt-vJyYLM8uxJaMwM1V8Sr0Zgw"
+ATTACKER_PUBLIC_KEY_B64U = "oJql9HpnWYAv-VX43C0qFKXJnSO-l_hkEn_5ODRVpPA"
+ATTACKER_KEY_ID = "ed25519-sha256:1325b850c2871916eae203f0efc3c8987f64e5e3cdb27679e6d1fa97808357e6"
 ATTACKER_SIGNATURE_B64U = (
-    "rfbkxPoNU0tuu-yCm2sX-B_z-q0t-mmCbQ9lyOV9h-5TyA8ZV3EvxB0Lah0G3eeR"
-    "sm4A1_TwuJyCVw7QnvbZBw"
+    "P9ubATV7TQSXXh0qStrfpyAMIyEOdXC4re4pFBogDm8nQD7wZl_btmnF7R2wttUH"
+    "w4sAVF3Gc6PfP02PJs9gAw"
 )
 ACCEPTANCE_SHA256 = "8f7b8e0cfe03a09862ffe047c7cc2bcfdf9d3c3b05e72467afc4921fcfb0078d"
 
@@ -66,7 +68,7 @@ def trusted_registry(*, state: str = "ACTIVE") -> dict:
         "keys": [
             {
                 "producer_id": "fixture-producer-a",
-                "key_id": "fixture-key-a",
+                "key_id": TRUSTED_KEY_ID,
                 "algorithm": "Ed25519",
                 "public_key_b64u": TRUSTED_PUBLIC_KEY_B64U,
                 "usage": "CROSS_AI_RUAP_RECEIPT_ACCEPTANCE_ORIGIN",
@@ -81,7 +83,7 @@ def trusted_signature() -> dict:
         "schema": "continuityos.cross_ai_ruap_receipt_acceptance_origin_signature/v1",
         "purpose": "CROSS_AI_RUAP_RECEIPT_ACCEPTANCE_ORIGIN",
         "producer_id": "fixture-producer-a",
-        "key_id": "fixture-key-a",
+        "key_id": TRUSTED_KEY_ID,
         "algorithm": "Ed25519",
         "acceptance_sha256": ACCEPTANCE_SHA256,
         "signature_b64u": TRUSTED_SIGNATURE_B64U,
@@ -95,7 +97,7 @@ def attacker_registry() -> dict:
         "keys": [
             {
                 "producer_id": "attacker-producer",
-                "key_id": "attacker-key",
+                "key_id": ATTACKER_KEY_ID,
                 "algorithm": "Ed25519",
                 "public_key_b64u": ATTACKER_PUBLIC_KEY_B64U,
                 "usage": "CROSS_AI_RUAP_RECEIPT_ACCEPTANCE_ORIGIN",
@@ -110,7 +112,7 @@ def attacker_signature() -> dict:
         "schema": "continuityos.cross_ai_ruap_receipt_acceptance_origin_signature/v1",
         "purpose": "CROSS_AI_RUAP_RECEIPT_ACCEPTANCE_ORIGIN",
         "producer_id": "attacker-producer",
-        "key_id": "attacker-key",
+        "key_id": ATTACKER_KEY_ID,
         "algorithm": "Ed25519",
         "acceptance_sha256": ACCEPTANCE_SHA256,
         "signature_b64u": ATTACKER_SIGNATURE_B64U,
@@ -167,7 +169,7 @@ def test_real_cryptography_backend_accepts_precomputed_fixture(
     assert result.expected_acceptance_sha256 == ACCEPTANCE_SHA256
     assert result.expected_registry_sha256 == TRUSTED_REGISTRY_SHA256
     assert result.producer_id == "fixture-producer-a"
-    assert result.key_id == "fixture-key-a"
+    assert result.key_id == TRUSTED_KEY_ID
 
 
 def test_real_cryptography_backend_rejects_signature_tampering(
@@ -239,6 +241,38 @@ def test_duplicate_key_tuple_fails_closed() -> None:
     assert result.errors == ("registry_duplicate_key",)
 
 
+def test_registry_key_id_must_match_public_key_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = trusted_registry()
+    registry["keys"][0]["key_id"] = "ed25519-sha256:" + "0" * 64
+    monkeypatch.setattr(
+        verifier, "PINNED_REGISTRY_SHA256", canonical_sha256(registry)
+    )
+    result = verify(registry=registry)
+    assert result.ok is False
+    assert result.acceptance_origin_verified is False
+    assert result.errors == ("registry_key_id_public_key_mismatch",)
+
+
+def test_unreferenced_retired_bad_key_id_invalidates_entire_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = trusted_registry()
+    second = copy.deepcopy(registry["keys"][0])
+    second["producer_id"] = "fixture-producer-b"
+    second["key_id"] = "ed25519-sha256:" + "f" * 64
+    second["state"] = "RETIRED"
+    registry["keys"].append(second)
+    monkeypatch.setattr(
+        verifier, "PINNED_REGISTRY_SHA256", canonical_sha256(registry)
+    )
+    result = verify(registry=registry)
+    assert result.ok is False
+    assert result.acceptance_origin_verified is False
+    assert result.errors == ("registry_key_id_public_key_mismatch",)
+
+
 @pytest.mark.parametrize(
     ("field", "replacement", "error"),
     [
@@ -295,7 +329,6 @@ def test_registry_order_is_bound_by_pinned_digest(
     registry = trusted_registry()
     second = copy.deepcopy(registry["keys"][0])
     second["producer_id"] = "fixture-producer-b"
-    second["key_id"] = "fixture-key-b"
     registry["keys"].append(second)
     monkeypatch.setattr(
         verifier, "PINNED_REGISTRY_SHA256", canonical_sha256(registry)
@@ -377,7 +410,7 @@ def test_require_valid_returns_preverification_acceptance_snapshot_under_mutatio
             ACCEPTANCE_SHA256,
             TRUSTED_REGISTRY_SHA256,
             "fixture-producer-a",
-            "fixture-key-a",
+            TRUSTED_KEY_ID,
         )
 
     monkeypatch.setattr(

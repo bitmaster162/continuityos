@@ -19,7 +19,12 @@ The historical cold-start implementation is cryptographically and semantically b
 - `--spec`: one controller-authored `CONTINUITYOS_CURRENT_COLD_START_SPEC_V1`;
 - `--output`: a new output directory.
 
-The pointer must be `canonical_activation.status=ACTIVE`, its provider readback must report exact stable roots, and the supplied root bytes must match the SHA-256 identities carried by the pointer.
+The pointer must resolve through exactly one supported current-authority path:
+
+- original promotion: `canonical_activation.status=ACTIVE`, with its exact provider readback and manifest binding; or
+- post-repair reseal: `canonical_activation.status=HISTORICAL_PRE_REPAIR_ACTIVATION` plus `canonical_reseal.status=ACTIVE_RESEALED_AFTER_EXACT_PROVIDER_READBACK`.
+
+For the reseal path, the validator binds the historical manifest to `canonical_reseal.original_manifest_sha256`, binds `canonical_reseal.accepted_reseal_manifest_sha256` to the pointer's current `MANIFEST.json`, requires the repaired `CURRENT_STATE` hash to match the pointer binding, preserves the same human sovereign, and still verifies all supplied stable-root bytes by SHA-256. Any partial or inconsistent reseal fails closed.
 
 ## Immutable pre-promotion markers
 
@@ -28,7 +33,7 @@ A promoted pointer may activate immutable root bytes that were compiled before h
 The current protocol does **not** rewrite such root bytes. It binds both facts into the capsule:
 
 1. the exact immutable compiled marker; and
-2. the exact ACTIVE pointer whose activation record supersedes that marker for canonicality only.
+2. the exact current pointer whose active authority record is either the original `canonical_activation` or a fully bound active `canonical_reseal`.
 
 This follows the R64 promotion semantics rather than treating a stale string inside an immutable root as current authority.
 

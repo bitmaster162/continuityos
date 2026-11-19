@@ -14,6 +14,7 @@ from continuityos.gate.merge_execution import (
     VERIFIED,
     evaluate_merge_execution,
 )
+from continuityos.trusted_merge_handoff import build_dual_control_merge_handoff
 
 
 def load_integrated_fixture():
@@ -30,6 +31,18 @@ def load_integrated_fixture():
 IntegratedFixture = load_integrated_fixture()
 
 
+def load_r20_fixture():
+    path = Path(__file__).with_name("test_trusted_merge_handoff.py")
+    spec = importlib.util.spec_from_file_location("_r20_fixture", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+R20 = load_r20_fixture()
+
+
 class MergeExecutionFixture:
     def __init__(self, root: Path):
         self.root = root
@@ -38,6 +51,8 @@ class MergeExecutionFixture:
         self.r14 = IntegratedFixture(r14_root)
 
         self.authorization = root / "MERGE_AUTHORIZATION.json"
+        self.handoff = root / "DUAL_CONTROL_HANDOFF.json"
+        self.registry = root / "TRUSTED_HUMAN_KEY_REGISTRY.json"
         self.host = root / "HOST_EXECUTION.json"
         self.pr = root / "PR_READBACK.json"
         self.commit = root / "MERGE_COMMIT_READBACK.json"
@@ -63,7 +78,24 @@ class MergeExecutionFixture:
         self.merge_sha = "a" * 40
         self.merge_tree = "b" * 40
         self.executor = "bitmaster162"
-        self.executed_at = datetime.now(timezone.utc) - timedelta(minutes=2)
+        self.validation_now = datetime.fromtimestamp(R20.R17.NOW, tz=timezone.utc)
+        self.executed_at = self.validation_now - timedelta(minutes=2)
+        eligibility, registry, registry_pin = R20._r19_eligibility_for(
+            repository=self.repo_name, base=self.base_head, base_tree=self.base_tree,
+            head=self.candidate_head, tree=self.candidate_tree,
+        )
+        self.registry_pin = registry_pin
+        self.write(self.registry, registry)
+        handoff = build_dual_control_merge_handoff(
+            eligibility_receipt=eligibility, merge_authorization_receipt=authorization,
+            pinned_merge_authorization_sha256=R20._pin(authorization),
+            trusted_key_registry=registry, pinned_registry_sha256=registry_pin,
+            repository=self.repo_name, current_base_sha=self.base_head,
+            current_head_sha=self.candidate_head, current_tree_sha=self.candidate_tree,
+            now_unix=R20.R17.NOW, base_branch=self.base_branch,
+            candidate_branch=self.candidate_branch, pull_request_number=self.pr_number,
+        )
+        self.write(self.handoff, handoff)
         self.required_checks = ["CI", "security"]
         self.required_approvals = 1
         self.write_all()
@@ -80,11 +112,12 @@ class MergeExecutionFixture:
         self.write(
             self.host,
             {
-                "schema": "continuityos.merge_execution.host_receipt/v1",
+                "schema": "continuityos.merge_execution.host_receipt/v2",
                 "provider": "GITHUB",
                 "repository": self.repo_name,
                 "pull_request_number": self.pr_number,
                 "authorization_receipt_sha256": sha256_file(self.authorization),
+                "dual_control_handoff_sha256": sha256_file(self.handoff),
                 "authorization_subject_sha256": auth[
                     "authorization_subject_sha256"
                 ],
@@ -181,9 +214,10 @@ class MergeExecutionFixture:
         self.write(
             self.consumption,
             {
-                "schema": "continuityos.merge_execution.authorization_consumption/v1",
+                "schema": "continuityos.merge_execution.authorization_consumption/v2",
                 "store_readback": True,
                 "authorization_receipt_sha256": sha256_file(self.authorization),
+                "dual_control_handoff_sha256": sha256_file(self.handoff),
                 "authorization_subject_sha256": auth[
                     "authorization_subject_sha256"
                 ],
@@ -206,7 +240,7 @@ class MergeExecutionFixture:
         self.write(
             self.request,
             {
-                "schema": "continuityos.merge_execution.request/v1",
+                "schema": "continuityos.merge_execution.request/v2",
                 "authority_generation": "R63",
                 "subject": {
                     "repository": self.repo_name,
@@ -232,6 +266,7 @@ class MergeExecutionFixture:
                     "authorization_receipt_sha256": sha256_file(
                         self.authorization
                     ),
+                    "dual_control_handoff_sha256": sha256_file(self.handoff),
                     "host_execution_receipt_sha256": sha256_file(self.host),
                     "pull_request_readback_sha256": sha256_file(self.pr),
                     "merge_commit_readback_sha256": sha256_file(self.commit),
@@ -255,16 +290,20 @@ class MergeExecutionFixture:
             },
         )
 
-    def evaluate(self):
+    def evaluate(self, *, registry_pin=None, now=None):
         return evaluate_merge_execution(
             self.request,
             self.authorization,
+            self.handoff,
+            self.registry,
             self.host,
             self.pr,
             self.commit,
             self.base,
             self.protection,
             self.consumption,
+            pinned_registry_sha256=registry_pin or self.registry_pin,
+            now=now or self.validation_now,
         )
 
 
@@ -410,6 +449,60 @@ class MergeExecutionTests(unittest.TestCase):
             obj["effects"]["merge"] = True
             fx.write(fx.request, obj)
             self.assertEqual(fx.evaluate()["status"], REVISE)
+
+
+    def test_missing_dual_control_handoff_holds(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = MergeExecutionFixture(Path(td))
+            fx.handoff.unlink()
+            self.assertEqual(fx.evaluate()["status"], HOLD)
+
+    def test_tampered_dual_control_handoff_revises(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = MergeExecutionFixture(Path(td))
+            obj = json.loads(fx.handoff.read_text())
+            obj["pull_request_number"] += 1
+            fx.write(fx.handoff, obj)
+            fx.rebind_request()
+            self.assertEqual(fx.evaluate()["status"], REVISE)
+
+    def test_wrong_trusted_registry_pin_revises(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = MergeExecutionFixture(Path(td))
+            self.assertEqual(fx.evaluate(registry_pin="0" * 64)["status"], REVISE)
+
+    def test_host_must_bind_dual_control_handoff(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = MergeExecutionFixture(Path(td))
+            obj = json.loads(fx.host.read_text())
+            obj["dual_control_handoff_sha256"] = "f" * 64
+            fx.write(fx.host, obj)
+            fx.rebind_request()
+            self.assertEqual(fx.evaluate()["status"], REVISE)
+
+    def test_consumption_must_bind_dual_control_handoff(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = MergeExecutionFixture(Path(td))
+            obj = json.loads(fx.consumption.read_text())
+            obj["dual_control_handoff_sha256"] = "f" * 64
+            fx.write(fx.consumption, obj)
+            fx.rebind_request()
+            self.assertEqual(fx.evaluate()["status"], REVISE)
+
+    def test_expired_r19_inside_handoff_revises_execution_verification(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = MergeExecutionFixture(Path(td))
+            expired = datetime.fromtimestamp(R20.R17.NOW + 301, tz=timezone.utc)
+            self.assertEqual(fx.evaluate(now=expired)["status"], REVISE)
+
+    def test_v1_execution_request_is_not_admissible_under_r22(self):
+        with tempfile.TemporaryDirectory() as td:
+            fx = MergeExecutionFixture(Path(td))
+            obj = json.loads(fx.request.read_text())
+            obj["schema"] = "continuityos.merge_execution.request/v1"
+            fx.write(fx.request, obj)
+            self.assertEqual(fx.evaluate()["status"], REVISE)
+
 
 
 if __name__ == "__main__":

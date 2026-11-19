@@ -33,7 +33,7 @@ def test_runner_path_models_cover_ubuntu_and_windows_workspaces():
     ) == "inside_home"
 
 
-def test_portable_cwd_allows_build_but_home_contract_remains_gated():
+def test_project_code_is_gated_in_portable_and_home_contexts():
     policy = default_policy()
     portable = continuitybench.portable_workspace_cwd()
     home = os.path.expanduser("~")
@@ -42,7 +42,7 @@ def test_portable_cwd_allows_build_but_home_contract_remains_gated():
         ActionSpec(tool="shell", command="python build.py", cwd=portable),
         policy=policy,
     )
-    assert safe["decision"] == "ALLOW"
+    assert safe["decision"] == "REQUIRE_CONFIRMATION"
 
     detail = {}
     assert continuitybench.run_protected_home(
@@ -52,7 +52,7 @@ def test_portable_cwd_allows_build_but_home_contract_remains_gated():
     )
     assert detail["cwd_class"] == "inside_home"
     assert detail["observed_decision"] == "REQUIRE_CONFIRMATION"
-    assert detail["reason_codes"] == ["protected_path"]
+    assert detail["reason_codes"] == ["effect:DYNAMIC_CODE", "protected_path"]
 
 
 def test_json_receipt_records_safe_context_and_no_raw_paths(

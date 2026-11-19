@@ -48,6 +48,8 @@ the controlled CLI/hook instead of silently reverting to defaults.
   `exec` mode is argv-only and refuses shell operators; `shell` mode runs them but is
   classified more strictly. Prefer `exec`.
 
+The brokered path adds a second, typed effect classification over exact argv. Known external mutation classes and unknown executables escalate independently of shell-risk regexes. This prevents syntactically ordinary commands such as package installs, remote merges, HTTP writes, and infrastructure apply from inheriting a plain `ALLOW`. Arbitrary side effects hidden inside an already admitted program remain outside semantic proof; use narrow capability-owned adapters and mandatory host mediation for stronger guarantees.
+
 ## Validation-evidence boundary
 
 The Work Validation Evidence Gate executes only admission-bound argv vectors and
@@ -73,6 +75,7 @@ Advisory preflight only returns snapshot intent; it does not claim a snapshot al
 Rollback reverts this narrow **local file/DB state only**. It **cannot** undo irreversible external
 side effects: a bad API call to prod, a deleted remote repo, a sent transaction, a placed
 order. Those must be gated *before* execution — never rely on rollback to clean them up.
+The default effect ceiling therefore requires confirmation or HOLD for recognized external/non-restorable mutation classes and confirmation for otherwise unknown executables.
 Reversibility is a property you design upstream, not a button you press after.
 
 ## Memory correctness

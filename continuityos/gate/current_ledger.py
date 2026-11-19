@@ -15,26 +15,28 @@ from ..current_effect_boundary import (
     inspect_current_session,
 )
 from .ledger import GENESIS, HASH_SCHEME, Ledger as _LegacyLedger
+from ..persistent_governance_store import require_persistent_governance_store_path
 
 
 class Ledger:
     """Backward-compatible Ledger with monotonic current-session read-only mode."""
 
-    def __init__(self, path: str = "continuity_ledger.db"):
+    def __init__(self, path=None):
+        store_path = require_persistent_governance_store_path(
+            path, label="current execution ledger"
+        )
         self._legacy: _LegacyLedger | None = None
         state = inspect_current_session()
         if state["mode"] == MODE_LEGACY:
-            self._legacy = _LegacyLedger(path)
+            self._legacy = _LegacyLedger(store_path)
             self.con = self._legacy.con
-            self.path = path
+            self.path = str(store_path)
             self.read_only = False
             return
         if state["mode"] != MODE_CURRENT:
             raise CurrentEffectBoundaryError("ledger.open", state)
 
-        normalized = os.path.normcase(
-            os.path.realpath(os.path.abspath(os.path.expanduser(path)))
-        )
+        normalized = os.path.normcase(os.path.realpath(str(store_path)))
         if not os.path.isfile(normalized):
             raise FileNotFoundError(normalized)
         self.path = normalized

@@ -35,7 +35,7 @@
   continuity audit                        # show + verify the audit ledger
 """
 from __future__ import annotations
-import argparse, glob, json, os, sys, subprocess, shlex, re, time
+import argparse, glob, json, os, sys, subprocess, shlex, re, time, hashlib
 from pathlib import Path
 from .anti_amnesia import (
     EXIT_INTERNAL as ANTI_AMNESIA_EXIT_INTERNAL,
@@ -236,9 +236,18 @@ def _decide(cmd: str, tool="shell", agent="cli", args=None, paths=None,
     return result, spec
 
 
-def _materialize_rollback(result) -> bool:
+def _open_ledger(path, witness_authority=None):
+    # Preserve wrappers implementing the legacy one-argument constructor when
+    # no R14 authority was requested.
+    if witness_authority is None:
+        return Ledger(path)
+    return Ledger(path, witness=witness_authority)
+
+
+def _materialize_rollback(result, ledger_path=None, witness_authority=None) -> bool:
     """Create the declared local snapshot immediately before approved execution."""
     _require_legacy_gate()
+    ledger_path = ledger_path if ledger_path is not None else LEDGER
     plan = result.get("rollback_plan") or {}
     if not plan.get("snapshot_required"):
         return True
@@ -273,7 +282,7 @@ def _materialize_rollback(result) -> bool:
         "restore_cmd": f"continuity rollback {snap['id']}",
         "snapshot_status": "materialized" if snap["restorable"] else "failed",
     })
-    with Ledger(LEDGER) as led:
+    with _open_ledger(ledger_path, witness_authority) as led:
         receipt_hash = led.append("rollback_snapshot", {
             "preflight_hash": result.get("ledger_hash"),
             "action": result.get("action"),
@@ -307,21 +316,35 @@ def _rollback_receipt(result):
     }
 
 
-def _append_execution(kind, result, rollback_receipt, **fields):
+def _append_execution(kind, result, rollback_receipt, ledger_path=None,
+                      witness_authority=None, **fields):
+    """Record execution attempt in the ledger."""
     _require_legacy_gate()
+    ledger_path = ledger_path if ledger_path is not None else LEDGER
+    binding_sha256 = fields.pop("_binding_sha256", None)
     payload = {
         "preflight_hash": result.get("ledger_hash"),
         "action": result.get("action"),
         "rollback_receipt": rollback_receipt,
     }
     payload.update(fields)
-    with Ledger(LEDGER) as led:
+    with _open_ledger(ledger_path, witness_authority) as led:
+        if binding_sha256 and kind == "execution_started":
+            return led.start_execution_attempt(
+                preflight_hash=result.get("ledger_hash"),
+                binding_sha256=binding_sha256, payload=payload,
+            )
+        if binding_sha256 and kind in ("execution_completed", "execution_failed"):
+            return led.finish_execution_attempt(
+                preflight_hash=result.get("ledger_hash"),
+                binding_sha256=binding_sha256, terminal_kind=kind, payload=payload,
+            )
         return led.append(kind, payload)
 
 
 def _write_receipt_failure_fallback(
     result, rollback_receipt, started_hash, terminal_kind,
-    process_exit_code, receipt_error, execution_error=None,
+    process_exit_code, receipt_error, execution_error=None, ledger_path=None
 ):
     """Durable local ambiguity marker when the primary terminal ledger append fails."""
     payload = {
@@ -342,7 +365,8 @@ def _write_receipt_failure_fallback(
         "ts": time.time(),
         "instruction": "Do not retry blindly; reconcile the side effect and ledger first.",
     }
-    path = LEDGER + ".receipt_failures.jsonl"
+    ledger_path = ledger_path if ledger_path is not None else LEDGER
+    path = ledger_path + ".receipt_failures.jsonl"
     encoded = (
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         + "\n"
@@ -359,7 +383,7 @@ def _write_receipt_failure_fallback(
 
 def _handle_terminal_receipt_failure(
     result, rollback_receipt, started_hash, terminal_kind,
-    process_exit_code, receipt_error, execution_error=None,
+    process_exit_code, receipt_error, execution_error=None, ledger_path=None
 ):
     fallback = None
     fallback_error = None
@@ -372,6 +396,7 @@ def _handle_terminal_receipt_failure(
             process_exit_code,
             receipt_error,
             execution_error=execution_error,
+            ledger_path=ledger_path,
         )
     except Exception as exc:
         fallback_error = f"{type(exc).__name__}: {exc}"
@@ -392,7 +417,8 @@ def _handle_terminal_receipt_failure(
     return EXIT_RECEIPT_FAILURE
 
 
-def _execution_binding_error(cmd: str, mode: str, result, argv) -> str:
+def _execution_binding_error(cmd: str, mode: str, result, argv, execution_cwd=None,
+                             ledger_path=None, witness_authority=None) -> str:
     try:
         _require_legacy_gate()
     except Exception as exc:
@@ -416,11 +442,14 @@ def _execution_binding_error(cmd: str, mode: str, result, argv) -> str:
     if not os.path.isabs(os.path.expandvars(os.path.expanduser(action_cwd))):
         return "preflighted action cwd is not absolute"
     assessed_cwd = os.path.normcase(os.path.realpath(os.path.abspath(action_cwd)))
-    execution_cwd = os.path.normcase(os.path.realpath(os.path.abspath(os.getcwd())))
-    if assessed_cwd != execution_cwd:
+    if execution_cwd is None:
+        execution_cwd = os.getcwd()
+    normalized_execution_cwd = os.path.normcase(os.path.realpath(os.path.abspath(execution_cwd)))
+    if assessed_cwd != normalized_execution_cwd:
         return "execution cwd differs from the preflighted action"
+    ledger_path = ledger_path if ledger_path is not None else LEDGER
     try:
-        with Ledger(LEDGER) as ledger:
+        with _open_ledger(ledger_path, witness_authority) as ledger:
             verification = ledger.verify()
             if not verification.get("ok"):
                 return "execution ledger failed hash-chain verification"
@@ -432,6 +461,23 @@ def _execution_binding_error(cmd: str, mode: str, result, argv) -> str:
                 return "typed action differs from the ledger-bound preflight action"
             if payload.get("rollback_plan") != (result.get("rollback_plan") or {}):
                 return "rollback plan differs from the ledger-bound preflight plan"
+            effect = payload.get("effect")
+            if effect is None:
+                row = ledger._attempt_row(preflight_hash)
+                attempt = None if row is None else ledger._validate_attempt_row(row)
+                if attempt is None or attempt.get("phase") != "TERMINAL":
+                    return "preflight has no effect classification; fresh preflight required"
+            else:
+                from .effects import classify_effects
+                expected_effect = classify_effects(ActionSpec(
+                    tool=action["tool"], command=action["command"],
+                    args=list(action.get("args") or []),
+                    paths=list(action.get("paths") or []),
+                    cwd=action["cwd"], agent=action.get("agent", "unknown"),
+                    meta=dict(action.get("meta") or {}),
+                ))
+                if effect != expected_effect:
+                    return "ledger-bound effect classification does not match exact action"
             ledger_decision = payload.get("decision")
             if result.get("decision") != ledger_decision:
                 return "result decision differs from the ledger-bound preflight decision"
@@ -459,40 +505,147 @@ def _execution_binding_error(cmd: str, mode: str, result, argv) -> str:
     return ""
 
 
-def _execute_approved(cmd: str, mode: str, result, argv=None) -> int:
+def _execution_binding_sha256(cmd: str, mode: str, result, argv, execution_cwd=None) -> str:
+    action = result.get("action") or {}
+    if execution_cwd is None:
+        action_cwd = action.get("cwd") or os.getcwd()
+    else:
+        action_cwd = action.get("cwd") or execution_cwd
+    normalized_cwd = os.path.normcase(
+        os.path.realpath(os.path.abspath(os.path.expandvars(os.path.expanduser(action_cwd))))
+    )
+    body = json.dumps({
+        "preflight_hash": result.get("ledger_hash"),
+        "mode": mode,
+        "command": cmd,
+        "argv": list(argv),
+        "cwd": normalized_cwd,
+    }, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _execute_approved(cmd: str, mode: str, result, argv=None, ledger_path=None,
+                      execution_cwd=None, stdout=None, stderr=None, env=None,
+                      outcome=None, witness_authority=None,
+                      monotonic_anchor=None) -> int:
+    """Execute an approval and optionally expose this invocation's claim result.
+
+    ``outcome`` is an internal broker channel. The integer return remains the
+    legacy API; callers must not infer claim ownership from it or status text.
+    """
     if argv is None:
         argv = shlex.split(cmd, posix=os.name != "nt")
         if os.name == "nt":
             argv = [part[1:-1] if len(part) >= 2 and part[0] == part[-1] == '"' else part for part in argv]
-    binding_error = _execution_binding_error(cmd, mode, result, argv)
+    binding_error = _execution_binding_error(
+        cmd, mode, result, argv, execution_cwd=execution_cwd,
+        ledger_path=ledger_path, witness_authority=witness_authority,
+    )
     if binding_error:
         print(f"\n[HELD] {binding_error}; command was not executed.")
         return 1
+    binding_sha256 = _execution_binding_sha256(cmd, mode, result, argv)
     try:
-        rollback_ok = _materialize_rollback(result)
+        with _open_ledger(
+            ledger_path if ledger_path is not None else LEDGER,
+            witness_authority,
+        ) as ledger:
+            r15_activated = ledger.con.execute(
+                "SELECT 1 FROM events WHERE kind='monotonic_anchor' LIMIT 1"
+            ).fetchone() is not None
+            if r15_activated and monotonic_anchor is None:
+                raise ValueError(
+                    "R15-activated governance state requires the monotonic anchor"
+                )
+            if monotonic_anchor is not None:
+                if witness_authority is None:
+                    raise ValueError(
+                        "R15 monotonic execution requires the R14 witness authority"
+                    )
+                monotonic_anchor.require_runtime_consistency(ledger)
+    except Exception as exc:
+        if outcome is not None:
+            outcome["monotonic_anchor_error"] = f"{type(exc).__name__}: {exc}"
+        print(
+            f"\n[HELD] monotonic execution state is inconsistent before claim: "
+            f"{type(exc).__name__}: {exc}; command was not executed."
+        )
+        return 1
+    try:
+        with _open_ledger(
+            ledger_path if ledger_path is not None else LEDGER,
+            witness_authority,
+        ) as ledger:
+            claim = ledger.claim_execution_attempt(
+                preflight_hash=result.get("ledger_hash"),
+                binding_sha256=binding_sha256,
+                expected_action=result.get("action") or {},
+                expected_rollback_plan=result.get("rollback_plan") or {},
+                expected_decision=result.get("decision"),
+            )
+    except Exception as exc:
+        print(f"\n[HELD] execution claim failed closed: {type(exc).__name__}: {exc}")
+        return 1
+    claim_status = claim.get("status")
+    if outcome is not None:
+        outcome["claim_status"] = claim_status
+        if claim_status == "CLAIMED_NEW":
+            outcome["claim_hash"] = claim.get("claim_hash")
+    if claim_status == "TERMINAL":
+        if monotonic_anchor is not None:
+            try:
+                with _open_ledger(
+                    ledger_path if ledger_path is not None else LEDGER,
+                    witness_authority,
+                ) as ledger:
+                    row = ledger._attempt_row(result.get("ledger_hash"))
+                    attempt = ledger._validate_attempt_row(row)
+                    monotonic_anchor.require_terminal_receipt(
+                        ledger, preflight_hash=result.get("ledger_hash"),
+                        binding_sha256=binding_sha256, attempt=attempt,
+                    )
+            except Exception as exc:
+                if outcome is not None:
+                    outcome["monotonic_anchor_error"] = f"{type(exc).__name__}: {exc}"
+                print(
+                    f"\n[HELD] cached terminal execution lacks a verified monotonic proof: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                return 1
+        cached_exit = claim.get("terminal_exit_code")
+        print("\n[CACHED] approval already has a verified terminal execution receipt; subprocess was not re-run.")
+        return cached_exit if isinstance(cached_exit, int) else 1
+    if claim_status == "ATTEMPT_STARTED":
+        print("\n[HELD] prior execution attempt has no verified terminal outcome; do not retry blindly.")
+        return 1
+    if claim_status == "CLAIMED":
+        print("\n[HELD] approval was already durably claimed; automatic reclaim is disabled.")
+        return 1
+    if claim_status != "CLAIMED_NEW":
+        print(f"\n[HELD] unknown execution claim state {claim_status!r}; command was not executed.")
+        return 1
+    try:
+        rollback_ok = _materialize_rollback(
+            result, ledger_path=ledger_path, witness_authority=witness_authority
+        )
     except Exception as exc:
         plan = result.get("rollback_plan") or {}
         plan.update({
-            "snapshot_status": "failed",
-            "restorable": False,
-            "snapshot_errors": [{
-                "error_type": type(exc).__name__,
-                "error": str(exc),
-            }],
+            "snapshot_status": "failed", "restorable": False,
+            "snapshot_errors": [{"error_type": type(exc).__name__, "error": str(exc)}],
         })
         rollback_ok = False
     rollback_receipt = _rollback_receipt(result)
     if not rollback_ok:
         try:
             _append_execution(
-                "execution_failed",
-                result,
-                rollback_receipt,
-                executed=False,
-                execution_attempted=False,
-                exit_code=None,
+                "execution_failed", result, rollback_receipt,
+                _binding_sha256=binding_sha256,
+                executed=False, execution_attempted=False, exit_code=None,
                 error_type="RollbackMaterializationError",
                 error="required rollback materialization failed",
+                ledger_path=ledger_path,
+                witness_authority=witness_authority,
             )
         except Exception as exc:
             print(
@@ -502,68 +655,97 @@ def _execute_approved(cmd: str, mode: str, result, argv=None) -> int:
         return 1
     try:
         started_hash = _append_execution(
-            "execution_started",
-            result,
-            rollback_receipt,
-            executed=False,
-            execution_attempted=True,
-            mode=mode,
+            "execution_started", result, rollback_receipt,
+            _binding_sha256=binding_sha256,
+            executed=False, execution_attempted=True, mode=mode,
+            ledger_path=ledger_path,
+            witness_authority=witness_authority,
         )
     except Exception as exc:
         print(f"\n[HELD] execution receipt could not be recorded: {type(exc).__name__}: {exc}")
         return 1
+    if monotonic_anchor is not None:
+        try:
+            with _open_ledger(
+                ledger_path if ledger_path is not None else LEDGER,
+                witness_authority,
+            ) as ledger:
+                anchor_hash = monotonic_anchor.record_execution_started(
+                    ledger, preflight_hash=result.get("ledger_hash"),
+                    binding_sha256=binding_sha256,
+                    execution_started_hash=started_hash,
+                )
+            if outcome is not None:
+                outcome["monotonic_started_anchor_hash"] = anchor_hash
+        except Exception as exc:
+            if outcome is not None:
+                outcome["monotonic_anchor_error"] = f"{type(exc).__name__}: {exc}"
+            print(f"\n[HELD] monotonic execution anchor failed before subprocess: {type(exc).__name__}: {exc}")
+            return 1
     try:
         if mode == "shell":
-            exit_code = subprocess.call(cmd, shell=True)
+            exit_code = subprocess.call(cmd, shell=True, cwd=execution_cwd, stdout=stdout, stderr=stderr, env=env)
         else:
-            exit_code = subprocess.call(list(argv))
+            exit_code = subprocess.call(list(argv), cwd=execution_cwd, stdout=stdout, stderr=stderr, env=env)
     except Exception as exc:
         try:
-            _append_execution(
-                "execution_failed",
-                result,
-                rollback_receipt,
-                executed=False,
-                execution_attempted=True,
-                execution_started_hash=started_hash,
-                exit_code=None,
-                error_type=type(exc).__name__,
-                error=str(exc),
+            failed_hash = _append_execution(
+                "execution_failed", result, rollback_receipt,
+                _binding_sha256=binding_sha256,
+                executed=False, execution_attempted=True,
+                execution_started_hash=started_hash, exit_code=None,
+                error_type=type(exc).__name__, error=str(exc),
+                ledger_path=ledger_path,
+                witness_authority=witness_authority,
             )
+            if monotonic_anchor is not None:
+                with _open_ledger(
+                    ledger_path if ledger_path is not None else LEDGER,
+                    witness_authority,
+                ) as ledger:
+                    monotonic_anchor.record_execution_terminal(
+                        ledger, preflight_hash=result.get("ledger_hash"),
+                        binding_sha256=binding_sha256,
+                        terminal_hash=failed_hash,
+                        terminal_kind="execution_failed",
+                    )
         except Exception as receipt_exc:
             return _handle_terminal_receipt_failure(
-                result,
-                rollback_receipt,
-                started_hash,
-                "execution_failed",
-                None,
-                receipt_exc,
-                execution_error=f"{type(exc).__name__}: {exc}",
+                result, rollback_receipt, started_hash, "execution_failed", None,
+                receipt_exc, execution_error=f"{type(exc).__name__}: {exc}",
+                ledger_path=ledger_path,
             )
         return 1
     terminal_kind = "execution_completed" if exit_code == 0 else "execution_failed"
     try:
-        _append_execution(
-            terminal_kind,
-            result,
-            rollback_receipt,
-            executed=True,
-            execution_attempted=True,
-            execution_started_hash=started_hash,
-            exit_code=exit_code,
+        terminal_hash = _append_execution(
+            terminal_kind, result, rollback_receipt,
+            _binding_sha256=binding_sha256,
+            executed=True, execution_attempted=True,
+            execution_started_hash=started_hash, exit_code=exit_code,
+            ledger_path=ledger_path,
+            witness_authority=witness_authority,
             **({} if exit_code == 0 else {
                 "error_type": "NonZeroExit",
                 "error": f"process exited with status {exit_code}",
             }),
         )
+        if monotonic_anchor is not None:
+            with _open_ledger(
+                ledger_path if ledger_path is not None else LEDGER,
+                witness_authority,
+            ) as ledger:
+                completed_anchor_hash = monotonic_anchor.record_execution_terminal(
+                    ledger, preflight_hash=result.get("ledger_hash"),
+                    binding_sha256=binding_sha256, terminal_hash=terminal_hash,
+                    terminal_kind=terminal_kind,
+                )
+            if outcome is not None:
+                outcome["monotonic_terminal_anchor_hash"] = completed_anchor_hash
     except Exception as receipt_exc:
         return _handle_terminal_receipt_failure(
-            result,
-            rollback_receipt,
-            started_hash,
-            terminal_kind,
-            exit_code,
-            receipt_exc,
+            result, rollback_receipt, started_hash, terminal_kind, exit_code, receipt_exc,
+            ledger_path=ledger_path,
         )
     return exit_code
 
@@ -954,6 +1136,15 @@ def main(argv=None):
         "--authorization-receipt", dest="me_authorization", required=True
     )
     me.add_argument(
+        "--dual-control-handoff", dest="me_dual_control_handoff", required=True
+    )
+    me.add_argument(
+        "--trusted-key-registry", dest="me_trusted_key_registry", required=True
+    )
+    me.add_argument(
+        "--pinned-registry-sha256", dest="me_pinned_registry_sha256", required=True
+    )
+    me.add_argument(
         "--host-execution-receipt", dest="me_host_execution", required=True
     )
     me.add_argument(
@@ -1240,12 +1431,15 @@ def main(argv=None):
             receipt = evaluate_merge_execution(
                 Path(a.me_request).expanduser(),
                 Path(a.me_authorization).expanduser(),
+                Path(a.me_dual_control_handoff).expanduser(),
+                Path(a.me_trusted_key_registry).expanduser(),
                 Path(a.me_host_execution).expanduser(),
                 Path(a.me_pr_readback).expanduser(),
                 Path(a.me_commit_readback).expanduser(),
                 Path(a.me_base_readback).expanduser(),
                 Path(a.me_protection_readback).expanduser(),
                 Path(a.me_consumption).expanduser(),
+                pinned_registry_sha256=a.me_pinned_registry_sha256,
             )
             print(merge_execution_json_text(receipt), end="")
             return exit_code_for_merge_execution(receipt)

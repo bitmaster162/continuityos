@@ -1,5 +1,6 @@
 import os, tempfile
 from continuityos.gate import ActionSpec, preflight, Ledger, DEFAULT_POLICY
+from continuityos.gate.effects import classify_effects
 
 
 def _mock_preflight_receipt(ledger_path, cmd, tool, args, decision):
@@ -13,10 +14,12 @@ def _mock_preflight_receipt(ledger_path, cmd, tool, args, decision):
         "meta": {},
     }
     rollback_plan = {}
+    effect = classify_effects(ActionSpec(**action))
     with Ledger(ledger_path) as ledger:
         receipt_hash = ledger.append("preflight", {
             "action": action,
             "decision": decision,
+            "effect": effect,
             "rollback_plan": rollback_plan,
         })
     return {

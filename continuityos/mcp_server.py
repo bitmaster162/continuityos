@@ -5,7 +5,7 @@ Exposes durable memory to any MCP client (Claude Desktop, Claude Code, etc.):
   - recall(query, k?, namespace?)        -> hybrid (structural+semantic) recall
   - upsert(text, namespace?, key)        -> create-or-update by semantic key (idempotent)
   - find(namespace?, key)                -> exact key lookup (deterministic point-read)
-  - forget(id)                           -> delete a memory
+  - forget(id, owner_capability)          -> disabled unless OWNER explicitly opts in
   - list_namespaces()                    -> folder-like overview
   - context(query, k?)                   -> ready-to-inject context block
 
@@ -13,17 +13,28 @@ Run:  python -m continuityos.mcp_server --db ~/.continuityos/memory.db [--policy
 Newline-delimited JSON-RPC over stdin/stdout (MCP stdio transport).
 """
 from __future__ import annotations
-import sys, json, os, argparse
+import sys, json, os, argparse, hashlib, hmac, re
 from .memory import Memory
 from .continuity import Continuity
 from .twin import Twin
 from .control import ControlPlane
 from .db import resolve_memory_db
 from .gate import ActionSpec as _AS, preflight as _preflight, Ledger as _Ledger
+from .gate.broker import GateBroker as _GateBroker
 from .gate.policy import discover_policy as _discover_policy, load_policy as _load_policy
 from . import __version__
 
 PROTOCOL = "2024-11-05"
+_PRODUCT_LEDGER = _Ledger
+
+
+def _build_windows_r15_monotonic_anchor(**kwargs):
+    # Lazy import keeps ordinary R14/non-Windows product startup unchanged.
+    from .gate.windows_tpm_product_runtime import (
+        build_windows_r15_monotonic_anchor,
+    )
+    return build_windows_r15_monotonic_anchor(**kwargs)
+
 
 TOOLS = [
  {"name":"remember","description":"Store a durable memory. Use for facts about the user, projects, rules, decisions you should recall later.",
@@ -52,8 +63,6 @@ TOOLS = [
    "required":["key"]}},
  {"name":"context","description":"Return a ready-to-inject context block of the most relevant memories for a query.",
   "inputSchema":{"type":"object","properties":{"query":{"type":"string"},"k":{"type":"integer","default":6}},"required":["query"]}},
- {"name":"forget","description":"Delete a memory by id.",
-  "inputSchema":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}},
  {"name":"list_namespaces","description":"List folder-like namespaces and how many memories each holds.",
   "inputSchema":{"type":"object","properties":{}}} ,
  {"name":"checkpoint","description":"Close a session: record a delta, the next irreversible action, and a proof artifact path.",
@@ -70,6 +79,17 @@ TOOLS = [
   "inputSchema":{"type":"object","properties":{"proposed_action":{"type":"string"}},"required":["proposed_action"]}},
  {"name":"preflight_action","description":"ADVISORY PREFLIGHT: returns a safety decision for a typed action. The MCP tool does not intercept other tools; the caller must enforce the result.",
   "inputSchema":{"type":"object","properties":{"tool":{"type":"string","default":"shell"},"command":{"type":"string"},"args":{"type":"array","items":{"type":"string"},"description":"Exact argument vector assessed by tool_schemas.max_args."},"paths":{"type":"array","items":{"type":"string"}},"cwd":{"type":"string","description":"Authoritative execution working directory; required for reliable relative-path decisions."}},"required":["command","args"]}},
+ {"name":"preflight_exec","description":"Durably preflight one exact argv/cwd action through the ContinuityOS GateBroker.",
+  "inputSchema":{"type":"object","additionalProperties":False,"properties":{
+     "request_id":{"type":"string","minLength":1,"maxLength":256},
+     "argv":{"type":"array","minItems":1,"maxItems":256,"items":{"type":"string","maxLength":32768}},
+     "cwd":{"type":"string","minLength":1,"maxLength":32768},
+     "paths":{"type":"array","maxItems":256,"items":{"type":"string","maxLength":32768}}},
+   "required":["request_id","argv","cwd"]}},
+ {"name":"execute_preflight","description":"Execute or return the cached terminal receipt for a previously brokered request ID.",
+  "inputSchema":{"type":"object","additionalProperties":False,"properties":{
+     "request_id":{"type":"string","minLength":1,"maxLength":256}},
+   "required":["request_id"]}},
  {"name":"srd_status","description":"Long-session safety: interaction count vs Safe Turn Depth. When reinject_due=true, re-inject the returned canon_reminder into context - omission-rules ('never do X') decay by ~turn 10 (Security-Recall Divergence).",
   "inputSchema":{"type":"object","properties":{}}},
  {"name":"memory_pointer","description":"Pass-by-reference: get a lightweight {namespace,key,version} pointer to a memory value instead of its content (A2A courier-tax fix). Dereference with recall/find.",
@@ -82,20 +102,95 @@ TOOLS = [
   "inputSchema":{"type":"object","properties":{"devil":{"type":"boolean","default":False}}}}
 ]
 
+OWNER_FORGET_TOOL = {"name":"forget","description":"OWNER-only deletion; disabled by default.",
+    "inputSchema":{"type":"object","additionalProperties":False,"properties":{
+        "id":{"type":"integer","minimum":1},
+        "owner_capability":{"type":"string","minLength":32,"maxLength":256}},
+        "required":["id","owner_capability"]}}
+
+MAX_STDIN_LINE_CHARS = 131_072  # Local MCP stdio input cap; no unbounded readline.
+
+
 class Server:
-    def __init__(self, db=None, policy_path: str = "", db_source: str = ""):
+    def __init__(
+        self, db=None, policy_path: str = "", db_source: str = "",
+        *, governance_witness_path: str = "",
+        r15_controller_profile_path: str = "",
+        r15_controller_profile_sha256: str = "",
+        r15_custody_path: str = "",
+        allow_owner_forget: bool = False,
+        owner_capability_sha256: str = "",
+    ):
+        # Match core cos: optional model construction requires explicit opt-in.
+        # The existing CURRENT wrapper denies before this constructor is entered.
+        embedder_mode = os.environ.get("CONTINUITYOS_EMBEDDER", "").strip().lower()
+        if embedder_mode not in {
+            "", "hash", "hashing", "offline", "local", "fast", "fastembed",
+        }:
+            raise ValueError("UNSUPPORTED_EMBEDDER_MODE")
+        # Fail before resolve_memory_db or Memory(db) can touch SQLite.
+        self._owner_forget_enabled = bool(allow_owner_forget)
+        self._owner_forget_sha256 = owner_capability_sha256 if self._owner_forget_enabled else ""
+        if (self._owner_forget_enabled and (
+                not isinstance(self._owner_forget_sha256, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", self._owner_forget_sha256))):
+            raise ValueError("OWNER_FORGET_CAPABILITY_CONFIGURATION_INVALID")
         resolved = resolve_memory_db(db)
         db = resolved["path"]
+        self.db_path = db
         configured_missing = (
             resolved["configured"]
             and db != ":memory:"
             and not os.path.isfile(db)
         )
+        embedder = None
+        if embedder_mode in {"fast", "fastembed"}:
+            try:
+                from .embedders import FastEmbedEmbedder
+                embedder = FastEmbedEmbedder()
+            except Exception as exc:
+                raise RuntimeError(
+                    "FAST_EMBEDDER_UNAVAILABLE: explicit fast mode cannot fall back to hash"
+                ) from exc
+        # Memory errors must propagate, not reopen the same DB with another model.
+        self.m = Memory(db, embedder=embedder)
         try:
-            from .embedders import FastEmbedEmbedder
-            self.m = Memory(db, embedder=FastEmbedEmbedder())
-        except Exception:
-            self.m = Memory(db)  # fallback to HashingEmbedder
+            # Synthetic probe only: never send a stored record to the embedder here.
+            try:
+                probe = self.m.embed("continuityos:mcp-embedding-dimension-probe:v1")
+            except Exception as exc:
+                raise ValueError("EMBEDDER_PROBE_FAILED") from exc
+            if not isinstance(probe, (list, tuple)) or not probe:
+                raise ValueError("EMBEDDER_PROBE_INVALID")
+            selected_dimension = len(probe)
+            # All non-NULL vectors, across namespaces; no text or BLOB payload reads.
+            cursor = self.m.store.con.execute(
+                "SELECT MIN(length(vec)), MAX(length(vec)), "
+                "COALESCE(SUM(CASE WHEN typeof(vec) <> 'blob' "
+                "OR length(vec) = 0 OR length(vec) % 4 <> 0 "
+                "THEN 1 ELSE 0 END), 0) FROM items WHERE vec IS NOT NULL"
+            )
+            try:
+                minimum_bytes, maximum_bytes, malformed = cursor.fetchone()
+            finally:
+                cursor.close()
+            if malformed:
+                raise ValueError("EMBEDDER_VECTOR_DATA_INVALID: non-empty float32 BLOB required")
+            if minimum_bytes is not None and (
+                minimum_bytes != maximum_bytes or minimum_bytes != selected_dimension * 4
+            ):
+                stored = str(minimum_bytes // 4)
+                if minimum_bytes != maximum_bytes:
+                    stored += ".." + str(maximum_bytes // 4) + " (mixed)"
+                raise ValueError(
+                    f"EMBEDDER_DIMENSION_MISMATCH store={stored} selected={selected_dimension}; "
+                    "set CONTINUITYOS_EMBEDDER to the original compatible backend; "
+                    "restore or re-embed separately, never mix vector spaces"
+                )
+        except BaseException:
+            # A failed startup must not leave its opened Memory connection alive.
+            self.m.store.con.close()
+            raise
         self.c = Continuity(memory=self.m)
         self.c._context_source = db_source or resolved["source"]
         self._governance_context_error = (
@@ -108,6 +203,49 @@ class Server:
         self.ctl = ControlPlane(memory=self.m)
         runtime_policy = policy_path or _discover_policy(os.path.expanduser("~/.continuityos"))
         self.policy = _load_policy(runtime_policy)
+        governance_root = os.path.expanduser("~/.continuityos")
+        witness_path = (
+            os.path.abspath(os.path.expanduser(governance_witness_path))
+            if governance_witness_path
+            else os.path.join(governance_root, "governance.witness.json")
+        )
+        self._governance_paths = {
+            "registry_path": os.path.join(governance_root, "gate_broker.db"),
+            "ledger_path": os.path.join(governance_root, "ledger.db"),
+            "witness_path": witness_path,
+        }
+        self._monotonic_anchor = None
+        self._r15_runtime_error = ""
+        r15_values = {
+            "controller_profile_path": r15_controller_profile_path,
+            "controller_profile_sha256": r15_controller_profile_sha256,
+            "custody_path": r15_custody_path,
+        }
+        supplied = {key for key, value in r15_values.items() if value}
+        if supplied:
+            missing = sorted(set(r15_values) - supplied)
+            if missing:
+                self._r15_runtime_error = (
+                    "explicit R15 runtime configuration is incomplete; missing "
+                    + ", ".join(missing)
+                )
+            elif not governance_witness_path:
+                self._r15_runtime_error = (
+                    "explicit R15 runtime requires an explicit external governance witness path"
+                )
+            else:
+                try:
+                    self._monotonic_anchor = _build_windows_r15_monotonic_anchor(
+                        controller_profile_path=r15_controller_profile_path,
+                        controller_profile_sha256=r15_controller_profile_sha256,
+                        custody_path=r15_custody_path,
+                    )
+                except Exception as exc:
+                    self._r15_runtime_error = (
+                        "R15 runtime binding failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+        self._broker = None
         self.turns = 0
         self.std = 10  # Safe Turn Depth: re-inject canon before omission-rules ("never do X") decay (long-session SRD research)
 
@@ -128,7 +266,21 @@ class Server:
             hit = self.m.find(args.get("namespace","facts"), args["key"])
             return json.dumps(hit.to_dict(), ensure_ascii=False, indent=2) if hit else "null"
         if name == "forget":
-            self.m.forget(int(args["id"])); return f"forgot #{args['id']}"
+            # Deny before any access to memory, including direct Server.call.
+            if not getattr(self, "_owner_forget_enabled", False):
+                raise PermissionError("OWNER_FORGET_DISABLED")
+            if not isinstance(args, dict) or set(args) != {"id", "owner_capability"}:
+                raise PermissionError("OWNER_FORGET_CAPABILITY_REQUIRED")
+            cap = args.get("owner_capability")
+            memory_id = args.get("id")
+            if (not isinstance(cap, str) or not (32 <= len(cap) <= 256)
+                    or type(memory_id) is not int or memory_id < 1):
+                raise PermissionError("OWNER_FORGET_CAPABILITY_REQUIRED")
+            actual = hashlib.sha256(cap.encode("utf-8")).hexdigest()
+            if not hmac.compare_digest(actual, getattr(self, "_owner_forget_sha256", "")):
+                raise PermissionError("OWNER_FORGET_CAPABILITY_INVALID")
+            self.m.forget(memory_id)
+            return f"forgot #{memory_id}"
         if name == "list_namespaces":
             return json.dumps(self.m.namespaces(), ensure_ascii=False, indent=2)
         if name == "checkpoint":
@@ -154,9 +306,46 @@ class Server:
                 )
             elif governance_context_error:
                 spec.meta["context_error"] = governance_context_error
-            with _Ledger(os.path.expanduser("~/.continuityos/ledger.db")) as ledger:
+            # Compatibility for bounded unit adapters that replace the legacy
+            # ledger factory. A normally constructed product server always uses
+            # its product-owned witness authority here.
+            if _Ledger is not _PRODUCT_LEDGER:
+                ledger_context = _Ledger(
+                    os.path.expanduser("~/.continuityos/ledger.db")
+                )
+            else:
+                ledger_context = self._gate_broker()._ledger()
+            with ledger_context as ledger:
                 decision = _preflight(spec, policy=self.policy, ledger=ledger, context=self.c)
             return json.dumps(decision, ensure_ascii=False, indent=2)
+        if name == "preflight_exec":
+            self._validate_broker_args(
+                args, required={"request_id", "argv", "cwd"},
+                optional={"paths"},
+            )
+            try:
+                broker = self._gate_broker()
+            except Exception as exc:
+                result = self._broker_initialization_hold(args["request_id"], exc)
+            else:
+                result = broker.preflight_exec(
+                    args["request_id"], args["argv"], args["cwd"],
+                    args.get("paths"),
+                )
+            return json.dumps(result, ensure_ascii=False, indent=2)
+        if name == "execute_preflight":
+            # Independent runtime boundary: execution accepts no replacement
+            # action, policy, authority paths, or approval material.
+            self._validate_broker_args(
+                args, required={"request_id"}, optional=set(),
+            )
+            try:
+                broker = self._gate_broker()
+            except Exception as exc:
+                result = self._broker_initialization_hold(args["request_id"], exc)
+            else:
+                result = broker.execute_preflight(args["request_id"])
+            return json.dumps(result, ensure_ascii=False, indent=2)
         if name == "srd_status":
             due = self.turns >= self.std
             canon = [r["text"] for r in self.c._dump("canon")][:8]
@@ -187,6 +376,67 @@ class Server:
             return json.dumps(SystemAudit(self.m, self.c, self.t).run(devil=bool(args.get("devil", False))), ensure_ascii=False, indent=2)
         raise ValueError(f"unknown tool {name}")
 
+    @staticmethod
+    def _broker_initialization_hold(request_id, exc):
+        request_key = (
+            _GateBroker._key(request_id) if isinstance(request_id, str) else None
+        )
+        return _GateBroker._held(
+            request_id, request_key,
+            [f"witness validation error: {type(exc).__name__}: {exc}"],
+        )
+
+    @staticmethod
+    def _validate_broker_args(args, *, required, optional):
+        if not isinstance(args, dict):
+            raise ValueError("broker tool arguments must be an object")
+        keys = set(args)
+        missing = required - keys
+        unexpected = keys - required - optional
+        if missing:
+            raise ValueError("missing arguments: " + ", ".join(sorted(missing)))
+        if unexpected:
+            raise ValueError("unexpected arguments: " + ", ".join(sorted(unexpected)))
+        request_id = args.get("request_id")
+        if not isinstance(request_id, str) or not (1 <= len(request_id) <= 256):
+            raise ValueError("request_id must be a string of 1..256 characters")
+        if "argv" in args:
+            argv = args["argv"]
+            if (
+                not isinstance(argv, list) or not (1 <= len(argv) <= 256)
+                or any(not isinstance(value, str) or len(value) > 32768 for value in argv)
+            ):
+                raise ValueError("argv must be a non-empty bounded array of strings")
+        if "cwd" in args and (
+            not isinstance(args["cwd"], str)
+            or not (1 <= len(args["cwd"]) <= 32768)
+        ):
+            raise ValueError("cwd must be a bounded string")
+        if "paths" in args:
+            paths = args["paths"]
+            if (
+                not isinstance(paths, list) or len(paths) > 256
+                or any(not isinstance(value, str) or len(value) > 32768 for value in paths)
+            ):
+                raise ValueError("paths must be a bounded array of strings")
+
+    def _gate_broker(self):
+        if getattr(self, "_broker", None) is None:
+            paths = getattr(self, "_governance_paths", None)
+            if paths is None:
+                raise RuntimeError("product witness configuration unavailable")
+            runtime_error = getattr(self, "_r15_runtime_error", "")
+            if runtime_error:
+                raise RuntimeError(runtime_error)
+            self._broker = _GateBroker(
+                **paths,
+                db=self.db_path,
+                policy_snapshot=self.policy,
+                context_error=self._governance_context_error,
+                monotonic_anchor=getattr(self, "_monotonic_anchor", None),
+            )
+        return self._broker
+
 def _send(obj):
     sys.stdout.write(json.dumps(obj) + "\n"); sys.stdout.flush()
 
@@ -194,9 +444,47 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default=None)
     ap.add_argument("--policy", default="", help="Path to one JSON policy, or YAML when PyYAML is installed")
+    ap.add_argument(
+        "--governance-witness", default="",
+        help="Explicit external R14 witness path for product governance",
+    )
+    ap.add_argument(
+        "--r15-controller-profile", default="",
+        help="Explicit external R15 controller binding profile path",
+    )
+    ap.add_argument(
+        "--r15-controller-profile-sha256", default="",
+        help="Pinned lowercase SHA-256 of the R15 controller profile",
+    )
+    ap.add_argument(
+        "--r15-custody", default="",
+        help="Explicit DPAPI custody envelope path for the provisioned R15 NV index",
+    )
+    ap.add_argument("--enable-owner-forget", action="store_true", default=False,
+                    help="Explicit OWNER opt-in; requires capability SHA-256 supplied in environment")
     a = ap.parse_args()
-    srv = Server(a.db, a.policy)
-    for line in sys.stdin:
+    owner_hash = os.environ.get("CONTINUITYOS_OWNER_FORGET_SHA256", "") if a.enable_owner_forget else ""
+    srv = Server(
+        a.db, a.policy,
+        governance_witness_path=a.governance_witness,
+        r15_controller_profile_path=a.r15_controller_profile,
+        r15_controller_profile_sha256=a.r15_controller_profile_sha256,
+        r15_custody_path=a.r15_custody,
+        allow_owner_forget=a.enable_owner_forget,
+        owner_capability_sha256=owner_hash,
+    )
+    # Read at most one bounded JSON-RPC frame and drain oversized lines.
+    while True:
+        line = sys.stdin.readline(MAX_STDIN_LINE_CHARS + 1)
+        if not line:
+            break
+        if len(line) > MAX_STDIN_LINE_CHARS:
+            if not line.endswith("\n"):
+                while True:
+                    remainder = sys.stdin.readline(MAX_STDIN_LINE_CHARS + 1)
+                    if not remainder or remainder.endswith("\n"):
+                        break
+            continue
         line = line.strip()
         if not line: continue
         try:
@@ -212,7 +500,7 @@ def main():
         elif method == "notifications/initialized":
             continue
         elif method == "tools/list":
-            _send({"jsonrpc":"2.0","id":mid,"result":{"tools":TOOLS}})
+            _send({"jsonrpc":"2.0","id":mid,"result":{"tools":TOOLS + ([OWNER_FORGET_TOOL] if srv._owner_forget_enabled else [])}})
         elif method == "tools/call":
             p = req.get("params",{}) or {}
             try:

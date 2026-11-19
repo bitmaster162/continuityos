@@ -237,11 +237,12 @@ curl -s "localhost:8077/recall?q=license&k=3"
 curl -s -XPOST localhost:8077/remember -d '{"text":"hello","namespace":"notes"}'
 ```
 
-The default bind is local-only (`127.0.0.1`). Remote bind is intentionally opt-in:
+The default bind is local-only (`127.0.0.1`). Browser-origin access is denied by default and wildcard CORS is not emitted. Explicit browser origins require both `CONTINUITYOS_ALLOWED_ORIGINS` and a bearer token. Remote bind is intentionally opt-in and also requires a token:
 
 ```bash
 export CONTINUITYOS_ALLOW_REMOTE=1
 export CONTINUITYOS_TOKEN='change-me'
+export CONTINUITYOS_ALLOWED_ORIGINS='https://trusted.example'  # only if browser access is intended
 cos api --host 0.0.0.0 --port 8077
 curl -H "Authorization: Bearer $CONTINUITYOS_TOKEN" "localhost:8077/health"
 ```
@@ -298,6 +299,8 @@ Over MCP the agent can receive continuity tools as well as recall tools, so cont
 ContinuityOS also contains a governance and audit layer. Calls explicitly routed through `continuity run` or a correctly installed host hook can receive a decision — `ALLOW`, `WARN`, `HOLD`, `DENY`, `REQUIRE_CONFIRMATION`, or `DRY_RUN_ONLY` — with reasons, a local hash-chained ledger, and a local rollback plan where the controlled runner can materialize one.
 
 ContinuityOS does **not** intercept raw shell, MCP, SDK, or tool calls merely because the package is installed. Mandatory broker enforcement remains future work.
+
+On the brokered execution path, exact argv is also classified into server-derived effect classes. Remote Git mutations, package changes, network writes, cloud/infra mutations, remote shells/artifact pushes, dynamic interpreter carriers, and otherwise unknown executables cannot silently inherit the generic `ALLOW` default. The default policy requires confirmation or HOLD according to effect class. This strengthens mediated execution; it does not make installation universal interception.
 
 ```bash
 continuity run shell -- rm -rf /     # blocked by the controlled path

@@ -1,18 +1,9 @@
 """Fail-closed containment for packaged sibling entrypoints in a current session.
 
-R24 protects the installed ``continuity`` runtime entrypoint, but ContinuityOS also
-ships historical/product entrypoints (``cos``, ``continuity-memory``,
-``continuity-context``, ``continuity-session`` and ``continuity-state``).  Those
-surfaces remain available unchanged for ordinary installations.  Once a caller
-explicitly declares a current session through the R24 environment binding, however,
-they must not silently bypass the verified current authority boundary.
-
-For the current R64 contour the verified session is READ_ONLY and carries
-NO_FURTHER_AGENT_WORK.  Therefore sibling entrypoints are held before their legacy
-implementation is imported/called.  The sole exception is
-``continuity-state evaluate``, which is already a pure read-only state resolver.
-Historical ``continuity-state prepare-cold-start`` is specifically blocked because
-it is the old R63-bound preparer path.
+Ordinary installations retain their historical/product entrypoints. Once a caller
+binds a verified current session, sibling surfaces may not bypass the current
+authority boundary. The canonical-payload consumer is an explicit GET-only exception:
+its five read-only commands may run inside a verified READ_ONLY session.
 """
 from __future__ import annotations
 
@@ -20,7 +11,7 @@ import json
 import os
 from pathlib import Path
 import sys
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Collection, Mapping, Sequence
 
 from .current_runtime import verify_current_runtime_binding
 from .current_runtime_cli import current_binding_from_env
@@ -31,6 +22,7 @@ EMBEDDER_ENV = "CONTINUITYOS_EMBEDDER"
 _DEFAULT_EMBEDDER_MODES = {"", "hash", "hashing", "offline", "local"}
 _FAST_EMBEDDER_MODES = {"fast", "fastembed"}
 _LEGACY_NO_SHARED_MEMORY_COMMANDS = {None, "sim", "serve", "api", "update", "usage"}
+_CANONICAL_READ_COMMANDS = frozenset({"health", "snapshot", "decision", "project", "context"})
 
 PRODUCT_HELP = """usage: cos [--db DB] <command> [options]
 
@@ -120,18 +112,16 @@ def _command(surface: str, args: Sequence[str]) -> str | None:
 
 
 def _binding_error(surface: str, command: str | None, missing: Sequence[str]) -> int:
-    _emit(
-        {
-            "schema": SCHEMA,
-            "terminal": "CURRENT_ENTRYPOINT_BINDING_REVISE",
-            "reason": "CURRENT_SESSION_BINDING_INCOMPLETE",
-            "surface": surface,
-            "command": command,
-            "missing": list(missing),
-            "legacy_fallback": False,
-            "effects": _effects(),
-        }
-    )
+    _emit({
+        "schema": SCHEMA,
+        "terminal": "CURRENT_ENTRYPOINT_BINDING_REVISE",
+        "reason": "CURRENT_SESSION_BINDING_INCOMPLETE",
+        "surface": surface,
+        "command": command,
+        "missing": list(missing),
+        "legacy_fallback": False,
+        "effects": _effects(),
+    })
     return 2
 
 
@@ -143,55 +133,49 @@ def _verify_binding(binding: Mapping[str, str], surface: str, command: str | Non
             expected_challenge_sha256=binding["challenge_sha256"],
         )
     except Exception as exc:
-        _emit(
-            {
-                "schema": SCHEMA,
-                "terminal": "CURRENT_ENTRYPOINT_BINDING_REVISE",
-                "reason": "CURRENT_SESSION_BINDING_INVALID",
-                "surface": surface,
-                "command": command,
-                "error_type": type(exc).__name__,
-                "error": str(exc),
-                "legacy_fallback": False,
-                "effects": _effects(),
-            }
-        )
+        _emit({
+            "schema": SCHEMA,
+            "terminal": "CURRENT_ENTRYPOINT_BINDING_REVISE",
+            "reason": "CURRENT_SESSION_BINDING_INVALID",
+            "surface": surface,
+            "command": command,
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "legacy_fallback": False,
+            "effects": _effects(),
+        })
         return None, 2
     if verdict.get("binding_verified") is not True:
-        _emit(
-            {
-                "schema": SCHEMA,
-                "terminal": "CURRENT_ENTRYPOINT_BINDING_REVISE",
-                "reason": "CURRENT_SESSION_ACK_NOT_VERIFIED",
-                "surface": surface,
-                "command": command,
-                "binding_terminal": verdict.get("terminal"),
-                "legacy_fallback": False,
-                "effects": _effects(),
-            }
-        )
+        _emit({
+            "schema": SCHEMA,
+            "terminal": "CURRENT_ENTRYPOINT_BINDING_REVISE",
+            "reason": "CURRENT_SESSION_ACK_NOT_VERIFIED",
+            "surface": surface,
+            "command": command,
+            "binding_terminal": verdict.get("terminal"),
+            "legacy_fallback": False,
+            "effects": _effects(),
+        })
         return None, 2
     return dict(verdict), None
 
 
 def _hold(surface: str, command: str | None, verdict: Mapping[str, object]) -> int:
-    _emit(
-        {
-            "schema": SCHEMA,
-            "terminal": "CURRENT_ENTRYPOINT_HOLD",
-            "reason": "CURRENT_R64_SESSION_IS_READ_ONLY_AND_NO_FURTHER_AGENT_WORK",
-            "surface": surface,
-            "command": command,
-            "binding_verified": True,
-            "authority_generation": verdict.get("authority_generation"),
-            "challenge_id": verdict.get("challenge_id"),
-            "challenge_sha256": verdict.get("challenge_sha256"),
-            "session_effect_ceiling": "READ_ONLY",
-            "authority_ceiling": "NO_FURTHER_AGENT_WORK",
-            "legacy_fallback": False,
-            "effects": _effects(),
-        }
-    )
+    _emit({
+        "schema": SCHEMA,
+        "terminal": "CURRENT_ENTRYPOINT_HOLD",
+        "reason": "CURRENT_R64_SESSION_IS_READ_ONLY_AND_NO_FURTHER_AGENT_WORK",
+        "surface": surface,
+        "command": command,
+        "binding_verified": True,
+        "authority_generation": verdict.get("authority_generation"),
+        "challenge_id": verdict.get("challenge_id"),
+        "challenge_sha256": verdict.get("challenge_sha256"),
+        "session_effect_ceiling": "READ_ONLY",
+        "authority_ceiling": "NO_FURTHER_AGENT_WORK",
+        "legacy_fallback": False,
+        "effects": _effects(),
+    })
     return 3
 
 
@@ -201,6 +185,7 @@ def _dispatch(
     legacy_loader: Callable[[], Callable[[Sequence[str] | None], int | None]],
     *,
     allow_state_evaluate: bool = False,
+    allow_commands: Collection[str] | None = None,
     env: Mapping[str, str] | None = None,
 ) -> int:
     args = _args(argv)
@@ -217,14 +202,16 @@ def _dispatch(
         return error_code
     assert verdict is not None
 
-    if allow_state_evaluate and command == "evaluate":
+    allowed = (allow_state_evaluate and command == "evaluate") or (
+        allow_commands is not None and command in allow_commands
+    )
+    if allowed:
         legacy_main = legacy_loader()
         return int(legacy_main(args) or 0)
     return _hold(surface, command, verdict)
 
 
 def _product_args(args: Sequence[str], command: str) -> list[str]:
-    """Strip an outer ``cos <product-command>`` while preserving top-level --db."""
     values = list(args)
     db_arg: str | None = None
     if values[:1] == ["--db"]:
@@ -235,7 +222,6 @@ def _product_args(args: Sequence[str], command: str) -> list[str]:
     elif values and values[0].startswith("--db="):
         db_arg = values[0].split("=", 1)[1]
         values = values[1:]
-
     if values[:1] == [command]:
         values = values[1:]
     if db_arg is not None and not any(v == "--db" or v.startswith("--db=") for v in values):
@@ -270,39 +256,28 @@ def _help_main(argv: Sequence[str] | None = None) -> int:
 
 def _version_main(argv: Sequence[str] | None = None) -> int:
     from ._version import __version__
-
     print(f"continuityos {__version__}")
     return 0
 
 
 def _embedder_policy_hold(command: str | None, mode: str) -> int:
-    _emit(
-        {
-            "schema": EMBEDDER_POLICY_SCHEMA,
-            "terminal": "COS_EMBEDDER_POLICY_HOLD",
-            "reason": "UNSUPPORTED_EMBEDDER_MODE",
-            "command": command,
-            "environment_variable": EMBEDDER_ENV,
-            "requested": mode,
-            "allowed": ["hash", "fast"],
-            "effects": _effects(),
-        }
-    )
+    _emit({
+        "schema": EMBEDDER_POLICY_SCHEMA,
+        "terminal": "COS_EMBEDDER_POLICY_HOLD",
+        "reason": "UNSUPPORTED_EMBEDDER_MODE",
+        "command": command,
+        "environment_variable": EMBEDDER_ENV,
+        "requested": mode,
+        "allowed": ["hash", "fast"],
+        "effects": _effects(),
+    })
     return 2
 
 
 def _legacy_cos_loader(command: str | None) -> Callable[[Sequence[str] | None], int | None]:
-    """Return the legacy CLI with an explicit offline-first embedder policy.
-
-    Historical ``continuityos.cli`` tries FastEmbed before falling back to the local
-    HashingEmbedder. The packaged ``cos`` surface must not construct optional model
-    providers unless the operator explicitly opts in. Mask that one constructor only
-    for the duration of an ordinary legacy shared-memory invocation.
-    """
     if command in _LEGACY_NO_SHARED_MEMORY_COMMANDS:
         from .cli import main
         return main
-
     mode = os.environ.get(EMBEDDER_ENV, "").strip().lower()
     if mode in _FAST_EMBEDDER_MODES:
         from .cli import main
@@ -314,7 +289,6 @@ def _legacy_cos_loader(command: str | None) -> Callable[[Sequence[str] | None], 
 
     def offline_main(argv: Sequence[str] | None = None) -> int:
         from . import embedders
-
         original = embedders.FastEmbedEmbedder
 
         class _OfflineFastEmbed:
@@ -344,44 +318,31 @@ def cos_main(argv: Sequence[str] | None = None) -> int:
             return _version_main
         if command == "connect":
             from .connect import main as connect_main
-
             def routed(passed: Sequence[str] | None = None) -> int:
                 return int(connect_main(_connect_args(_args(passed))) or 0)
-
             return routed
         if command == "status":
             from .status import main as status_main
-
             def routed(passed: Sequence[str] | None = None) -> int:
                 return int(status_main(_status_args(_args(passed))) or 0)
-
             return routed
         if command == "demo":
             from .demo import main as demo_main
-
             def routed(passed: Sequence[str] | None = None) -> int:
                 return int(demo_main(_demo_args(_args(passed))) or 0)
-
             return routed
         if command == "boot":
             from .boot import main as boot_main
-
             def routed(passed: Sequence[str] | None = None) -> int:
                 return int(boot_main(_boot_args(_args(passed))) or 0)
-
             return routed
         if command == "backup":
             from .memory_backup import main as backup_main
-
             def routed(passed: Sequence[str] | None = None) -> int:
                 return int(backup_main(_backup_args(_args(passed))) or 0)
-
             return routed
         return _legacy_cos_loader(command)
 
-    # Deliberately route product commands, top-level help and version through _dispatch.
-    # A verified R64 current session therefore keeps the same READ_ONLY HOLD and cannot
-    # use discoverability/version surfaces as a sibling-entrypoint escape hatch.
     return _dispatch("cos", args, load)
 
 
@@ -411,3 +372,10 @@ def state_main(argv: Sequence[str] | None = None) -> int:
         from .state_resolve_cli import main
         return main
     return _dispatch("continuity-state", argv, load, allow_state_evaluate=True)
+
+
+def canonical_payload_main(argv: Sequence[str] | None = None) -> int:
+    def load():
+        from .canonical_payload_consumer_cli import main
+        return main
+    return _dispatch("continuity-canon", argv, load, allow_commands=_CANONICAL_READ_COMMANDS)

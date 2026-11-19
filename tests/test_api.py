@@ -12,10 +12,10 @@ from continuityos import Memory
 from continuityos.api import _assert_bind_allowed, make_handler
 
 
-def _server(token=None):
+def _server(token=None, allowed_origins=None):
     db = os.path.join(tempfile.mkdtemp(), "api.db")
     mem = Memory(db)
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(mem, token=token))
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(mem, token=token, allowed_origins=allowed_origins))
     th = threading.Thread(target=srv.serve_forever, daemon=True)
     th.start()
     return srv, f"http://127.0.0.1:{srv.server_port}"
@@ -36,7 +36,9 @@ def test_http_rejects_remote_bind_without_explicit_opt_in(monkeypatch):
         _assert_bind_allowed("0.0.0.0")
 
     monkeypatch.setenv("CONTINUITYOS_ALLOW_REMOTE", "1")
-    _assert_bind_allowed("0.0.0.0")
+    with pytest.raises(RuntimeError, match="requires CONTINUITYOS_TOKEN"):
+        _assert_bind_allowed("0.0.0.0")
+    _assert_bind_allowed("0.0.0.0", token="secret")
 
 
 def test_http_remember_rejects_bad_json():

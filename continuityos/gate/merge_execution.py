@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+import hashlib
 import json
 import re
 
@@ -27,15 +28,16 @@ from .evidence_common import (
     sha256_file,
     validate_effects,
 )
+from ..trusted_merge_handoff import require_dual_control_merge_handoff_current
 
-REQUEST_SCHEMA = "continuityos.merge_execution.request/v1"
-HOST_SCHEMA = "continuityos.merge_execution.host_receipt/v1"
+REQUEST_SCHEMA = "continuityos.merge_execution.request/v2"
+HOST_SCHEMA = "continuityos.merge_execution.host_receipt/v2"
 PR_SCHEMA = "continuityos.merge_execution.pull_request_readback/v1"
 COMMIT_SCHEMA = "continuityos.merge_execution.merge_commit_readback/v1"
 BASE_SCHEMA = "continuityos.merge_execution.base_branch_readback/v1"
 PROTECTION_SCHEMA = "continuityos.merge_execution.branch_protection_readback/v1"
-CONSUMPTION_SCHEMA = "continuityos.merge_execution.authorization_consumption/v1"
-EVALUATION_SCHEMA = "continuityos.merge_execution.evaluation/v1"
+CONSUMPTION_SCHEMA = "continuityos.merge_execution.authorization_consumption/v2"
+EVALUATION_SCHEMA = "continuityos.merge_execution.evaluation/v2"
 
 VERIFIED = "MERGE_EXECUTION_VERIFIED"
 HOLD = "MERGE_EXECUTION_HOLD"
@@ -116,6 +118,7 @@ def _request(value: dict[str, Any]) -> dict[str, Any]:
 
     expected_bindings = {
         "authorization_receipt_sha256",
+        "dual_control_handoff_sha256",
         "host_execution_receipt_sha256",
         "pull_request_readback_sha256",
         "merge_commit_readback_sha256",
@@ -193,6 +196,47 @@ def _request(value: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _canonical_sha256(value: Any) -> str:
+    raw = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("ascii")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _check_dual_control_handoff(
+    handoff_path: Path,
+    authorization_path: Path,
+    trusted_key_registry_path: Path,
+    pinned_registry_sha256: str,
+    binding: dict[str, Any],
+    now_value: datetime,
+) -> dict[str, Any]:
+    handoff = _load_json_strict(handoff_path, "dual-control merge handoff")
+    authorization = _load_json_strict(authorization_path, "merge authorization receipt")
+    registry = _load_json_strict(trusted_key_registry_path, "trusted Human key registry")
+    validated = require_dual_control_merge_handoff_current(
+        handoff,
+        pinned_merge_authorization_sha256=_canonical_sha256(authorization),
+        trusted_key_registry=registry,
+        pinned_registry_sha256=pinned_registry_sha256,
+        repository=binding["repository"],
+        current_base_sha=binding["base_head_before"],
+        current_head_sha=binding["candidate_head"],
+        current_tree_sha=binding["candidate_tree"],
+        now_unix=int(now_value.timestamp()),
+        base_branch=binding["base_branch"],
+        candidate_branch=binding["candidate_branch"],
+        pull_request_number=binding["pull_request_number"],
+        merge_method=binding["merge_method"],
+    )
+    return {
+        "receipt_id": validated["receipt_id"],
+        "status": validated["status"],
+        "outcome": validated["outcome"],
+        "authorization_sha256": validated["merge_authorization_sha256"],
+    }
+
+
 def _check_authorization(path: Path, binding: dict[str, Any]) -> dict[str, Any]:
     receipt = _load_json_strict(path, "merge authorization receipt")
     if receipt.get("status") == "MERGE_AUTHORIZATION_HOLD":
@@ -245,6 +289,8 @@ def _check_host_execution(
     receipt = _load_json_strict(path, "host merge execution receipt")
     if receipt.get("schema") != HOST_SCHEMA:
         raise ValueError("host execution receipt schema mismatch")
+    if receipt.get("dual_control_handoff_sha256") != binding["bindings"]["dual_control_handoff_sha256"]:
+        raise ValueError("host execution dual-control handoff SHA mismatch")
     if receipt.get("provider") != "GITHUB":
         raise ValueError("host execution provider must be GITHUB")
     if receipt.get("repository") != binding["repository"]:
@@ -488,6 +534,8 @@ def _check_consumption(
     receipt = _load_json_strict(path, "authorization consumption record")
     if receipt.get("schema") != CONSUMPTION_SCHEMA:
         raise ValueError("authorization consumption schema mismatch")
+    if receipt.get("dual_control_handoff_sha256") != binding["bindings"]["dual_control_handoff_sha256"]:
+        raise ValueError("consumption dual-control handoff SHA mismatch")
     if receipt.get("store_readback") is not True:
         raise FileNotFoundError("authorization consumption store readback is incomplete")
     if receipt.get("authorization_receipt_sha256") != binding["authorization_receipt_sha256"]:
@@ -528,6 +576,8 @@ def _check_consumption(
 def evaluate_merge_execution(
     request_path: Path,
     authorization_receipt_path: Path,
+    dual_control_handoff_path: Path,
+    trusted_key_registry_path: Path,
     host_execution_receipt_path: Path,
     pull_request_readback_path: Path,
     merge_commit_readback_path: Path,
@@ -535,6 +585,7 @@ def evaluate_merge_execution(
     branch_protection_readback_path: Path,
     authorization_consumption_path: Path,
     *,
+    pinned_registry_sha256: str,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
@@ -546,6 +597,7 @@ def evaluate_merge_execution(
 
     paths = {
         "authorization_receipt_sha256": Path(authorization_receipt_path),
+        "dual_control_handoff_sha256": Path(dual_control_handoff_path),
         "host_execution_receipt_sha256": Path(host_execution_receipt_path),
         "pull_request_readback_sha256": Path(pull_request_readback_path),
         "merge_commit_readback_sha256": Path(merge_commit_readback_path),
@@ -596,6 +648,26 @@ def evaluate_merge_execution(
             except FileNotFoundError as exc:
                 holds.append(str(exc))
                 add_check(checks, "AUTHORIZATION", "MISSING", str(exc))
+
+            if not holds:
+                try:
+                    observed["dual_control_handoff"] = _check_dual_control_handoff(
+                        Path(dual_control_handoff_path),
+                        Path(authorization_receipt_path),
+                        Path(trusted_key_registry_path),
+                        pinned_registry_sha256,
+                        binding,
+                        now_value,
+                    )
+                    add_check(
+                        checks,
+                        "DUAL_CONTROL_HANDOFF",
+                        "PASS",
+                        "Exact current R20 dual-control handoff is mandatory and valid.",
+                    )
+                except FileNotFoundError as exc:
+                    holds.append(str(exc))
+                    add_check(checks, "DUAL_CONTROL_HANDOFF", "MISSING", str(exc))
 
             if not holds:
                 observed["execution"] = _check_host_execution(

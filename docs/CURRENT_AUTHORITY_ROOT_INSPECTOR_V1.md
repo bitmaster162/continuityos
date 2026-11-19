@@ -22,8 +22,8 @@ The inspector never uses globs, timestamps, generation suffixes, fuzzy names, or
 Inspection reuses the current cold-start validators to require:
 
 - exact controller-pinned pointer SHA-256;
-- `canonical_activation.status=ACTIVE`;
-- exact provider readback;
+- either exact original `canonical_activation.status=ACTIVE` or the exact active reseal pair `canonical_activation.status=HISTORICAL_PRE_REPAIR_ACTIVATION` + `canonical_reseal.status=ACTIVE_RESEALED_AFTER_EXACT_PROVIDER_READBACK`;
+- exact provider/readback semantics and manifest lineage for the selected authority path;
 - pointer/root SHA-256 equality;
 - matching generation across the stable roots;
 - the existing current deny/effect ceilings.

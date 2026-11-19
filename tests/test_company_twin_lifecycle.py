@@ -316,3 +316,19 @@ def test_hold_release_requires_owner():
         set_hold(
             held, hold=False, reason=None, changed_at="2026-01-03T00:00:00Z", changed_by=ROBOT
         )
+
+
+@pytest.mark.parametrize("actor_kind,authority", [
+    ("ALIEN", "NONSENSE"),
+    ("SERVICE", "NONE"),
+    ("", "OWNER"),
+    ("AGENT", "OWNER"),
+])
+def test_export_fail_closed_on_unrecognized_or_unauthorized_actor(actor_kind, authority):
+    requester = {"actor_id": "untrusted:synthetic", "actor_kind": actor_kind, "authority_class": authority}
+    with pytest.raises(LifecycleAuthorizationError):
+        build_export_bundle(
+            [record("cti_test")], tenant_id="tenant_demo",
+            authorized_scopes=["team:engineering"],
+            requested_at="2026-02-01T00:00:00Z", requested_by=requester,
+        )
