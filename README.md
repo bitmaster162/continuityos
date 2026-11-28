@@ -42,7 +42,7 @@ cos boot
 That sequence is the primary product path:
 
 1. **`cos setup`** — guided local onboarding and memory setup.
-2. **`cos import <export-path> --extract`** — import supported AI history and distill typed salient facts.
+2. **`cos import <export-path> --extract`** — import supported AI history and extract source-bound, unreviewed candidates for facts, preferences and decisions.
 3. **`cos status`** — inspect product health and continuity state without mutating the memory store or client configuration.
 4. **`cos connect <client>`** — connect ContinuityOS to an MCP-capable client. Managed clients support preview, explicit write, status, and rollback flows.
 5. **`cos demo continuity`** — prove persistence across a fresh process using an isolated temporary database; it does not read or write the user's normal memory DB.
@@ -109,7 +109,9 @@ Source auto-detection is available, and `--dry-run` reports an import without wr
 cos import export.json --dry-run
 ```
 
-Cross-vendor dedup uses the PAM `content_hash` standard. Import is deterministic and does not require vendor API keys.
+Raw import dedup uses the PAM `content_hash` standard. Extraction dedup uses exact source-bound keys, so identical text from different messages is retained as separate evidence. Import is deterministic and does not require vendor API keys.
+
+Extraction filters message roles before processing (user-only by default), preserves source IDs/timestamps and exact spans, and marks results `UNREVIEWED` / `CANDIDATE` / `accepted=false`. A proposed `type: fact` is not acceptance. Missing authors remain unknown. See [the repair and migration notes](docs/CONTINUITY_TRUST_REPAIR_20261128.md) for source binding, confidence changes and LLM-span validation.
 
 ---
 
@@ -292,6 +294,10 @@ print(c.handoff())
 
 Over MCP the agent can receive continuity tools as well as recall tools, so continuity can survive beyond one prompt or one process.
 
+Use `--project` and `--subject` on continuity commands to select exact local state. Global canon still applies; other projects' loops/checkpoints do not. These selectors are not access-control grants. Checkpoints can record `ACTIVE`, `PAUSED` or `DONE`. Closing a loop retains its result, proof reference and original ID. Doctor/status assess presence and freshness, not proof authenticity.
+
+`cos handoff --json` returns a complete scoped snapshot with record references, counts and digest. Optional item/byte budgets return HOLD without a partial payload when the complete handoff cannot fit. The retrieval Twin separately reports its bounded coverage and does not predict behavior or grant permission.
+
 ---
 
 ## Governance — devil's advocate, audit, controlled runner
@@ -352,7 +358,7 @@ cos audit --devil
 
 ContinuityOS core does not upload memory content. Memory is a local SQLite file; governance and metering can create additional local databases. `.gitignore` excludes common SQLite artifacts and downloaded benchmark data, but operators remain responsible for excluding their own import/export directories and secrets.
 
-Update checks and optional model downloads are separate, explicit network-capable paths. `cos boot` stays local unless `--check-updates` is supplied.
+Update checks and optional model downloads are separate, explicit network-capable paths. `cos boot` stays local unless `--check-updates` is supplied. Token/context/cost budgeting stays local even when an SDK and API key are present. Provider token counting requires per-call `allow_network=True`, an exact provider/model configuration and a data-scope declaration; the current effect ceiling still applies.
 
 ---
 
@@ -381,6 +387,8 @@ Cache-friendly memory rules:
 4. Prefer adding changed instructions later in the conversation rather than mutating a large stable prefix when cache stability matters.
 
 `estimate_cost(text, model_id, output_tokens)` can compare a context block against the package's static `MODEL_REGISTRY`. Those registry entries are estimates, not a live price feed; verify current provider pricing before a financial or routing decision.
+
+Returned cost metadata marks those rates as unverified. Unknown pricing models raise an error instead of using another model's rates. `compaction_policy()` exposes the basis of a threshold and permits a caller-selected context budget; the legacy `MECW` values are uncalibrated settings, not measured safe context limits. Local character counts are approximate and are not an exact tokenizer or guaranteed upper bound.
 
 ---
 
@@ -563,6 +571,6 @@ The bridge is shadow-only, reads SQLite immutably, rejects a non-empty WAL, fail
 
 Current package release: **v0.10.3**.
 
-The current test and governance-corpus results are recorded in [BUILD_GATE_STATUS.md](BUILD_GATE_STATUS.md); CI is the authoritative moving signal for repository validation.
+The [continuity trust repair](docs/CONTINUITY_TRUST_REPAIR_20261128.md) records the unreleased candidate and validation scope. The [Person Twin acceptance matrix](docs/PERSON_TWIN_ACCEPTANCE_MATRIX_20261128.md) separates implemented contracts from production admission. [BUILD_GATE_STATUS.md](BUILD_GATE_STATUS.md) is historical evidence for its stated baseline; inspect the exact candidate's [CI runs](https://github.com/bitmaster162/continuityos/actions/workflows/ci.yml) for repository validation.
 
 Release/package publication and repository deployment are separate operations. Installing ContinuityOS does not deploy an agent, mutate external canonical state, enable trading, access a wallet, or grant capital permission.

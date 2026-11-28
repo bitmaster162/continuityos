@@ -1,3 +1,13 @@
+## Unreleased — Continuity trust repair (2026-11-28)
+
+- Keep token/context budgeting local unless provider disclosure is explicitly requested.
+- Preserve message authorship, timestamps and exact spans during extraction; emit unreviewed candidates without invented confidence and deduplicate by exact source binding.
+- Make item/FTS writes, supersession and checked versions atomic; suspend on ambiguous COMMIT or unverified rollback without retrying.
+- Filter current scoped evidence before ranking; retain loop closure outcomes; support ACTIVE/PAUSED/DONE and complete handoff snapshots with explicit overflow.
+- Align CLI, boot, status, MCP, rules export and retrieval Twin with those semantics. Scope remains context selection, not an authority grant.
+- Label static prices and context budgets as unverified configuration; publish the twelve-family Person acceptance map without production promotion.
+- See [migration, verification and remaining boundaries](docs/CONTINUITY_TRUST_REPAIR_20261128.md).
+
 ## Unreleased — Merge Execution Receipt Gate v1
 
 - Add a verify-only gate for one exact externally executed GitHub merge.

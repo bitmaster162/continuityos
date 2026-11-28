@@ -1,0 +1,1111 @@
+{
+  "schema": "continuityos.person-twin.acceptance-matrix/v1",
+  "matrix_version": "2026-11-28-r1",
+  "specification_status": "Draft",
+  "purpose": "Baseline-specific evidence map for the 12 families in issue #144; descriptive, not an executable admission gate or permission grant.",
+  "baseline": {
+    "repository": "bitmaster162/continuityos",
+    "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+    "tree": "36fdb7de3a08c457056ccdbb1830c7fba8af2232",
+    "source_read_method": "git show of pinned baseline; current shared worktree changes are excluded",
+    "local_branch_at_start": "robert/continuity-trust-20261128"
+  },
+  "audit": {
+    "mode": "READ_ONLY_SOURCE_AND_PROVIDER_STATUS_AUDIT",
+    "runtime_tests_executed_by_this_matrix_audit": false,
+    "source_classes": [
+      "VERIFIED FACT for read code and provider metadata",
+      "SOURCE-BACKED CLAIM for historical execution narratives",
+      "UNKNOWN for absent external acceptance evidence"
+    ],
+    "independence": "A separate review of the same repository/fixture lineage; not independent origin, owner authority or production verification."
+  },
+  "decision": {
+    "code": "HOLD_FOR_EVIDENCE",
+    "scope": "Person Twin production admission only; isolated improvements and synthetic repository work are separate",
+    "production_admission_status": "NOT_PRODUCTION_ADMITTED",
+    "execution_authority": "NONE",
+    "can_execute": false,
+    "can_trade": false,
+    "capital_permission": "DENY",
+    "acceptance_owner": "OWNER_TBD_FOR_EXACT_PRODUCTION_GATE",
+    "acceptance_receipt": null
+  },
+  "boundary_status": {
+    "H3_C0": "UNVERIFIED/HOLD",
+    "native_T11": "UNEXECUTED_IN_REVIEWED_EVIDENCE",
+    "native_T12": "UNEXECUTED_IN_REVIEWED_EVIDENCE",
+    "live_model_egress": "UNVERIFIED",
+    "installed_runtime_identity": "NOT_INSPECTED",
+    "real_personal_data_qualification": "NOT_ESTABLISHED",
+    "global_queues_or_scheduler_changed": false
+  },
+  "sources": {
+    "C01": {
+      "path": "continuityos/person_twin_admission_contracts.py",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "a0aa853c5983f56d63875769eaa9d0ef9b03bf87",
+      "sha256": "290480decf582e470746270788bc73187eb35e52c044674aec48e64a5659d9de",
+      "byte_count": 26801,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/continuityos/person_twin_admission_contracts.py",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "C02": {
+      "path": "continuityos/person_twin_privacy_provenance.py",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "44a4559a501f046775bba8bb511e7c9a128057e6",
+      "sha256": "415aa78793adb390a51789888660e7ddf1507e0ae766152165b5350e1a0373fb",
+      "byte_count": 30640,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/continuityos/person_twin_privacy_provenance.py",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "C03": {
+      "path": "continuityos/person_twin_admission_coordinator.py",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "06caba921974b8e7623d3cdec8bf89ac102aec89",
+      "sha256": "ff3fed30d0d0a90e71420e6ef7e5f0a520082a84def1df26b58d4a991cfce80b",
+      "byte_count": 18840,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/continuityos/person_twin_admission_coordinator.py",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "C04": {
+      "path": "continuityos/person_twin_admission_store.py",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "b10238770e88bd3b38474152d9c3e0669f3893e7",
+      "sha256": "3a5bac9407ccb6f5f74c72d64b9b4184e84a37653c8aeae9db4b3d85895db983",
+      "byte_count": 29619,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/continuityos/person_twin_admission_store.py",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "C05": {
+      "path": "continuityos/person_twin_authority_replay.py",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "f87704d2ae089427851c3a889aee0bf1166eb28a",
+      "sha256": "1bc2f96f3168a9661f6e2d02262349ac1ef406ba376cb0001643261102fafc4c",
+      "byte_count": 33756,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/continuityos/person_twin_authority_replay.py",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "C06": {
+      "path": "continuityos/person_twin_r21h_evidence.py",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "9450fe675d328d444044250fe32f8461ad268faa",
+      "sha256": "5912b5e42a9ab770f772109bba3eba5d1694e57b7759487f2dc362bd04b96048",
+      "byte_count": 13868,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/continuityos/person_twin_r21h_evidence.py",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "C07": {
+      "path": "continuityos/sovereign_twin_runtime.py",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "43d11de4b86ec31f7301e41f68daeb869e5e25c6",
+      "sha256": "8ce39204994fa7d8d622246cb4a766547980bf5ff5c89163eeb479dbbaafd935",
+      "byte_count": 16557,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/continuityos/sovereign_twin_runtime.py",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "C08": {
+      "path": "continuityos/person_twin_demo.py",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "4f0a6e0a5d6311b840d687db47400b6a9c1a41d1",
+      "sha256": "8e864649c4da9085cc392d5339022f670cfc0e55b5f9e608fa87ae2c5a6140af",
+      "byte_count": 49468,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/continuityos/person_twin_demo.py",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "C09": {
+      "path": "continuityos/memory_backup.py",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "893bfb573b00d11bee0b988361b854d908cda49e",
+      "sha256": "f590bcffbf55beea7527cae8df964a06a983ef5420e70eed0b22e40703bb0f4a",
+      "byte_count": 15868,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/continuityos/memory_backup.py",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "C10": {
+      "path": "continuityos/memory_restore.py",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "5555a024408d93a04e4f96f4d00a1ad34cbce999",
+      "sha256": "ffd44051329313759497713927d6afcf276f1f35f0cbc83380edc20229ee68ed",
+      "byte_count": 21439,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/continuityos/memory_restore.py",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "C11": {
+      "path": "continuityos/company_twin_lifecycle.py",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "75d9764b334baf8fc4581dc7f5a6e5829603dad9",
+      "sha256": "b8d1ed960d0d76cbd59a32602dfcdfd1c18ab9b90079c963be3f9c5359ba5aec",
+      "byte_count": 12846,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/continuityos/company_twin_lifecycle.py",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "T01": {
+      "path": "tests/test_person_twin_admission_contracts.py",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "b1e32871dadb43340b47b39dc46ef325a82cf768",
+      "sha256": "9d3b48bd96c73f80dd33ae815709f5d0ce56db8c481b40cdbfb31580ab938c58",
+      "byte_count": 14902,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/tests/test_person_twin_admission_contracts.py",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "T02": {
+      "path": "tests/test_person_twin_privacy_provenance.py",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "acb5d65835fcfa7854cec15dc4d348bc4f1ee500",
+      "sha256": "bbcfbe955179e7857e980f36459b4d818844e1044fd54604afa47a308eba77ce",
+      "byte_count": 26553,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/tests/test_person_twin_privacy_provenance.py",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "T03": {
+      "path": "tests/test_person_twin_admission_coordinator.py",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "f4ea413e06ac472365f881f75f15636c1f7796ae",
+      "sha256": "b80db1cf4f5dcea382c5f153c902e73ac1f05ca5ae59e0eb5408b356ecafd59b",
+      "byte_count": 18659,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/tests/test_person_twin_admission_coordinator.py",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "T04": {
+      "path": "tests/test_person_twin_admission_store.py",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "d319850136279763c900c955b1453bcae4f2f624",
+      "sha256": "daff380603bf6993ff423ca71fab214ddacd537fb4a7b6edcdc7173388664880",
+      "byte_count": 52471,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/tests/test_person_twin_admission_store.py",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "T05": {
+      "path": "tests/test_person_twin_authority_replay.py",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "eb1c9aafb6c004121997d2b8b1a8d10a10dd60b7",
+      "sha256": "fab00ffeebcef74883fe580bdf1e979c1262d80099f867e7f78773a9d3d17d4a",
+      "byte_count": 25494,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/tests/test_person_twin_authority_replay.py",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "T06": {
+      "path": "tests/test_person_twin_r21h_evidence.py",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "ac6edd1f353e085a27c549337c3862df65c68cb7",
+      "sha256": "def8f5053d95307a9603fc147de04e0592d5b439ea0ac8587544d230b3152bd2",
+      "byte_count": 33700,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/tests/test_person_twin_r21h_evidence.py",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "T07": {
+      "path": "tests/test_product_person_continuity.py",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "63ff36433f54844dc0d6226189d5262da89e9fcb",
+      "sha256": "983bfcf900bb008b6d21585b89ab7a1fd7480d8557c815b7126dab6bf31cbed8",
+      "byte_count": 34789,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/tests/test_product_person_continuity.py",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "T08": {
+      "path": "tests/test_memory_backup.py",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "9523179455590e35e8443ebe53b7292f766b24f4",
+      "sha256": "4235fe7201bfcd19ea29d5ea89e39adb1ae97486d98fdba08732c07012b1b1cf",
+      "byte_count": 9345,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/tests/test_memory_backup.py",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "T09": {
+      "path": "tests/test_memory_restore.py",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "8c8dcb8c90bdb543b663882b4b1ae95409e62290",
+      "sha256": "1d08ea0053dc48df98adf0ff700969c5d7217628b0bd88085304a0fef7c854ef",
+      "byte_count": 10160,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/tests/test_memory_restore.py",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "T10": {
+      "path": "tests/test_company_twin_lifecycle.py",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "d880833b1c2f776962b725bd769f424b57229806",
+      "sha256": "7f0ff3372d3fb9d493ca1dc392fd4849168c8d449511310a843edb63f0bf89e5",
+      "byte_count": 12958,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/tests/test_company_twin_lifecycle.py",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "D01": {
+      "path": "docs/PERSON_TWIN_DURABLE_ADMISSION_R1.md",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "77224f7bc8244ca48fc1e4a94974a223a6b0ce37",
+      "sha256": "4fc732dd0081d4c123dc6a75656fa993dc47c36e5e6bb378cc7cb44944004434",
+      "byte_count": 14642,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/docs/PERSON_TWIN_DURABLE_ADMISSION_R1.md",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "D02": {
+      "path": "docs/PERSON_TWIN_R21H_EVIDENCE_ADAPTER_R1.md",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "bffaf7113e0824ef2fd36eb4153f9bf5af9d4840",
+      "sha256": "7e9f7f8f0c0cff31e779d26da7b09600f07c62e4ff119e65714bfcb36607aece",
+      "byte_count": 15908,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/docs/PERSON_TWIN_R21H_EVIDENCE_ADAPTER_R1.md",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "D03": {
+      "path": "docs/PERSON_R21H_MEMORY_BINDING_A4_R1.md",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "413e1381585a44afd0f94b84a24f0f385f54a3ba",
+      "sha256": "24ab96367ac6fed1a2c08e032c9746ea7534889a17c94e380607a3b6fc01273a",
+      "byte_count": 4531,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/docs/PERSON_R21H_MEMORY_BINDING_A4_R1.md",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "D04": {
+      "path": "docs/PERSON_ADMISSION_PUBLICATION_RESULT_A3_R1.md",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "20de5add092ed7974d4298cdb24b76b20c0fd463",
+      "sha256": "549fb962a1c57954465bd517a3e15756d86c0c90bf22504da4b600752293027c",
+      "byte_count": 5380,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/docs/PERSON_ADMISSION_PUBLICATION_RESULT_A3_R1.md",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "D05": {
+      "path": "docs/DEMO_PERSON_CONTINUITY_R2.md",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "88e31e120eba0e9b934dfd9604421cefc6b0617e",
+      "sha256": "1ede4a45edb671dce9e0d4b352b7c9421b348c070ae9d218e74c1d2eee11f526",
+      "byte_count": 9358,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/docs/DEMO_PERSON_CONTINUITY_R2.md",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "D06": {
+      "path": "docs/H3_R7A1_SECURITY_ARCHITECTURE_20261011.md",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "f405414fbbdb6175c399b4938b0c50f7af577ba6",
+      "sha256": "945cfa5ebe1043d1af6477feeb2c13285b50d9a0dd8fb0863e3dcf9f2e75a5b5",
+      "byte_count": 37928,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/docs/H3_R7A1_SECURITY_ARCHITECTURE_20261011.md",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "D07": {
+      "path": "docs/DEMO_PERSON_CONTINUITY_R1.md",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "878d6313a2a5851d0a2e2d41b38dcab4eb9d8de7",
+      "sha256": "5c98a82cdbcf62ce596e02680252aeced0583360b31ecf573b8390ba60ccba3e",
+      "byte_count": 10647,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/docs/DEMO_PERSON_CONTINUITY_R1.md",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    },
+    "CI01": {
+      "path": ".github/workflows/ci.yml",
+      "commit": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "git_blob_sha": "003830145f0f76989ae5d688894c57310e8513c8",
+      "sha256": "c3ba9318c5d40d58b249a013d8d4295da71a1ed20d80e10a2596de0af26f1359",
+      "byte_count": 9406,
+      "url": "https://github.com/bitmaster162/continuityos/blob/cc889675df6e54cf7caa759e9aca6b032c217429/.github/workflows/ci.yml",
+      "evidence_class": "VERIFIED FACT",
+      "verification": "Git object bytes and selected source/test definitions read; not execution of those tests by this audit"
+    }
+  },
+  "provider_observations": {
+    "G144": {
+      "url": "https://github.com/bitmaster162/continuityos/issues/144",
+      "observed_date": "2026-11-28",
+      "state": "closed",
+      "state_reason": "completed",
+      "closed_at": "2026-10-15T15:37:58Z",
+      "scope": "12-family requirement contract plus issue metadata; closure is not acceptance evidence"
+    },
+    "G211": {
+      "url": "https://github.com/bitmaster162/continuityos/pull/211",
+      "observed_date": "2026-11-28",
+      "merged": true,
+      "merged_at": "2026-10-15T15:37:55Z",
+      "merge_commit": "517c7b48e270a3077e53d890e907c9cb2b3ce491",
+      "body_limits": [
+        "synthetic data and recording fake model clients only",
+        "C0 HOLD; T11/T12 UNEXECUTED; NOT_PRODUCTION_ADMITTED",
+        "explicitly says it does not close #144"
+      ]
+    },
+    "GCI": {
+      "url": "https://github.com/bitmaster162/continuityos/actions/runs/43390212172",
+      "head_sha": "cc889675df6e54cf7caa759e9aca6b032c217429",
+      "name": "review-gates",
+      "event": "push",
+      "conclusion": "success",
+      "observed_date": "2026-11-28",
+      "jobs": [
+        {
+          "name": "ubuntu / Python 3.11",
+          "id": 131768040828,
+          "conclusion": "success"
+        },
+        {
+          "name": "windows / Python 3.11",
+          "id": 131768040401,
+          "conclusion": "success"
+        }
+      ],
+      "artifact_list_count_at_observation": 0,
+      "node_level_receipts_retrieved": false,
+      "qualification_ceiling": "Repository job status, not per-family production acceptance"
+    }
+  },
+  "historical_execution_reports": [
+    {
+      "source_id": "D01",
+      "scope": "Durable admission R1 Windows synthetic selected suites",
+      "reported_result": "294 passed, 1 skipped; all 52 then-new durable cases passed",
+      "evidence_class": "SOURCE-BACKED CLAIM",
+      "reproduced_by_this_audit": false
+    },
+    {
+      "source_id": "D05",
+      "scope": "Durable demo R2 Windows synthetic selected suites",
+      "reported_result": "320 passed, 1 skipped; 52 runnable product-demo cases passed",
+      "evidence_class": "SOURCE-BACKED CLAIM",
+      "reproduced_by_this_audit": false,
+      "retained_caveat": "An early setup failure was not fully diagnosed; final selected run and command-entrypoint pass are reported separately."
+    }
+  ],
+  "historical_supersession": [
+    {
+      "id": "A3_RESULT_FIELD",
+      "older_source": "D03",
+      "older_claim": "A3 publication-result ambiguity remained outside the A4 fix",
+      "current_evidence": [
+        "D04",
+        "C04",
+        "T04"
+      ],
+      "resolution": "The exact baseline includes the later A3 field correction and named tests. Do not repeat the older red A3 claim for this result-field defect; independent production qualification remains unproven."
+    },
+    {
+      "id": "DURABLE_DEMO_WIRING",
+      "older_source": "D01",
+      "older_claim": "The original Person demo still used a fixture admission sidecar",
+      "current_evidence": [
+        "D05",
+        "C08",
+        "T07"
+      ],
+      "resolution": "Demo R2 now wires PersonTwinAdmissionStore and denies sidecar/reader readmission. This is synthetic durable process continuity, not a Portable Twin Vault restore."
+    },
+    {
+      "id": "ISSUE_144_CLOSURE",
+      "older_source": "G144",
+      "current_evidence": [
+        "G211",
+        "D02",
+        "D05"
+      ],
+      "resolution": "Issue metadata says completed; PR #211 and current scope limits do not establish 12-family production admission. Preserve both observations; no issue state mutation is performed."
+    }
+  ],
+  "families": [
+    {
+      "family_id": "IDENTITY",
+      "title": "Identity",
+      "requirement_source": "G144",
+      "code_state": "BOUNDED_PERSON_IMPLEMENTATION_PRESENT",
+      "implemented_scope": "Deterministic twin_id from tenant/subject; exact owner/controller/ownership epoch, identity fingerprint and schema; validators reject production-admitted identity values.",
+      "wiring_at_baseline": "Identity is consumed by R2, R3, the durable store and R4/R21H. Demo derives expected fixture identity from an external run ID before reading SQLite.",
+      "code_evidence": [
+        {
+          "source_id": "C01",
+          "symbols": [
+            "deterministic_person_twin_id",
+            "build_person_twin_identity",
+            "validate_person_twin_identity"
+          ]
+        },
+        {
+          "source_id": "C04",
+          "symbols": [
+            "PersonTwinAdmissionStore"
+          ]
+        },
+        {
+          "source_id": "C08",
+          "symbols": [
+            "_fixture_identity"
+          ]
+        }
+      ],
+      "test_evidence": [
+        {
+          "source_id": "T01",
+          "test_functions": [
+            "test_identity_is_deterministic_and_not_production_admitted",
+            "test_twin_id_is_stable_across_controller_and_ownership_epoch_changes",
+            "test_identity_cannot_claim_production_admission"
+          ],
+          "execution_in_this_audit": "NOT_RUN"
+        },
+        {
+          "source_id": "T07",
+          "test_functions": [
+            "test_durable_demo_expected_identity_is_not_selected_from_database"
+          ],
+          "execution_in_this_audit": "NOT_RUN"
+        }
+      ],
+      "documentation_sources": [
+        "D02",
+        "D05",
+        "D06"
+      ],
+      "execution_evidence": "Prior exact-baseline CI status observed (GCI); selected test definitions inspected. No node-level result artifact was reread and no runtime qualification was executed by this matrix audit.",
+      "production_acceptance": "NOT_ESTABLISHED_IN_REVIEWED_EVIDENCE",
+      "remaining_acceptance_evidence": [
+        "Independently authenticated subject/controller and trusted installation/root binding for a real pilot are not established by hashes or caller-supplied identifiers.",
+        "H3 C0 pre-send same-binding identity and native T11/T12 evidence remain separate; no production signoff is present in this reviewed evidence set."
+      ]
+    },
+    {
+      "family_id": "CONSENT",
+      "title": "Consent",
+      "requirement_source": "G144",
+      "code_state": "BOUNDED_PERSON_IMPLEMENTATION_PRESENT",
+      "implemented_scope": "Immutable scope/purpose/time/principal-bound source-consent receipts, separate source-read and memory-admission authorities, and a separately hashed revocation ledger with fail-closed evaluation.",
+      "wiring_at_baseline": "Consent is checked at R2 creation/read/export/lifecycle binding, every R3 admission boundary, R4 read authorization and final R21H prompt validation. Time and the current ledger are trusted host inputs.",
+      "code_evidence": [
+        {
+          "source_id": "C01",
+          "symbols": [
+            "build_source_consent_receipt",
+            "build_consent_revocation_entry",
+            "build_consent_revocation_ledger",
+            "evaluate_consent"
+          ]
+        },
+        {
+          "source_id": "C04",
+          "symbols": [
+            "PersonTwinAdmissionStore._fresh"
+          ]
+        },
+        {
+          "source_id": "C06",
+          "symbols": [
+            "PersonTwinR21HEvidenceAdapter.validate_for_prompt"
+          ]
+        }
+      ],
+      "test_evidence": [
+        {
+          "source_id": "T01",
+          "test_functions": [
+            "test_expired_consent_fails_closed",
+            "test_revocation_entry_invalidates_original_receipt_without_mutating_it",
+            "test_source_read_and_memory_admission_authorities_are_separate"
+          ],
+          "execution_in_this_audit": "NOT_RUN"
+        },
+        {
+          "source_id": "T04",
+          "test_functions": [
+            "test_revocation_at_each_boundary_prevents_current_publication"
+          ],
+          "execution_in_this_audit": "NOT_RUN"
+        }
+      ],
+      "documentation_sources": [
+        "D01",
+        "D02",
+        "D05"
+      ],
+      "execution_evidence": "Prior exact-baseline CI status observed (GCI); selected test definitions inspected. No node-level result artifact was reread and no runtime qualification was executed by this matrix audit.",
+      "production_acceptance": "NOT_ESTABLISHED_IN_REVIEWED_EVIDENCE",
+      "remaining_acceptance_evidence": [
+        "Authenticate consent authority, trusted time and independently current revocation evidence for the selected pilot; historical receipts cannot supply a fresh grant.",
+        "Close or explicitly bound the revocation check-to-disclosure interval and authorize the exact model sink/egress."
+      ]
+    },
+    {
+      "family_id": "ADMISSION",
+      "title": "Admission",
+      "requirement_source": "G144",
+      "code_state": "BOUNDED_PERSON_IMPLEMENTATION_PRESENT",
+      "implemented_scope": "R3 stages STAGED -> VALIDATED -> COMMITTED_NOT_CURRENT -> POSTVERIFY_PASS -> CURRENT. The durable adapter commits pointer, publication and actual R3 receipt together, checks expected publication, reopens read-only and reports unknown outcomes as HOLD.",
+      "wiring_at_baseline": "The durable store is wired into current Person demo R2 PREPARE/A/B; readers recover actual receipt bytes without rerunning admission. A3 result-field correction and A4 exact saved-row binding are present at this baseline.",
+      "code_evidence": [
+        {
+          "source_id": "C03",
+          "symbols": [
+            "PersonTwinAdmissionCoordinator"
+          ]
+        },
+        {
+          "source_id": "C04",
+          "symbols": [
+            "PersonTwinAdmissionStore.admit",
+            "PersonTwinAdmissionStore._result",
+            "PersonTwinAdmissionStore.load_current",
+            "PersonTwinAdmissionStore.read_current_memory_binding_bytes"
+          ]
+        },
+        {
+          "source_id": "C08",
+          "symbols": [
+            "_write_fixture",
+            "_read_fixture"
+          ]
+        }
+      ],
+      "test_evidence": [
+        {
+          "source_id": "T03",
+          "test_functions": [
+            "test_committed_not_current_is_observable_and_prior_remains_current",
+            "test_postverify_pass_then_revoke_before_promotion_holds_lkg"
+          ],
+          "execution_in_this_audit": "NOT_RUN"
+        },
+        {
+          "source_id": "T04",
+          "test_functions": [
+            "test_two_process_writers_have_exactly_one_winner",
+            "test_actual_process_exit_before_commit_preserves_last_known_good",
+            "test_a3_uncertain_commit_preserves_attempt_not_confirmed_publication",
+            "test_a4_exact_stored_row_binding_before_warm_and_streaming_models"
+          ],
+          "execution_in_this_audit": "NOT_RUN"
+        }
+      ],
+      "documentation_sources": [
+        "D01",
+        "D03",
+        "D04",
+        "D05"
+      ],
+      "execution_evidence": "Prior exact-baseline CI status observed (GCI); selected test definitions inspected. No node-level result artifact was reread and no runtime qualification was executed by this matrix audit.",
+      "production_acceptance": "NOT_ESTABLISHED_IN_REVIEWED_EVIDENCE",
+      "remaining_acceptance_evidence": [
+        "Hostile database rollback/rewrites, generation/ABA handling, trusted origin and production storage-failure qualification are not established by this bounded SQLite composition.",
+        "No atomic transaction across external consent, admission state and model delivery is claimed; real-pilot authority and admission signoff remain separate."
+      ]
+    },
+    {
+      "family_id": "PRIVACY",
+      "title": "Privacy",
+      "requirement_source": "G144",
+      "code_state": "BOUNDED_PERSON_IMPLEMENTATION_PRESENT",
+      "implemented_scope": "PERSON_PRIVATE and PERSON_SHARED scopes bind an exact twin; implicit widening is rejected; retrieval rechecks consent and hides lineage references outside visible source records.",
+      "wiring_at_baseline": "R2 is used by R4 and the explicit protected R21H evidence path. Generic R21H remains a distinct path and does not inherit Person qualification.",
+      "code_evidence": [
+        {
+          "source_id": "C02",
+          "symbols": [
+            "validate_privacy_scope",
+            "validate_no_implicit_scope_promotion",
+            "filter_person_twin_records",
+            "build_person_twin_export_bundle",
+            "bind_person_twin_lifecycle_target"
+          ]
+        },
+        {
+          "source_id": "C06",
+          "symbols": [
+            "PersonTwinR21HEvidenceAdapter._read"
+          ]
+        }
+      ],
+      "test_evidence": [
+        {
+          "source_id": "T02",
+          "test_functions": [
+            "test_private_scope_cannot_implicitly_widen",
+            "test_cross_scope_lineage_is_hidden_to_prevent_reference_leak",
+            "test_retrieval_rechecks_current_revocation_after_record_was_built",
+            "test_export_exact_scope_does_not_leak_company_record"
+          ],
+          "execution_in_this_audit": "NOT_RUN"
+        }
+      ],
+      "documentation_sources": [
+        "D02",
+        "D05",
+        "D06"
+      ],
+      "execution_evidence": "Prior exact-baseline CI status observed (GCI); selected test definitions inspected. No node-level result artifact was reread and no runtime qualification was executed by this matrix audit.",
+      "production_acceptance": "NOT_ESTABLISHED_IN_REVIEWED_EVIDENCE",
+      "remaining_acceptance_evidence": [
+        "Prove the boundary for every route actually enabled in a real pilot, including filesystem/DB custody, exports, backups and model egress.",
+        "Protected FAST fixture success cannot qualify generic runtime, direct Memory, unrelated MCP or raw tool routes."
+      ]
+    },
+    {
+      "family_id": "PROVENANCE",
+      "title": "Provenance",
+      "requirement_source": "G144",
+      "code_state": "BOUNDED_PERSON_IMPLEMENTATION_PRESENT",
+      "implemented_scope": "Person records bind source object/revision, observed/effective time, source content, actor/authority, tenant/twin, scope, consent, admission session and supersession/duplicate lineage. A4 binds exact saved Memory ID and namespace before selection.",
+      "wiring_at_baseline": "R2 verifies against supplied source/consent anchors; R4 reads stored candidate/current bytes; R21H independently reads saved Memory binding during prepare and final prompt validation.",
+      "code_evidence": [
+        {
+          "source_id": "C02",
+          "symbols": [
+            "build_person_twin_provenance",
+            "validate_person_twin_provenance_binding"
+          ]
+        },
+        {
+          "source_id": "C05",
+          "symbols": [
+            "_current_admission"
+          ]
+        },
+        {
+          "source_id": "C06",
+          "symbols": [
+            "_require_admission_memory_binding"
+          ]
+        }
+      ],
+      "test_evidence": [
+        {
+          "source_id": "T02",
+          "test_functions": [
+            "test_rehashed_forged_source_identity_is_rejected_against_external_anchor",
+            "test_source_revision_tamper_breaks_exact_binding"
+          ],
+          "execution_in_this_audit": "NOT_RUN"
+        },
+        {
+          "source_id": "T04",
+          "test_functions": [
+            "test_a4_binding_interface_has_no_fallback_or_caller_override",
+            "test_a4_read_binding_is_rechecked_at_the_final_prompt_boundary"
+          ],
+          "execution_in_this_audit": "NOT_RUN"
+        }
+      ],
+      "documentation_sources": [
+        "D02",
+        "D03",
+        "D05"
+      ],
+      "execution_evidence": "Prior exact-baseline CI status observed (GCI); selected test definitions inspected. No node-level result artifact was reread and no runtime qualification was executed by this matrix audit.",
+      "production_acceptance": "NOT_ESTABLISHED_IN_REVIEWED_EVIDENCE",
+      "remaining_acceptance_evidence": [
+        "Authenticate source/issuer/time and preserve byte custody beyond trusted host inputs; hashes establish binding, not source authenticity.",
+        "A5 receipt provenance, A6 generation/ABA and exact database identity across independently supplied read stores remain separately scoped obligations."
+      ]
+    },
+    {
+      "family_id": "BACKUP_PORTABLE_TWIN_VAULT",
+      "title": "Backup / Portable Twin Vault",
+      "requirement_source": "G144",
+      "code_state": "RELATED_PRIMITIVES_PRESENT_PERSON_VAULT_NOT_ESTABLISHED",
+      "implemented_scope": "Generic Memory quiescent backup implements SQLite validation, byte-exact copy, manifest, hash/readback and bounded backup-root checks. It is useful existing code, not evidence of the complete Person Vault contract.",
+      "wiring_at_baseline": "Person demo R2 persists admitted state in SQLite but explicitly excludes Portable Twin Vault restore. This reviewed repository set does not establish a Person-specific encrypted vault/portable custody path.",
+      "code_evidence": [
+        {
+          "source_id": "C09",
+          "symbols": [
+            "create_quiescent_backup",
+            "_validate_sqlite_copy",
+            "_verify_bundle"
+          ]
+        },
+        {
+          "source_id": "C08",
+          "symbols": [
+            "_controller"
+          ]
+        }
+      ],
+      "test_evidence": [
+        {
+          "source_id": "T08",
+          "test_functions": [
+            "test_quiescent_snapshot_is_byte_exact_and_manifested",
+            "test_nonempty_wal_holds_before_backup_root_write",
+            "test_source_change_during_copy_holds_without_published_bundle"
+          ],
+          "execution_in_this_audit": "NOT_RUN"
+        }
+      ],
+      "documentation_sources": [
+        "D05",
+        "D07"
+      ],
+      "execution_evidence": "Prior exact-baseline CI status observed (GCI); selected test definitions inspected. No node-level result artifact was reread and no runtime qualification was executed by this matrix audit.",
+      "production_acceptance": "NOT_ESTABLISHED_IN_REVIEWED_EVIDENCE",
+      "remaining_acceptance_evidence": [
+        "Specify and bind Person inclusion/exclusion, consent/privacy, encryption and key custody, deterministic portable manifest/content root and schema compatibility.",
+        "Verify complete authorized package coverage and independent readback for a synthetic vault before any real-data use."
+      ]
+    },
+    {
+      "family_id": "RESTORE",
+      "title": "Restore",
+      "requirement_source": "G144",
+      "code_state": "RELATED_PRIMITIVES_PRESENT_PERSON_RESTORE_NOT_ESTABLISHED",
+      "implemented_scope": "Generic restore validates the backup, pins target hash, requires confirmation and compatibility acknowledgement, preserves a preimage and performs atomic replacement/readback with explicit rollback failure handling.",
+      "wiring_at_baseline": "Generic Memory tests exercise temporary SQLite restore. A3 documentation references an external backup -> revoke -> restore acceptance body, but that external receipt/body was not in the reviewed files. Person demo is not a vault restoration proof.",
+      "code_evidence": [
+        {
+          "source_id": "C10",
+          "symbols": [
+            "restore_quiescent_backup",
+            "_rollback",
+            "_compatibility_receipt"
+          ]
+        }
+      ],
+      "test_evidence": [
+        {
+          "source_id": "T09",
+          "test_functions": [
+            "test_restore_is_atomic_byte_exact_and_retains_preimage",
+            "test_tampered_embedded_memory_holds_without_target_mutation",
+            "test_post_switch_validation_failure_rolls_back_byte_exact",
+            "test_current_effect_boundary_holds_before_bundle_or_target_access"
+          ],
+          "execution_in_this_audit": "NOT_RUN"
+        }
+      ],
+      "documentation_sources": [
+        "D04",
+        "D05"
+      ],
+      "execution_evidence": "Prior exact-baseline CI status observed (GCI); selected test definitions inspected. No node-level result artifact was reread and no runtime qualification was executed by this matrix audit.",
+      "production_acceptance": "NOT_ESTABLISHED_IN_REVIEWED_EVIDENCE",
+      "remaining_acceptance_evidence": [
+        "Bind a Person vault to restore, verify authorized state/count/hash/replay equivalence and preserve last-known-good/current promotion rules.",
+        "Reacquire a fresh independent revocation ledger after restore; restored historical consent cannot become current authority.",
+        "Identify and independently replay the external N4 evidence if it is used to close this family; its mention alone is insufficient."
+      ]
+    },
+    {
+      "family_id": "EXPORT",
+      "title": "Export",
+      "requirement_source": "G144",
+      "code_state": "BOUNDED_PERSON_EXPORT_ADAPTER_PRESENT",
+      "implemented_scope": "R2 reuses the P2 deterministic export bundle after exact Person scope/consent filtering, adds a Person provenance manifest and binds the current revocation ledger hash. Output is read-only and NOT_PRODUCTION_ADMITTED.",
+      "wiring_at_baseline": "The explicit Python export adapter exists and is tested. R4 supports READ/PROPOSE/APPROVE and deliberately excludes R5/effectful actions; the protected runtime does not make this a fully admitted export service.",
+      "code_evidence": [
+        {
+          "source_id": "C02",
+          "symbols": [
+            "build_person_twin_export_bundle"
+          ]
+        },
+        {
+          "source_id": "C11",
+          "symbols": [
+            "build_export_bundle"
+          ]
+        },
+        {
+          "source_id": "C05",
+          "symbols": [
+            "_evaluate_person_twin_authority_replay_impl"
+          ]
+        }
+      ],
+      "test_evidence": [
+        {
+          "source_id": "T02",
+          "test_functions": [
+            "test_export_reuses_p2_bundle_and_preserves_person_provenance_manifest",
+            "test_export_rechecks_revocation_after_record_was_built",
+            "test_person_export_fails_closed_on_unrecognized_actor"
+          ],
+          "execution_in_this_audit": "NOT_RUN"
+        }
+      ],
+      "documentation_sources": [
+        "D02",
+        "D07"
+      ],
+      "execution_evidence": "Prior exact-baseline CI status observed (GCI); selected test definitions inspected. No node-level result artifact was reread and no runtime qualification was executed by this matrix audit.",
+      "production_acceptance": "NOT_ESTABLISHED_IN_REVIEWED_EVIDENCE",
+      "remaining_acceptance_evidence": [
+        "Bind exact requester authorization, delivery destination, recipient scope and result readback for the chosen Person export path.",
+        "Qualify portable export/restore compatibility; an in-memory bundle and its hash are not proof of delivered or accepted export."
+      ]
+    },
+    {
+      "family_id": "LIFECYCLE",
+      "title": "Lifecycle",
+      "requirement_source": "G144",
+      "code_state": "PERSON_TARGET_BINDING_AND_SHARED_PRIMITIVES_PRESENT",
+      "implemented_scope": "R2 binds one exact twin/record/scope target with fresh consent and physical_delete=false. P2 shared code supplies retention, hold, logical tombstone and advisory purge-eligibility primitives.",
+      "wiring_at_baseline": "Person-specific read-only target binding is implemented; the inspected R4 policy rejects actions beyond READ/PROPOSE/APPROVE. A complete persistent Person lifecycle transaction is not established by this binding alone.",
+      "code_evidence": [
+        {
+          "source_id": "C02",
+          "symbols": [
+            "bind_person_twin_lifecycle_target"
+          ]
+        },
+        {
+          "source_id": "C11",
+          "symbols": []
+        },
+        {
+          "source_id": "C05",
+          "symbols": [
+            "_evaluate_person_twin_authority_replay_impl"
+          ]
+        }
+      ],
+      "test_evidence": [
+        {
+          "source_id": "T02",
+          "test_functions": [
+            "test_lifecycle_target_is_exact_read_only_and_no_physical_delete",
+            "test_lifecycle_rechecks_revocation_after_record_was_built"
+          ],
+          "execution_in_this_audit": "NOT_RUN"
+        },
+        {
+          "source_id": "T10",
+          "test_functions": [
+            "test_hold_blocks_purge_after_retention_expiry",
+            "test_tombstone_revision_preserves_historical_replay",
+            "test_agent_cannot_manage_lifecycle"
+          ],
+          "execution_in_this_audit": "NOT_RUN"
+        }
+      ],
+      "documentation_sources": [
+        "D07",
+        "D02"
+      ],
+      "execution_evidence": "Prior exact-baseline CI status observed (GCI); selected test definitions inspected. No node-level result artifact was reread and no runtime qualification was executed by this matrix audit.",
+      "production_acceptance": "NOT_ESTABLISHED_IN_REVIEWED_EVIDENCE",
+      "remaining_acceptance_evidence": [
+        "Demonstrate semantic reuse of P2 retention/hold/reference and tombstone-first history in the exact Person persistent path.",
+        "Bind owner authority and reconciliation for permitted lifecycle actions; no physical deletion is granted by this matrix."
+      ]
+    },
+    {
+      "family_id": "REPLAY",
+      "title": "Replay",
+      "requirement_source": "G144",
+      "code_state": "BOUNDED_DECISION_REPLAY_PRESENT_DELIVERY_REPLAY_NOT_ESTABLISHED",
+      "implemented_scope": "R4 derives a replay identity from source, admission, consent/ledger, principal/policy, session and authorization. It reads an external durable-replay interface, accepts exact bound replay and denies divergence. R21H has one-use request-phase checks.",
+      "wiring_at_baseline": "The evaluator is read-only; demo uses _EmptyReplayFixture. No durable model-disclosure reservation/delivery ledger is supplied by this composition, and R21H does not claim cross-request delivery exactly once.",
+      "code_evidence": [
+        {
+          "source_id": "C05",
+          "symbols": [
+            "DurableReplayReadStore",
+            "_stable_replay_key",
+            "_read_durable_replay",
+            "_evaluate_person_twin_authority_replay_impl"
+          ]
+        },
+        {
+          "source_id": "C08",
+          "symbols": [
+            "_EmptyReplayFixture"
+          ]
+        },
+        {
+          "source_id": "C07",
+          "symbols": [
+            "SovereignTwinRuntime"
+          ]
+        }
+      ],
+      "test_evidence": [
+        {
+          "source_id": "T05",
+          "test_functions": [
+            "test_exact_replay_requires_anchored_readback_and_is_idempotent",
+            "test_divergent_authorization_under_same_stable_replay_key_is_denied",
+            "test_durable_replay_read_failure_fails_closed"
+          ],
+          "execution_in_this_audit": "NOT_RUN"
+        }
+      ],
+      "documentation_sources": [
+        "D02",
+        "D03",
+        "D05",
+        "D06"
+      ],
+      "execution_evidence": "Prior exact-baseline CI status observed (GCI); selected test definitions inspected. No node-level result artifact was reread and no runtime qualification was executed by this matrix audit.",
+      "production_acceptance": "NOT_ESTABLISHED_IN_REVIEWED_EVIDENCE",
+      "remaining_acceptance_evidence": [
+        "Supply and qualify durable atomic disclosure/replay custody across process restart, ambiguous delivery, concurrent requests and generation/ABA changes for the approved route.",
+        "Preserve unknown-delivery states and do not retry a possibly disclosed request automatically; restored-state equivalence remains a separate requirement."
+      ]
+    },
+    {
+      "family_id": "AUTHORITY",
+      "title": "Authority",
+      "requirement_source": "G144",
+      "code_state": "BOUNDED_NON_EFFECTFUL_AUTHORITY_COMPOSITION_PRESENT",
+      "implemented_scope": "R4 combines R2, stored CURRENT readback, exact session/authorization bindings and P2 policy. Agent READ/PROPOSE are non-effectful; APPROVE requires a human authorization identity; EXECUTE and outside-R4 actions are denied.",
+      "wiring_at_baseline": "Protected R21H FAST revalidates at prompt construction and rejects unsupported protected paths. Generic paths remain distinct; installed host/client enforcement and native H3 identity are not implied.",
+      "code_evidence": [
+        {
+          "source_id": "C05",
+          "symbols": [
+            "_ceiling",
+            "_authorization_chain",
+            "_evaluate_person_twin_authority_replay_impl"
+          ]
+        },
+        {
+          "source_id": "C06",
+          "symbols": [
+            "PersonTwinR21HEvidenceAdapter"
+          ]
+        },
+        {
+          "source_id": "C07",
+          "symbols": [
+            "SovereignTwinRuntime"
+          ]
+        }
+      ],
+      "test_evidence": [
+        {
+          "source_id": "T05",
+          "test_functions": [
+            "test_agent_read_and_propose_are_non_effectful_allows",
+            "test_human_approve_rejects_deterministic_controller_authorization",
+            "test_effectful_or_r5_actions_are_not_in_r4",
+            "test_current_session_exact_contour_rejects_forged_declaration_reason_and_legacy"
+          ],
+          "execution_in_this_audit": "NOT_RUN"
+        }
+      ],
+      "documentation_sources": [
+        "D02",
+        "D05",
+        "D06"
+      ],
+      "execution_evidence": "Prior exact-baseline CI status observed (GCI); selected test definitions inspected. No node-level result artifact was reread and no runtime qualification was executed by this matrix audit.",
+      "production_acceptance": "NOT_ESTABLISHED_IN_REVIEWED_EVIDENCE",
+      "remaining_acceptance_evidence": [
+        "Authenticate the trusted host/intent/context inputs and independently qualified C0/H3 client/broker binding before real sensitive requests.",
+        "Prove all enabled paths and revocation/kill behavior under the separately approved pilot; no authority may be inferred from installation, context, CI, merge or a saved receipt."
+      ]
+    },
+    {
+      "family_id": "OPERATOR_SIGNOFF",
+      "title": "Operator signoff",
+      "requirement_source": "G144",
+      "code_state": "NO_PERSON_PRODUCTION_SIGNOFF_IN_REVIEWED_SET",
+      "implemented_scope": "Identity, admission, R4 and demo outputs explicitly retain NOT_PRODUCTION_ADMITTED and non-effectful ceilings. This enforces a negative claim; it is not an owner admission receipt.",
+      "wiring_at_baseline": "No reviewed source or provider observation binds a human production-admission signoff to all 12 completed families on this exact commit/evidence set.",
+      "code_evidence": [
+        {
+          "source_id": "C01",
+          "symbols": [
+            "validate_person_twin_identity"
+          ]
+        },
+        {
+          "source_id": "C03",
+          "symbols": [
+            "PersonTwinAdmissionCoordinator._receipt_dict"
+          ]
+        },
+        {
+          "source_id": "C05",
+          "symbols": [
+            "_ceiling"
+          ]
+        },
+        {
+          "source_id": "C08",
+          "symbols": [
+            "_governance"
+          ]
+        }
+      ],
+      "test_evidence": [
+        {
+          "source_id": "T01",
+          "test_functions": [
+            "test_identity_cannot_claim_production_admission"
+          ],
+          "execution_in_this_audit": "NOT_RUN"
+        },
+        {
+          "source_id": "T03",
+          "test_functions": [
+            "test_receipts_and_pointer_never_escalate_p3_p1_authority"
+          ],
+          "execution_in_this_audit": "NOT_RUN"
+        }
+      ],
+      "documentation_sources": [
+        "D02",
+        "D05"
+      ],
+      "execution_evidence": "Prior exact-baseline CI status observed (GCI); selected test definitions inspected. No node-level result artifact was reread and no runtime qualification was executed by this matrix audit.",
+      "production_acceptance": "NOT_ESTABLISHED_IN_REVIEWED_EVIDENCE",
+      "remaining_acceptance_evidence": [
+        "Obtain a separate exact human signoff after required machine-verifiable and independent acceptance evidence is complete; name the actual acceptance owner from authority evidence.",
+        "A closed issue, merged PR, successful CI, this matrix or a synthetic demo cannot supply that signoff."
+      ]
+    }
+  ],
+  "reviewed_absence_scope": {
+    "roots": [
+      "continuityos",
+      "tests",
+      "docs",
+      "native"
+    ],
+    "method": "Recursive ripgrep of Portable Twin/Vault, production admission/signoff, C0/T11/T12 and replay interface references, plus direct reading of the listed sources",
+    "limit": "No external laptop evidence directory, installed service, owner database, vault bytes or human signoff receipt was inspected by this matrix audit. Unlocated evidence is not asserted nonexistent globally."
+  },
+  "validation_plan": {
+    "not_executed_by_this_audit": true,
+    "scoped_person_pytest_files": [
+      "tests/test_person_twin_admission_contracts.py",
+      "tests/test_person_twin_privacy_provenance.py",
+      "tests/test_person_twin_admission_coordinator.py",
+      "tests/test_person_twin_authority_replay.py",
+      "tests/test_person_twin_admission_store.py",
+      "tests/test_person_twin_r21h_evidence.py",
+      "tests/test_product_person_continuity.py"
+    ],
+    "effects": "Temporary synthetic SQLite, bounded child Python processes and recording model fixtures; no live provider/owner database is required",
+    "known_platform_limits": [
+      "Two product-demo venv/direct-interpreter cases require Windows and skip elsewhere.",
+      "Real symlink cases require the host to permit symlink creation; a skip is not a pass.",
+      "Separate cryptography-backed tests importorskip cryptography; standard CI installs its pinned backend for the selected real-crypto fixtures.",
+      "Unrelated full-suite HTTP tests bind loopback sockets; a blanket socket-deny policy is not compatible with the entire existing suite.",
+      "TPM/H3/PostgreSQL-named unit tests use fake providers in the reviewed selection; their success is not native/provider qualification."
+    ],
+    "release_gate": "Existing Ubuntu/Windows review-gates on the exact candidate, including wheel identity and collected tests, plus separately required acceptance evidence. Never transfer old job success to changed source."
+  }
+}

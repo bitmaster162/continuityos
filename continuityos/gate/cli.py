@@ -457,6 +457,11 @@ def _execution_binding_error(cmd: str, mode: str, result, argv, execution_cwd=No
             if event is None or event.get("kind") != "preflight":
                 return "preflight hash does not identify a ledger preflight event"
             payload = event["payload"]
+            from ..db import SCOPED_CONTEXT_DIGEST_SCHEME
+            context = payload.get("context")
+            identity = context.get("identity") if isinstance(context, dict) else None
+            if isinstance(identity, dict) and identity.get("scheme") == SCOPED_CONTEXT_DIGEST_SCHEME:
+                return "scoped continuity preflight is review-only; legacy executor has no scoped execution contract"
             if payload.get("action") != action:
                 return "typed action differs from the ledger-bound preflight action"
             if payload.get("rollback_plan") != (result.get("rollback_plan") or {}):

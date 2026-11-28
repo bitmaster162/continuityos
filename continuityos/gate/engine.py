@@ -150,10 +150,20 @@ def preflight(spec: ActionSpec, policy: Optional[Dict[str, Any]] = None,
     canon_error = None
     if context is not None:
         try:
+            from ..continuity import Continuity
             from ..db import context_identity, context_read_snapshot
-            with context_read_snapshot(context):
-                trusted_context_identity = context_identity(context)
-                canon_conflict, canon_error = _canon_check(spec, context)
+            evaluation_context = context
+            if isinstance(context, Continuity):
+                # Bind one captured scope to both the digest and evaluation;
+                # later changes to the caller's context cannot split them.
+                evaluation_context = Continuity(memory=context.m, project=context.project,
+                                                subject=context.subject)
+                source = getattr(context, "_context_source", None)
+                if source:
+                    evaluation_context._context_source = source
+            with context_read_snapshot(evaluation_context):
+                trusted_context_identity = context_identity(evaluation_context)
+                canon_conflict, canon_error = _canon_check(spec, evaluation_context)
         except Exception as exc:
             context_identity_error = f"{type(exc).__name__}: {exc}"
             reasons.append(
@@ -333,12 +343,17 @@ def _canon_check(spec: ActionSpec, context):
     if context is None:
         return [], None
     try:
+        from ..continuity import Continuity
         from ..memory import Memory
         from ..twin import Twin
         mem = context.m if hasattr(context, "m") else context if isinstance(context, Memory) else None
         if mem is None:
             return [], f"unsupported context type: {type(context).__name__}"
-        al = Twin(memory=mem).alignment(spec.command or spec.tool)
+        # Scope belongs to the trusted context, never to ActionSpec metadata.
+        # Revalidate it in Twin so a malformed context fails closed in preflight.
+        scope = {"project": context.project, "subject": context.subject} \
+            if isinstance(context, Continuity) else {}
+        al = Twin(memory=mem, **scope).alignment(spec.command or spec.tool)
         return [c["rule"] for c in al.get("possible_conflicts", [])][:3], None
     except Exception as exc:
         return [], f"{type(exc).__name__}: {exc}"

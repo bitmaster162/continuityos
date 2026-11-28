@@ -11,17 +11,18 @@
 Auto-detects six vendor export formats via Format-Detection Heuristics
 (``sniff``): a ``mapping`` dict => OpenAI, ``chat_messages`` => Anthropic,
 ``userInteractions`` => Gemini, ``$numberLong`` => Grok, ``thread_metadata``/
-``entries`` => Perplexity, else Mistral/Claude by shape. **Bi-temporal**: every
-imported memory's ``valid_from`` is the ORIGINAL message time, so
-``cos recall --as-of <date>`` reconstructs what you knew THEN. Deterministic,
-fully offline (no API keys). Cross-platform dedup uses the **PAM content_hash**
-standard (strip / Unicode-NFC / lowercase / collapse-whitespace / SHA-256), so
-the same question asked to different models collapses to one memory.
+``entries`` => Perplexity, else Mistral/Claude by shape. **Bi-temporal**: supplied
+message times are preserved; event/conversation fallback times are labeled as
+such, and missing author/time remains unknown. The default path is offline.
+Raw imports retain PAM content_hash dedup (strip / Unicode-NFC / lowercase /
+collapse-whitespace / SHA-256). Extract mode instead stores source-bound,
+UNREVIEWED candidates, preserving distinct source observations of the same text.
+An optional explicit LLM callable can propose candidates but cannot accept them.
 """
 from __future__ import annotations
-import json, os, re, hashlib, unicodedata
+import json, os, re, hashlib, unicodedata, math
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 @dataclass
@@ -33,6 +34,12 @@ class ImportRecord:
     conversation_title: str = ""
     source: str = ""                      # chatgpt|claude|gemini|grok|mistral|perplexity
     is_thought: bool = False              # Claude/Perplexity chain-of-thought block
+    message_id: str = ""                 # exported ID only; never invented
+    source_artifact: str = ""            # export-relative filename, when available
+    source_artifact_sha256: str = ""      # normalized parsed JSON, not original bytes
+    source_artifact_hash_kind: str = ""
+    source_record_index: Optional[int] = None  # ordinal in the parser output
+    source_time_kind: str = ""            # message vs event/conversation fallback
 
 
 @dataclass
@@ -62,15 +69,21 @@ def _flt(v: Any) -> Optional[float]:
     if isinstance(v, bool):
         return None
     if isinstance(v, (int, float)):
-        f = float(v)
+        try:
+            f = float(v)
+        except (OverflowError, ValueError):
+            return None
+        if not math.isfinite(f):
+            return None
         return f / 1000.0 if f > 1e12 else f          # ms -> s
     if isinstance(v, dict):
         if "$date" in v:
             return _flt(v["$date"])
         if "$numberLong" in v:
             try:
-                return float(v["$numberLong"]) / 1000.0
-            except (ValueError, TypeError):
+                value = float(v["$numberLong"]) / 1000.0
+                return value if math.isfinite(value) else None
+            except (ValueError, TypeError, OverflowError):
                 return None
         return None
     if isinstance(v, str):
@@ -79,7 +92,7 @@ def _flt(v: Any) -> Optional[float]:
             return None
         try:
             f = float(s)
-            return f / 1000.0 if f > 1e12 else f
+            return (f / 1000.0 if f > 1e12 else f) if math.isfinite(f) else None
         except ValueError:
             pass
         try:
@@ -88,6 +101,15 @@ def _flt(v: Any) -> Optional[float]:
         except Exception:
             return None
     return None
+
+
+def _message_time(message: Dict[str, Any], fields: Tuple[str, ...],
+                  fallback: Optional[float] = None) -> Tuple[Optional[float], str]:
+    for name in fields:
+        value = _flt(message.get(name))
+        if value is not None:
+            return value, "MESSAGE_TIME"
+    return (fallback, "CONVERSATION_TIME") if fallback is not None else (None, "UNKNOWN")
 
 
 def content_hash(text: str) -> str:
@@ -155,8 +177,8 @@ def parse_chatgpt(data: Any) -> List[ImportRecord]:
         for msg in ordered:
             if not isinstance(msg, dict):
                 continue
-            author = msg.get("author") or {}
-            role = author.get("role") or msg.get("role") or "user"
+            author = msg.get("author") if isinstance(msg.get("author"), dict) else {}
+            role = author.get("role") or msg.get("role") or "unknown"
             content = msg.get("content")
             if isinstance(content, dict):
                 text = _text_from_parts(content.get("parts"))
@@ -166,9 +188,10 @@ def parse_chatgpt(data: Any) -> List[ImportRecord]:
                 text = ""
             if not text.strip():
                 continue
-            ts = _flt(msg.get("create_time")) or sess_ct
+            ts, time_kind = _message_time(msg, ("create_time",), sess_ct)
             recs.append(ImportRecord(text=text.strip(), role=role, ts=ts,
-                                     conversation_id=cid, conversation_title=title, source="chatgpt"))
+                                     conversation_id=cid, conversation_title=title, source="chatgpt",
+                                     message_id=str(msg.get("id") or ""), source_time_kind=time_kind))
     return recs
 
 
@@ -199,7 +222,7 @@ def parse_claude(data: Any) -> List[ImportRecord]:
             for msg in conv["chat_messages"]:
                 if not isinstance(msg, dict):
                     continue
-                raw_role = msg.get("sender") or msg.get("role") or "user"
+                raw_role = msg.get("sender") or msg.get("role") or "unknown"
                 role = "user" if raw_role in ("human", "user") else raw_role
                 text = msg.get("text") or ""
                 is_thought = False
@@ -218,17 +241,20 @@ def parse_claude(data: Any) -> List[ImportRecord]:
                             parts.append(b["text"])
                     if parts and not text:
                         text = "\n".join(p for p in parts if p)
+                ts, time_kind = _message_time(msg, ("created_at",), _flt(conv.get("created_at")))
                 recs.append(ImportRecord(
                     text=(text or "").strip(), role=role,
-                    ts=_flt(msg.get("created_at") or conv.get("created_at")),
+                    ts=ts,
                     conversation_id=cid, conversation_title=title,
-                    source="claude", is_thought=is_thought))
+                    source="claude", is_thought=is_thought,
+                    message_id=str(msg.get("uuid") or msg.get("id") or ""),
+                    source_time_kind=time_kind))
         else:
             text = conv.get("text") or conv.get("content") or conv.get("summary") or conv.get("name") or ""
             if isinstance(text, str) and text.strip():
                 recs.append(ImportRecord(text=text.strip(), role="memory",
                                          ts=_flt(conv.get("created_at") or conv.get("updated_at")),
-                                         source="claude"))
+                                         source="claude", source_time_kind="MEMORY_RECORD_TIME"))
     return recs
 
 
@@ -318,7 +344,8 @@ def parse_gemini(data: Any) -> List[ImportRecord]:
                 title = _synth_title(text)
             if text and text.strip():
                 recs.append(ImportRecord(text=text.strip(), role=role, ts=ts,
-                                         conversation_id=cid, conversation_title=title, source="gemini"))
+                                         conversation_id=cid, conversation_title=title, source="gemini",
+                                         source_time_kind="EVENT_TIME" if ts is not None else "UNKNOWN"))
     return recs
 
 
@@ -338,16 +365,20 @@ def parse_grok(data: Any) -> List[ImportRecord]:
         for m in msgs:
             if not isinstance(m, dict):
                 continue
-            role = m.get("sender") or m.get("role") or ("assistant" if m.get("is_assistant") else "user")
+            role = m.get("sender") or m.get("role")
+            if not role:
+                role = ("assistant" if m["is_assistant"] else "user") if isinstance(m.get("is_assistant"), bool) else "unknown"
             text = m.get("message") or m.get("text") or m.get("content") or ""
             if isinstance(text, dict):
                 text = text.get("text", "")
             elif isinstance(text, list):
                 text = _text_from_parts(text)
-            ts = _flt(m.get("create_time") or m.get("created_at") or m.get("timestamp")) or sess_ts
+            ts, time_kind = _message_time(m, ("create_time", "created_at", "timestamp"), sess_ts)
             if text and str(text).strip():
                 recs.append(ImportRecord(text=str(text).strip(), role=str(role), ts=ts,
-                                         conversation_id=cid, conversation_title=title, source="grok"))
+                                         conversation_id=cid, conversation_title=title, source="grok",
+                                         message_id=str(m.get("id") or m.get("_id") or ""),
+                                         source_time_kind=time_kind))
     return recs
 
 
@@ -371,16 +402,17 @@ def parse_mistral(data: Any) -> List[ImportRecord]:
         for m in msgs:
             if not isinstance(m, dict):
                 continue
-            role = m.get("role") or "user"
+            role = m.get("role") or "unknown"
             text = m.get("content") or m.get("text") or ""
             if isinstance(text, list):
                 text = _text_from_parts(text)
-            ts = _flt(m.get("created_at") or m.get("timestamp"))
+            ts, time_kind = _message_time(m, ("created_at", "timestamp"))
             if role == "user" and not first_user and text:
                 first_user = str(text)
             if text and str(text).strip():
                 recs.append(ImportRecord(text=str(text).strip(), role=str(role), ts=ts,
-                                         conversation_id=cid, conversation_title=title, source="mistral"))
+                                         conversation_id=cid, conversation_title=title, source="mistral",
+                                         message_id=str(m.get("id") or ""), source_time_kind=time_kind))
         if not title and first_user:
             st = _synth_title(first_user)
             for r in recs[start:]:
@@ -408,10 +440,11 @@ def parse_perplexity(data: Any) -> List[ImportRecord]:
         for e in entries:
             if not isinstance(e, dict):
                 continue
-            role = e.get("role") or ("user" if "query" in e else "assistant")
+            role = e.get("role") or ("user" if "query" in e else "assistant" if "answer" in e else "unknown")
             text = e.get("query") or e.get("answer") or e.get("content") or e.get("text") or ""
             text = str(text)
-            ts = _flt(e.get("created_at") or e.get("time") or th.get("created_at") or (meta or {}).get("created_at"))
+            fallback, _ = _message_time(th, ("created_at",), _flt(meta.get("created_at")))
+            ts, time_kind = _message_time(e, ("created_at", "time"), fallback)
             srcs = e.get("sources") or e.get("annotations")
             if role != "user" and isinstance(srcs, list) and srcs:
                 refs = "\n".join("[%d] %s" % (i + 1, s if isinstance(s, str) else s.get("url", ""))
@@ -424,7 +457,8 @@ def parse_perplexity(data: Any) -> List[ImportRecord]:
                 title = _synth_title(text)
             if text.strip():
                 recs.append(ImportRecord(text=text.strip(), role=str(role), ts=ts,
-                                         conversation_id=cid, conversation_title=title, source="perplexity"))
+                                         conversation_id=cid, conversation_title=title, source="perplexity",
+                                         message_id=str(e.get("id") or ""), source_time_kind=time_kind))
     return recs
 
 
@@ -469,7 +503,10 @@ def sniff(data: Any) -> str:
 def load_export(path: str) -> List[Tuple[str, Any]]:
     """Load one file or a whole export directory (incl. Google Takeout layout)."""
     def _load(fp):
-        return (os.path.basename(fp), json.load(open(fp, encoding="utf-8")))
+        hint = os.path.relpath(fp, path) if os.path.isdir(path) else os.path.basename(fp)
+        hint = hint.replace(os.sep, "/")
+        with open(fp, encoding="utf-8") as stream:
+            return hint, json.load(stream)
     if os.path.isdir(path):
         items: List[Tuple[str, Any]] = []
         # Google Takeout nests MyActivity.json under My Activity/Gemini Apps/
@@ -490,31 +527,64 @@ def load_export(path: str) -> List[Tuple[str, Any]]:
 
 
 # ---------------------------------------------------------------- import
+def _record_source_context(record: ImportRecord, index: int) -> Dict[str, Any]:
+    """Preserve known origin fields; missing identity/time stays unknown.
+
+    The ordinal identifies a normalized parser record in a pinned parsed export,
+    not a fabricated provider message ID. For directly supplied records without
+    an exported message ID it is the position in that supplied record list.
+    """
+    position = record.source_record_index
+    if position is None and not record.message_id:
+        position = index
+    return {
+        "source": record.source or None, "role": record.role or None,
+        "conversation_id": record.conversation_id or None,
+        "conversation_title": record.conversation_title or None,
+        "message_id": record.message_id or None,
+        "source_artifact": record.source_artifact or None,
+        "source_artifact_sha256": record.source_artifact_sha256 or None,
+        "source_artifact_hash_kind": record.source_artifact_hash_kind or None,
+        "source_record_index": position, "source_ts": record.ts,
+        "source_time_kind": (record.source_time_kind or "CALLER_SUPPLIED_TIME") if record.ts is not None else "UNKNOWN",
+        "is_thought": record.is_thought,
+    }
+
+
 def import_records(records: List[ImportRecord], memory, namespace: str = "imported",
                    roles: Tuple[str, ...] = ("user", "human", "memory"),
                    extract_mode: bool = False, dry_run: bool = False,
-                   min_len: int = 12) -> ImportResult:
+                   min_len: int = 12, *,
+                   llm: Optional[Callable[[str], str]] = None) -> ImportResult:
+    """Import records or source-bound UNREVIEWED extraction candidates.
+
+    Extraction filters roles before any optional LLM sees the input and uses
+    one source message per call. Cross-message synthesis is intentionally not
+    inferred; it needs a separate multi-source review contract. An explicitly
+    supplied LLM callable may run during dry-run; dry-run prevents Memory writes.
+    """
     res = ImportResult()
-    res.conversations = len({r.conversation_id for r in records if r.conversation_id}) or (1 if records else 0)
+    res.conversations = len({(r.source, r.source_artifact_sha256, r.conversation_id)
+                             for r in records if r.conversation_id}) or (1 if records else 0)
 
     if extract_mode:
-        from .extract import extract, extract_and_store
-        grouped: Dict[str, List[ImportRecord]] = {}
-        for r in records:
-            grouped.setdefault(r.conversation_id, []).append(r)
-        for _cid, rs in grouped.items():
-            res.messages_seen += len(rs)
-            text = "\n".join("%s: %s" % (r.role, r.text) for r in rs)
-            if dry_run:
-                res.imported += len(extract(text))
+        from .extract import extract, _store_candidates
+        candidates = []
+        for index, record in enumerate(records):
+            res.messages_seen += 1
+            if roles and record.role not in roles:
                 continue
-            ids = extract_and_store(text, memory, namespace=namespace)
-            res.ids += ids
-            res.imported += len(ids)
+            if len(record.text.strip()) < min_len:
+                res.skipped_short += 1
+                continue
+            candidates.extend(extract(record.text, llm=llm,
+                                      source_context=_record_source_context(record, index)))
+        res.ids, res.imported, res.skipped_dup = _store_candidates(
+            candidates, memory, namespace, dry_run=dry_run)
         return res
 
     seen: set = set()
-    for r in records:
+    for index, r in enumerate(records):
         res.messages_seen += 1
         if roles and r.role not in roles:
             continue
@@ -537,6 +607,9 @@ def import_records(records: List[ImportRecord], memory, namespace: str = "import
         tags = [x for x in (r.source, "import") if x]
         meta = {"source": r.source, "import": True, "role": r.role,
                 "conversation_id": r.conversation_id, "conversation_title": r.conversation_title}
+        context = _record_source_context(r, index)
+        meta.update({key: value for key, value in context.items()
+                     if key not in ("source", "role", "conversation_id", "conversation_title")})
         if r.is_thought:
             meta["is_thought"] = True
         rid = memory.remember(t, namespace=namespace, tags=tags, meta=meta, valid_from=r.ts)
@@ -547,7 +620,8 @@ def import_records(records: List[ImportRecord], memory, namespace: str = "import
 
 def import_path(path: str, memory, namespace: str = "imported", source: str = "auto",
                 roles: Tuple[str, ...] = ("user", "human", "memory"),
-                extract_mode: bool = False, dry_run: bool = False) -> ImportResult:
+                extract_mode: bool = False, dry_run: bool = False, *,
+                llm: Optional[Callable[[str], str]] = None) -> ImportResult:
     """Top-level: auto-detect + parse + ingest an export file or directory."""
     all_recs: List[ImportRecord] = []
     detected: set = set()
@@ -570,9 +644,18 @@ def import_path(path: str, memory, namespace: str = "imported", source: str = "a
         parser = _PARSERS.get(src)
         if parser is None:
             continue
-        all_recs += parser(data)
+        parsed = parser(data)
+        parsed_digest = hashlib.sha256(json.dumps(
+            data, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            allow_nan=False).encode("utf-8")).hexdigest()
+        for index, record in enumerate(parsed):
+            record.source_artifact = hint
+            record.source_artifact_sha256 = parsed_digest
+            record.source_artifact_hash_kind = "NORMALIZED_PARSED_JSON_SHA256"
+            record.source_record_index = index
+        all_recs += parsed
         detected.add(src)
     res = import_records(all_recs, memory, namespace=namespace, roles=roles,
-                         extract_mode=extract_mode, dry_run=dry_run)
+                         extract_mode=extract_mode, dry_run=dry_run, llm=llm)
     res.source = "+".join(sorted(detected)) if detected else "unknown"
     return res

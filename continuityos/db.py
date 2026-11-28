@@ -12,6 +12,7 @@ from typing import Any, Dict, Mapping, Optional
 
 DEFAULT_MEMORY_DB = "~/.continuityos/memory.db"
 CONTEXT_DIGEST_SCHEME = "sha256-canon-rules-logical-v1"
+SCOPED_CONTEXT_DIGEST_SCHEME = "sha256-canon-rules-scoped-v1"
 _CONTEXT_COLUMNS = (
     "id", "namespace", "text", "tags", "meta", "vec",
     "created_at", "updated_at", "key", "version",
@@ -116,13 +117,23 @@ def context_fingerprint(path: str) -> Dict[str, Any]:
 
 
 def context_identity(context) -> Dict[str, Any]:
-    """Fingerprint the exact live Memory/Continuity connection used by preflight."""
+    """Fingerprint the live connection and a scoped Continuity's rule selection.
+
+    Unscoped identities retain the original logical database fingerprint. A scoped
+    identity wraps that digest with both scope dimensions under a distinct scheme;
+    it is not an authorization to execute through an unscoped host.
+    """
+    from .continuity import Continuity, _scope_value
+
     memory = context.m if hasattr(context, "m") else context
     store = getattr(memory, "store", None)
     if store is None or not hasattr(store, "con"):
         raise TypeError(f"unsupported context type: {type(context).__name__}")
-    lock = getattr(store, "_lock", contextlib.nullcontext())
-    with lock:
+    with context_read_snapshot(context):
+        scope = None
+        if isinstance(context, Continuity):
+            scope = {"project": _scope_value(context.project, "project"),
+                     "subject": _scope_value(context.subject, "subject")}
         databases = store.con.execute("PRAGMA database_list").fetchall()
         main_file = next(
             (row[2] for row in databases if row[1] == "main"),
@@ -134,6 +145,17 @@ def context_identity(context) -> Dict[str, Any]:
             else ":memory:"
         )
         identity = _fingerprint_connection(store.con, path)
+        if scope is not None and any(value is not None for value in scope.values()):
+            binding = {
+                "scheme": SCOPED_CONTEXT_DIGEST_SCHEME,
+                "database_context_scheme": identity["scheme"],
+                "database_context_sha256": identity["context_sha256"],
+                "scope": scope,
+            }
+            encoded = json.dumps(binding, ensure_ascii=False, sort_keys=True,
+                                 separators=(",", ":"), allow_nan=False).encode("utf-8")
+            identity.update(binding)
+            identity["context_sha256"] = hashlib.sha256(encoded).hexdigest()
     source = getattr(context, "_context_source", None)
     if source:
         identity["source"] = source
@@ -165,10 +187,18 @@ def open_existing_context(path: str, *, source: str = ""):
 @contextlib.contextmanager
 def context_read_snapshot(context):
     """Hold one local lock and SQLite read snapshot across digest + evaluation."""
+    from .store import Store
+
     memory = context.m if hasattr(context, "m") else context
     store = getattr(memory, "store", None)
     if store is None or not hasattr(store, "con"):
         raise TypeError(f"unsupported context type: {type(context).__name__}")
+    if isinstance(store, Store):
+        # Preserve managed write exclusion, suspension and rollback recovery.
+        with store.read_snapshot():
+            yield
+        return
+    # Compatibility for callers that supply their own connection wrapper.
     lock = getattr(store, "_lock", contextlib.nullcontext())
     with lock:
         owns_transaction = not store.con.in_transaction

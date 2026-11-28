@@ -7,11 +7,55 @@ Setup:      cos setup (guided onboarding wizard)
 Serve:      cos serve (MCP stdio) | cos api (HTTP)
 """
 from __future__ import annotations
-import argparse, os, json, sys
+import argparse, os, json, sqlite3, sys
 from .memory import Memory
-from .continuity import Continuity
+from .embed import HashingEmbedder
+from .continuity import Continuity, LIFECYCLES
 from .twin import Twin
 from .db import resolve_memory_db
+
+
+def _scoped(parser):
+    parser.add_argument("--project", default=None, help="select this recorded project scope")
+    parser.add_argument("--subject", default=None, help="select this recorded subject scope")
+    return parser
+
+
+def _nonnegative(value):
+    value = int(value)
+    if value < 0:
+        raise argparse.ArgumentTypeError("must be non-negative")
+    return value
+
+
+def _positive(value):
+    value = int(value)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be positive")
+    return value
+
+
+def _snapshot_options(parser):
+    parser.add_argument("--json", dest="as_json", action="store_true")
+    parser.add_argument("--max-items", type=_nonnegative, default=None)
+    parser.add_argument("--max-bytes", type=_nonnegative, default=None,
+                        help="canonical payload UTF-8 budget; overflow returns HOLD")
+    return parser
+
+
+def _read_only_command(args):
+    if args.cmd == "import":
+        return args.dry_run
+    if args.cmd in {"doctor", "handoff", "predict", "alignment", "profile", "scan",
+                    "find", "recall", "namespaces", "compress", "rules"}:
+        return True
+    if args.cmd == "canon":
+        return not args.text
+    if args.cmd == "frontier":
+        return not (args.kind and args.item)
+    if args.cmd == "loop":
+        return args.close is None and not args.text
+    return False
 
 def _advocate_gate(m, t, action_text, label="next action"):
     """Auto devil's-advocate: challenge a consequential action before it lands.
@@ -59,12 +103,12 @@ def main(argv=None):
     im.add_argument("--extract",dest="distill",action="store_true",help="distill typed salient facts instead of raw turns")
     im.add_argument("--roles",default="user,human,memory",help="comma-separated roles to import (default: your own turns)")
     im.add_argument("--dry-run",dest="dry_run",action="store_true",help="report what would import, write nothing")
-    ru = s.add_parser("rules", help="Export canon+rules to agent configs (CLAUDE.md / AGENTS.md / .cursor/rules)")
+    ru = _scoped(s.add_parser("rules", help="Export current applicable recorded rules to agent configs"))
     ru.add_argument("--to", default="all", choices=["all","claude","agents","cursor"])
     ru.add_argument("--out", default=".", help="directory to write agent config files into")
     ru.add_argument("--stdout", action="store_true", help="print rendered rules instead of writing files")
     ru.add_argument("--dry-run", dest="dry_run", action="store_true")
-    s.add_parser("scan", help="SCAN: reload rule-attention before a critical action (long-session SRD mitigation)")
+    _scoped(s.add_parser("scan", help="Review current applicable recorded canon before an action"))
     us = s.add_parser("usage", help="RaaS metering: usage vs plan quota; set plan; simulate a metered call")
     us.add_argument("--key", default="local", help="billing key / customer id")
     us.add_argument("--set-plan", dest="set_plan", default=None, choices=["free","pro","team","enterprise"])
@@ -77,21 +121,27 @@ def main(argv=None):
     mm.add_argument("--from-memory", dest="from_memory", action="store_true", help="also mine your ContinuityOS memory")
     mm.add_argument("--out", default=None, help="write map markdown to this path (default: print)")
     s.add_parser("namespaces")
-    cn = s.add_parser("canon"); cn.add_argument("text", nargs="?");
-    fr = s.add_parser("frontier"); fr.add_argument("kind", nargs="?", choices=["trunk","cash","lab","parked"]); fr.add_argument("item", nargs="?")
-    lp = s.add_parser("loop"); lp.add_argument("text", nargs="?"); lp.add_argument("--close", type=int, default=None)
-    cp = s.add_parser("checkpoint"); cp.add_argument("--summary",required=True); cp.add_argument("--next",required=True,dest="nxt"); cp.add_argument("--proof",default="")
-    s.add_parser("doctor")
-    s.add_parser("handoff")
-    s.add_parser("boot")
-    bc = s.add_parser("close"); bc.add_argument("--summary",required=True); bc.add_argument("--next",required=True,dest="nxt"); bc.add_argument("--proof",default="")
+    cn = _scoped(s.add_parser("canon")); cn.add_argument("text", nargs="?");
+    fr = _scoped(s.add_parser("frontier")); fr.add_argument("kind", nargs="?", choices=["trunk","cash","lab","parked"]); fr.add_argument("item", nargs="?")
+    lp = _scoped(s.add_parser("loop")); lp.add_argument("text", nargs="?"); lp.add_argument("--close", type=_positive, default=None)
+    lp.add_argument("--result", default=""); lp.add_argument("--proof", default="")
+    cp = _scoped(s.add_parser("checkpoint")); cp.add_argument("--summary",required=True); cp.add_argument("--next",required=True,dest="nxt"); cp.add_argument("--proof",default="")
+    cp.add_argument("--lifecycle", choices=LIFECYCLES, default="ACTIVE")
+    dr = _scoped(s.add_parser("doctor")); dr.add_argument("--json", dest="as_json", action="store_true")
+    _snapshot_options(_scoped(s.add_parser("handoff")))
+    bt = _snapshot_options(_scoped(s.add_parser("boot")))
+    bt.add_argument("--check-updates", action="store_true")
+    bc = _scoped(s.add_parser("close")); bc.add_argument("--summary",required=True); bc.add_argument("--next",required=True,dest="nxt"); bc.add_argument("--proof",default="")
+    bc.add_argument("--lifecycle", choices=LIFECYCLES, default="ACTIVE")
     s.add_parser("compress")
     s.add_parser("serve")
     pa = s.add_parser("api"); pa.add_argument("--host",default="127.0.0.1"); pa.add_argument("--port",type=int,default=8077)
-    pr = s.add_parser("predict", help="Digital-twin: likely stance on a situation, grounded in recorded rules and precedent")
-    pr.add_argument("situation")
-    al = s.add_parser("alignment", help="Check a proposed action against canon/rules; flags conflicts with non-negotiable rules")
-    al.add_argument("action")
+    pr = _scoped(s.add_parser("predict", help="Retrieve current recorded evidence for a situation; no calibrated prediction"))
+    pr.add_argument("situation"); pr.add_argument("-k", type=_positive, default=5)
+    al = _scoped(s.add_parser("alignment", help="Review retrieved rule wording; semantic compatibility is unverified"))
+    al.add_argument("action"); al.add_argument("-k", type=_positive, default=6)
+    pf = _scoped(s.add_parser("profile", help="Show recorded profile evidence and coverage"))
+    pf.add_argument("-k", type=_positive, default=8)
     ad = s.add_parser("advocate", help="Devil's advocate: challenge a claim/action against memory+canon before acting")
     ad.add_argument("claim"); ad.add_argument("--action", action="store_true"); ad.add_argument("-n","--namespace",default=None); ad.add_argument("--record", action="store_true")
     au = s.add_parser("audit", help="Full-system audit: inventory + invariants (--devil = adversarial pass; --json = raw)")
@@ -122,6 +172,29 @@ def main(argv=None):
     sm.add_argument("--objective", default="test_metric")
     sm.add_argument("--iters", type=int, default=5)
     a = ap.parse_args(argv)
+
+    for name in ("project", "subject"):
+        value = getattr(a, name, None)
+        if value is not None and not value.strip():
+            ap.error(f"--{name} must be non-empty")
+    if a.cmd == "loop":
+        if a.close is not None and a.text is not None:
+            ap.error("loop text and --close cannot be combined")
+        if a.close is None and (a.result or a.proof):
+            ap.error("--result and --proof require --close")
+
+    if a.cmd == "boot":
+        from .boot import main as boot_main
+        boot_args = []
+        for name in ("db", "project", "subject", "max_items", "max_bytes"):
+            value = getattr(a, name)
+            if value is not None:
+                boot_args += ["--" + name.replace("_", "-"), str(value)]
+        if a.as_json:
+            boot_args.append("--json")
+        if a.check_updates:
+            boot_args.append("--check-updates")
+        return boot_main(boot_args)
 
     if a.cmd == "setup":
         from . import wizard
@@ -160,208 +233,238 @@ def main(argv=None):
             print(json.dumps(meter.charge(a.key, a.charge_event), ensure_ascii=False))
         print(json.dumps(meter.report(a.key), ensure_ascii=False, indent=2)); return 0
 
-    db = _db(a);
+    mode = os.environ.get("CONTINUITYOS_EMBEDDER", "").strip().lower()
+    if mode not in {"", "hash", "hashing", "offline", "local", "fast", "fastembed"}:
+        print("COS_EMBEDDER_POLICY_HOLD: UNSUPPORTED_EMBEDDER_MODE")
+        return 2
     try:
-        from .embedders import FastEmbedEmbedder
-        m = Memory(db, embedder=FastEmbedEmbedder())
-    except Exception:
-        m = Memory(db)
-    c = Continuity(memory=m)
-    t = Twin(memory=m)
-    if a.cmd == "remember":
-        tags=[t.strip() for t in a.tags.split(",") if t.strip()]
-        if a.key:
-            print("upserted #%d in [%s] key=%s" % (m.upsert(a.text,namespace=a.namespace,key=a.key,tags=tags), a.namespace, a.key))
-        else:
-            print("stored #%d in [%s]" % (m.remember(a.text,namespace=a.namespace,tags=tags), a.namespace))
-    elif a.cmd == "find":
-        hit = m.find(a.namespace, a.key)
-        print(json.dumps(hit.to_dict(), ensure_ascii=False, indent=2) if hit else "(not found)")
-    elif a.cmd == "recall":
-        as_of = None
-        if a.as_of:
-            import datetime as _dt
-            as_of = _dt.datetime.fromisoformat(a.as_of).timestamp()
-        for h in m.recall(a.query,k=a.k,namespace=a.namespace,as_of=as_of,
-                          current_only=a.current_only,mtype=a.mtype):
-            print("%.3f [%s] %s  (%s)" % (h.score,h.namespace,h.text,h.why))
-    elif a.cmd == "extract":
-        txt = a.text or sys.stdin.read()
-        from .extract import extract_and_store
-        ids = extract_and_store(txt, m, namespace=a.namespace)
-        print("stored %d candidate(s): %s" % (len(ids), ids))
-    elif a.cmd == "import":
-        from .adapters import import_path
-        roles = tuple(x.strip() for x in a.roles.split(",") if x.strip())
-        res = import_path(a.path, m, namespace=a.namespace, source=a.source,
-                          roles=roles, extract_mode=a.distill, dry_run=a.dry_run)
-        d = res.as_dict()
-        print("import [%s] %s%s: %d imported, %d dup, %d short (from %d msgs / %d conversations) -> ns [%s]" % (
-            d["source"], os.path.basename(a.path.rstrip("/\\")) or a.path,
-            " (dry-run)" if a.dry_run else "", d["imported"], d["skipped_dup"],
-            d["skipped_short"], d["messages_seen"], d["conversations"], a.namespace))
-        if res.ids:
-            print("  ids: %s%s" % (res.ids[:10], " ..." if len(res.ids) > 10 else ""))
-    elif a.cmd == "rules":
-        from .rules_export import export_rules
-        targets = ("claude","agents","cursor") if a.to == "all" else (a.to,)
-        res = export_rules(m, out_dir=a.out, targets=targets, dry_run=a.dry_run or a.stdout)
-        if a.stdout:
-            for tg in targets:
-                print("----- %s -----\n%s" % (tg, res["contents"][tg]))
-        else:
-            print("rules export: canon=%d rules=%d frontiers=%d -> %s" % (
-                res["canon"], res["rules"], res["frontiers"],
-                ", ".join(res["written"]) or "(dry-run)"))
-    elif a.cmd == "moneymap":
-        from .monetization import build as _build_mm, render_map_md as _render_mm
-        mp = _build_mm(paths=[os.path.expanduser(x) for x in a.sources] or None,
-                       memory=m if a.from_memory else None)
-        md = _render_mm(mp)
-        if a.out:
-            open(os.path.expanduser(a.out), "w", encoding="utf-8").write(md)
-            print("money map: %d offers from %d file(s) -> %s" % (mp["count"], mp.get("files_scanned", 0), a.out))
-        else:
-            print(md)
-    elif a.cmd == "namespaces":
-        print(json.dumps(m.namespaces(),ensure_ascii=False,indent=2))
-    elif a.cmd == "canon":
-        if a.text: print("canon #%d" % c.add_canon(a.text))
-        else:
-            for r in c._dump("canon"): print("- "+r["text"])
-    elif a.cmd == "frontier":
-        if a.kind and a.item: print("set %s -> %s (#%d)" % (a.kind,a.item,c.set_frontier(a.kind,a.item)))
-        else: print(json.dumps(c.frontiers(),ensure_ascii=False,indent=2))
-    elif a.cmd == "loop":
-        if a.close is not None: c.close_loop(a.close); print("closed loop #%d" % a.close)
-        elif a.text: print("loop #%d opened" % c.add_loop(a.text))
-        else:
-            for l in c.open_loops(): print("[#%d] %s" % (l["id"],l["text"]))
-    elif a.cmd == "checkpoint":
-        _advocate_gate(m, t, a.nxt)
-        print("checkpoint #%d" % c.checkpoint(summary=a.summary,next_action=a.nxt,proof=a.proof))
-    elif a.cmd == "doctor":
-        d=c.doctor(); print("%s  %d/%d" % ("healthy" if d["healthy"] else "drift", d["passed"], d["total"]))
-        for ch in d["checks"]: print("  %s %s — %s" % ("ok" if ch["ok"] else "x", ch["check"], ch["detail"]))
-    elif a.cmd == "scan":
-        canon = [r["text"] for r in c._dump("canon")]
-        print("SCAN — reload attention to your rules before the next critical action.")
-        print("Generate 100-300 tokens answering these (long-session research: omission-rules decay by ~turn 10):")
-        print("  1. Which 3 of your canon rules are EASIEST to violate in the current task?")
-        print("  2. Which single 'never do X' rule must you NOT forget right now, and why?")
-        print("  3. Restate your current [ROLE] and [COMMITMENT] in one line each.")
-        print("\ncanon (%d):" % len(canon))
-        for i, r in enumerate(canon[:12], 1):
-            print("  %d. %s" % (i, r))
-    elif a.cmd == "handoff":
-        print(c.handoff())
-    elif a.cmd == "boot":
-        print(c.handoff()); print("\n--- doctor ---")
-        d=c.doctor(); print("%s %d/%d" % ("OK" if d["healthy"] else "DRIFT", d["passed"], d["total"]))
-        for ch in d["checks"]:
-            if not ch["ok"]: print("  ! %s — %s" % (ch["check"], ch["detail"]))
-        try:
-            from . import updater
-            u = updater.check()
-            if u.get("update_available"):
-                print("\n[update] %s -> %s available  (run: cos update)" % (u["current"], u["latest"]))
-        except Exception:
-            pass
-        print("\n[advocate armed] consequential moves get challenged before they land (anti-sycophancy / bliss-attractor guard) - cos advocate \"<claim>\"")
-    elif a.cmd == "close":
-        _advocate_gate(m, t, a.nxt)
-        cid=c.checkpoint(summary=a.summary, next_action=a.nxt, proof=a.proof)
-        print("checkpoint #%d" % cid); d=c.doctor()
-        print("doctor: %s %d/%d" % ("OK" if d["healthy"] else "DRIFT", d["passed"], d["total"]))
-    elif a.cmd == "compress":
-        print("namespace sizes (compress candidates):")
-        for ns in m.namespaces(): print("  %-12s %d" % (ns["namespace"], ns["count"]))
-        ol=c.open_loops()
-        print("open loops: %d (close stale ones with: cos loop --close <id>)" % len(ol))
-    elif a.cmd == "predict":
-        print(json.dumps(t.predict(a.situation), ensure_ascii=False, indent=2))
-    elif a.cmd == "alignment":
-        print(json.dumps(t.alignment(a.action), ensure_ascii=False, indent=2))
-    elif a.cmd == "advocate":
-        from .advocate import DevilsAdvocate
-        da = DevilsAdvocate(m, t); r = da.challenge(a.claim, action=a.action, namespace=a.namespace)
-        if a.record: da.record(r)
-        print(da.render(r))
-    elif a.cmd == "audit":
-        from .audit import SystemAudit
-        sa = SystemAudit(m, c, t); rep = sa.run(devil=a.devil)
-        if getattr(a, "export", None) == "article12":
-            print(json.dumps(sa.export_article12(rep), ensure_ascii=False, indent=2))
-        elif a.as_json:
-            print(json.dumps(rep, ensure_ascii=False, indent=2))
-        else:
-            print(sa.render(rep))
-    elif a.cmd in ("bus","a2a"):
-        from . import bus as _bus
-        if a.bus_cmd == "token":
-            print(_bus.mint_token(a.secret, a.sub, a.scope))
-        else:
-            httpd = _bus.serve(m, secret=a.secret, host=a.host, port=a.port, twin=t, continuity=c)
-            print("cos bus serving on http://%s:%d  (scopes: read|write; Ctrl-C to stop)" % (a.host, a.port))
-            try: httpd.serve_forever()
-            except KeyboardInterrupt: httpd.shutdown()
-    elif a.cmd == "epoch":
-        from .epochgraph import EpochGraph
-        g = EpochGraph(m)
-        if a.epoch_cmd == "commit":
-            metrics = {}
-            for kv in a.metric:
-                if "=" in kv:
-                    k, v = kv.split("=", 1)
-                    try: metrics[k] = float(v)
-                    except ValueError: metrics[k] = v
-            cid = g.commit(a.branch or "main", a.label, metrics)
-            print("epoch commit #%d on [%s]: %s %s" % (cid, a.branch or "main", a.label, metrics or ""))
-        elif a.epoch_cmd == "branch":
-            if not a.branch: print("usage: cos epoch branch -b <new_branch> [--from <src>]"); return 2
-            bid = g.branch(a.branch, a.from_branch)
-            print("branched [%s] from [%s] (#%d)" % (a.branch, a.from_branch, bid))
-        elif a.epoch_cmd == "log":
-            for c in g.log(a.branch):
-                print("* #%d [%s] epoch %d - %s %s" % (c["id"], c["branch"], c["epoch"], c["label"], c.get("metrics", "")))
-        elif a.epoch_cmd == "graph":
-            G = g.to_graph()
+        db = _db(a)
+        import_preview = a.cmd == "import" and a.dry_run
+        read_only = _read_only_command(a)
+        if import_preview and (db == ":memory:" or not os.path.exists(db)):
+            # A preview may need an empty store for extraction deduplication;
+            # keep it entirely in memory and leave the chosen target untouched.
+            db, read_only = ":memory:", False
+        embedder = HashingEmbedder()
+        if mode in {"fast", "fastembed"} and not import_preview:
+            try:
+                from .embedders import FastEmbedEmbedder
+                embedder = FastEmbedEmbedder()
+            except Exception:
+                pass  # Retain the legacy local fallback after an explicit opt-in.
+        m = Memory(db, embedder=embedder, read_only=read_only)
+    except Exception as exc:
+        print("COS_MEMORY_HOLD: MEMORY_OPEN_FAILED (%s)" % type(exc).__name__)
+        return 2
+    try:
+        scope = {"project": getattr(a, "project", None), "subject": getattr(a, "subject", None)}
+        c = Continuity(memory=m, **scope)
+        t = Twin(memory=m, **scope)
+        if a.cmd == "remember":
+            tags=[t.strip() for t in a.tags.split(",") if t.strip()]
+            if a.key:
+                print("upserted #%d in [%s] key=%s" % (m.upsert(a.text,namespace=a.namespace,key=a.key,tags=tags), a.namespace, a.key))
+            else:
+                print("stored #%d in [%s]" % (m.remember(a.text,namespace=a.namespace,tags=tags), a.namespace))
+        elif a.cmd == "find":
+            hit = m.find(a.namespace, a.key)
+            print(json.dumps(hit.to_dict(), ensure_ascii=False, indent=2) if hit else "(not found)")
+        elif a.cmd == "recall":
+            as_of = None
+            if a.as_of:
+                import datetime as _dt
+                as_of = _dt.datetime.fromisoformat(a.as_of).timestamp()
+            for h in m.recall(a.query,k=a.k,namespace=a.namespace,as_of=as_of,
+                              current_only=a.current_only,mtype=a.mtype):
+                print("%.3f [%s] %s  (%s)" % (h.score,h.namespace,h.text,h.why))
+        elif a.cmd == "extract":
+            txt = a.text or sys.stdin.read()
+            from .extract import extract_and_store
+            ids = extract_and_store(txt, m, namespace=a.namespace)
+            print("stored %d candidate(s): %s" % (len(ids), ids))
+        elif a.cmd == "import":
+            from .adapters import import_path
+            roles = tuple(x.strip() for x in a.roles.split(",") if x.strip())
+            try:
+                res = import_path(a.path, m, namespace=a.namespace, source=a.source,
+                                  roles=roles, extract_mode=a.distill, dry_run=a.dry_run)
+            except sqlite3.DatabaseError:
+                if not a.dry_run:
+                    raise
+                # An existing schema that cannot support preview deduplication
+                # must not be migrated or replaced by an empty-store estimate.
+                print("COS_IMPORT_HOLD: READ_ONLY_PREVIEW_UNAVAILABLE")
+                return 2
+            d = res.as_dict()
+            print("import [%s] %s%s: %d imported, %d dup, %d short (from %d msgs / %d conversations) -> ns [%s]" % (
+                d["source"], os.path.basename(a.path.rstrip("/\\")) or a.path,
+                " (dry-run)" if a.dry_run else "", d["imported"], d["skipped_dup"],
+                d["skipped_short"], d["messages_seen"], d["conversations"], a.namespace))
+            if res.ids:
+                print("  ids: %s%s" % (res.ids[:10], " ..." if len(res.ids) > 10 else ""))
+        elif a.cmd == "rules":
+            from .rules_export import export_rules
+            targets = ("claude","agents","cursor") if a.to == "all" else (a.to,)
+            res = export_rules(m, out_dir=a.out, targets=targets, dry_run=a.dry_run or a.stdout,
+                               project=a.project, subject=a.subject)
+            if a.stdout:
+                for tg in targets:
+                    print("----- %s -----\n%s" % (tg, res["contents"][tg]))
+            else:
+                print("rules export: canon=%d rules=%d frontiers=%d -> %s" % (
+                    res["canon"], res["rules"], res["frontiers"],
+                    ", ".join(res["written"]) or "(dry-run)"))
+        elif a.cmd == "moneymap":
+            from .monetization import build as _build_mm, render_map_md as _render_mm
+            mp = _build_mm(paths=[os.path.expanduser(x) for x in a.sources] or None,
+                           memory=m if a.from_memory else None)
+            md = _render_mm(mp)
             if a.out:
-                json.dump(G, open(a.out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-                print("wrote %s (%d nodes, %d edges, branches: %s)" % (a.out, len(G["nodes"]), len(G["edges"]), G["branches"]))
+                open(os.path.expanduser(a.out), "w", encoding="utf-8").write(md)
+                print("money map: %d offers from %d file(s) -> %s" % (mp["count"], mp.get("files_scanned", 0), a.out))
             else:
-                print(json.dumps(G, ensure_ascii=False, indent=2))
-    elif a.cmd == "scout":
-        from .frontier import FrontierDesk, DOMAINS
-        fd = FrontierDesk(m)
-        if a.scout_cmd == "signal":
-            if not a.title: print("usage: cos scout signal -d <domain> -s <source> -t <title> [-a asym -l level --horizon]"); return 2
-            sid = fd.signal(a.domain, a.source, a.title, a.asymmetry, a.level, a.horizon, a.decision)
-            print("frontier signal #%d [%s]: %s" % (sid, a.domain, a.title))
-        elif a.scout_cmd == "watch":
-            print("watch-domains:")
-            for k, v in DOMAINS.items(): print("  %-12s %s" % (k, v))
-        elif a.scout_cmd == "digest":
-            print(fd.render(fd.digest()))
-    elif a.cmd == "ledger":
-        from . import ledger_server as _ls
-        if a.ledger_cmd == "token":
-            print(_ls.mint_token(a.secret, a.sub, a.scope))
-        elif a.ledger_cmd == "serve":
-            httpd = _ls.serve(a.path, a.secret, a.host, a.port)
-            print("cos ledger serving on http://%s:%d (path %s; scopes read|write; Ctrl-C to stop)" % (a.host, a.port, a.path))
-            try: httpd.serve_forever()
-            except KeyboardInterrupt: httpd.shutdown()
-        else:
-            if a.url:
-                import urllib.request as _u
-                _p = "/ledger/verify" if a.ledger_cmd == "verify" else "/ledger/export?limit=%d" % a.limit
-                _req = _u.Request(a.url.rstrip("/") + _p, headers={"Authorization": "Bearer " + (a.token or "")})
-                print(_u.urlopen(_req, timeout=5).read().decode())
+                print(md)
+        elif a.cmd == "namespaces":
+            print(json.dumps(m.namespaces(),ensure_ascii=False,indent=2))
+        elif a.cmd == "canon":
+            if a.text: print("canon #%d" % c.add_canon(a.text))
             else:
-                from .gate.ledger import Ledger
-                _led = Ledger(a.path)
-                print(json.dumps(_led.verify() if a.ledger_cmd == "verify" else {"events": _led.export(a.limit)}, ensure_ascii=False, indent=2))
+                for r in c.canon(): print("- "+r["text"])
+        elif a.cmd == "frontier":
+            if a.kind and a.item: print("set %s -> %s (#%d)" % (a.kind,a.item,c.set_frontier(a.kind,a.item)))
+            else: print(json.dumps(c.frontiers(),ensure_ascii=False,indent=2))
+        elif a.cmd == "loop":
+            if a.close is not None:
+                if not c.close_loop(a.close, result=a.result, proof=a.proof):
+                    print("COS_LOOP_HOLD: LOOP_NOT_FOUND_OR_OUTSIDE_SCOPE")
+                    return 2
+                print("closed loop #%d" % a.close)
+            elif a.text: print("loop #%d opened" % c.add_loop(a.text))
+            else:
+                for l in c.open_loops(): print("[#%d] %s" % (l["id"],l["text"]))
+        elif a.cmd == "checkpoint":
+            _advocate_gate(m, t, a.nxt)
+            print("checkpoint #%d" % c.checkpoint(summary=a.summary,next_action=a.nxt,proof=a.proof,lifecycle=a.lifecycle))
+        elif a.cmd == "doctor":
+            d = c.doctor()
+            if a.as_json:
+                print(json.dumps(d, ensure_ascii=False, indent=2))
+            else:
+                print("%s  %d/%d" % ("healthy" if d["healthy"] else "drift", d["passed"], d["total"]))
+                for ch in d["checks"]: print("  %s %s — %s" % ("ok" if ch["ok"] else "x", ch["check"], ch["detail"]))
+        elif a.cmd == "scan":
+            canon = [r["text"] for r in c.canon()]
+            print("SCAN — reload attention to your rules before the next critical action.")
+            print("Review these questions against the current applicable records:")
+            print("  1. Which 3 of your canon rules are EASIEST to violate in the current task?")
+            print("  2. Which single 'never do X' rule must you NOT forget right now, and why?")
+            print("  3. Restate your current [ROLE] and [COMMITMENT] in one line each.")
+            print("\ncanon (%d):" % len(canon))
+            for i, r in enumerate(canon, 1):
+                print("  %d. %s" % (i, r))
+        elif a.cmd == "handoff":
+            snapshot = c.handoff_snapshot(max_items=a.max_items, max_bytes=a.max_bytes)
+            print(json.dumps(snapshot, ensure_ascii=False, indent=2) if a.as_json else c.render_handoff(snapshot))
+            return 0 if snapshot["complete"] else 2
+        elif a.cmd == "close":
+            _advocate_gate(m, t, a.nxt)
+            cid=c.checkpoint(summary=a.summary, next_action=a.nxt, proof=a.proof,lifecycle=a.lifecycle)
+            print("checkpoint #%d" % cid); d=c.doctor()
+            print("doctor: %s %d/%d" % ("OK" if d["healthy"] else "DRIFT", d["passed"], d["total"]))
+        elif a.cmd == "compress":
+            print("namespace sizes (compress candidates):")
+            for ns in m.namespaces(): print("  %-12s %d" % (ns["namespace"], ns["count"]))
+            ol=c.open_loops()
+            print("open loops: %d (close stale ones with: cos loop --close <id>)" % len(ol))
+        elif a.cmd == "predict":
+            print(json.dumps(t.predict(a.situation, k=a.k), ensure_ascii=False, indent=2))
+        elif a.cmd == "alignment":
+            print(json.dumps(t.alignment(a.action, k=a.k), ensure_ascii=False, indent=2))
+        elif a.cmd == "profile":
+            print(json.dumps(t.profile(k=a.k), ensure_ascii=False, indent=2))
+        elif a.cmd == "advocate":
+            from .advocate import DevilsAdvocate
+            da = DevilsAdvocate(m, t); r = da.challenge(a.claim, action=a.action, namespace=a.namespace)
+            if a.record: da.record(r)
+            print(da.render(r))
+        elif a.cmd == "audit":
+            from .audit import SystemAudit
+            sa = SystemAudit(m, c, t); rep = sa.run(devil=a.devil)
+            if getattr(a, "export", None) == "article12":
+                print(json.dumps(sa.export_article12(rep), ensure_ascii=False, indent=2))
+            elif a.as_json:
+                print(json.dumps(rep, ensure_ascii=False, indent=2))
+            else:
+                print(sa.render(rep))
+        elif a.cmd in ("bus","a2a"):
+            from . import bus as _bus
+            if a.bus_cmd == "token":
+                print(_bus.mint_token(a.secret, a.sub, a.scope))
+            else:
+                httpd = _bus.serve(m, secret=a.secret, host=a.host, port=a.port, twin=t, continuity=c)
+                print("cos bus serving on http://%s:%d  (scopes: read|write; Ctrl-C to stop)" % (a.host, a.port))
+                try: httpd.serve_forever()
+                except KeyboardInterrupt: httpd.shutdown()
+        elif a.cmd == "epoch":
+            from .epochgraph import EpochGraph
+            g = EpochGraph(m)
+            if a.epoch_cmd == "commit":
+                metrics = {}
+                for kv in a.metric:
+                    if "=" in kv:
+                        k, v = kv.split("=", 1)
+                        try: metrics[k] = float(v)
+                        except ValueError: metrics[k] = v
+                cid = g.commit(a.branch or "main", a.label, metrics)
+                print("epoch commit #%d on [%s]: %s %s" % (cid, a.branch or "main", a.label, metrics or ""))
+            elif a.epoch_cmd == "branch":
+                if not a.branch: print("usage: cos epoch branch -b <new_branch> [--from <src>]"); return 2
+                bid = g.branch(a.branch, a.from_branch)
+                print("branched [%s] from [%s] (#%d)" % (a.branch, a.from_branch, bid))
+            elif a.epoch_cmd == "log":
+                for c in g.log(a.branch):
+                    print("* #%d [%s] epoch %d - %s %s" % (c["id"], c["branch"], c["epoch"], c["label"], c.get("metrics", "")))
+            elif a.epoch_cmd == "graph":
+                G = g.to_graph()
+                if a.out:
+                    json.dump(G, open(a.out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+                    print("wrote %s (%d nodes, %d edges, branches: %s)" % (a.out, len(G["nodes"]), len(G["edges"]), G["branches"]))
+                else:
+                    print(json.dumps(G, ensure_ascii=False, indent=2))
+        elif a.cmd == "scout":
+            from .frontier import FrontierDesk, DOMAINS
+            fd = FrontierDesk(m)
+            if a.scout_cmd == "signal":
+                if not a.title: print("usage: cos scout signal -d <domain> -s <source> -t <title> [-a asym -l level --horizon]"); return 2
+                sid = fd.signal(a.domain, a.source, a.title, a.asymmetry, a.level, a.horizon, a.decision)
+                print("frontier signal #%d [%s]: %s" % (sid, a.domain, a.title))
+            elif a.scout_cmd == "watch":
+                print("watch-domains:")
+                for k, v in DOMAINS.items(): print("  %-12s %s" % (k, v))
+            elif a.scout_cmd == "digest":
+                print(fd.render(fd.digest()))
+        elif a.cmd == "ledger":
+            from . import ledger_server as _ls
+            if a.ledger_cmd == "token":
+                print(_ls.mint_token(a.secret, a.sub, a.scope))
+            elif a.ledger_cmd == "serve":
+                httpd = _ls.serve(a.path, a.secret, a.host, a.port)
+                print("cos ledger serving on http://%s:%d (path %s; scopes read|write; Ctrl-C to stop)" % (a.host, a.port, a.path))
+                try: httpd.serve_forever()
+                except KeyboardInterrupt: httpd.shutdown()
+            else:
+                if a.url:
+                    import urllib.request as _u
+                    _p = "/ledger/verify" if a.ledger_cmd == "verify" else "/ledger/export?limit=%d" % a.limit
+                    _req = _u.Request(a.url.rstrip("/") + _p, headers={"Authorization": "Bearer " + (a.token or "")})
+                    print(_u.urlopen(_req, timeout=5).read().decode())
+                else:
+                    from .gate.ledger import Ledger
+                    _led = Ledger(a.path)
+                    print(json.dumps(_led.verify() if a.ledger_cmd == "verify" else {"events": _led.export(a.limit)}, ensure_ascii=False, indent=2))
+        return 0
+    finally:
+        m.store.con.close()
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

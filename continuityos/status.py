@@ -10,6 +10,7 @@ import argparse
 from datetime import datetime, timezone
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import sqlite3
@@ -17,6 +18,8 @@ import time
 from typing import Any, Mapping, Sequence
 
 from .db import _fingerprint_connection, resolve_memory_db
+from .continuity import (Continuity, _current_record, _matches_scope, _scope_value,
+                         _unreviewed_record, assess_continuity_health)
 
 SCHEMA = "continuityos.product_status/v1"
 
@@ -68,11 +71,21 @@ def _json_value(raw: str, expected: type, default: Any) -> Any:
     return value if isinstance(value, expected) else default
 
 
-def _dump(con: sqlite3.Connection, namespace: str) -> list[dict[str, Any]]:
+def _record_meta(raw: str, record_id: int) -> dict[str, Any]:
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"INVALID_RECORD_METADATA:{record_id}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"INVALID_RECORD_METADATA:{record_id}")
+    return value
+
+
+def _dump(con: sqlite3.Connection, namespace: str | None) -> list[dict[str, Any]]:
     rows = con.execute(
-        "SELECT id,text,namespace,tags,meta FROM items "
-        "WHERE namespace=? AND vec IS NOT NULL ORDER BY id",
-        (namespace,),
+        "SELECT id,text,namespace,tags,meta,created_at FROM items "
+        "WHERE vec IS NOT NULL " + ("AND namespace=? " if namespace is not None else "") + "ORDER BY id",
+        (namespace,) if namespace is not None else (),
     ).fetchall()
     return [
         {
@@ -80,39 +93,35 @@ def _dump(con: sqlite3.Connection, namespace: str) -> list[dict[str, Any]]:
             "text": row["text"],
             "namespace": row["namespace"],
             "tags": _json_value(row["tags"], list, []),
-            "meta": _json_value(row["meta"], dict, {}),
+            "meta": _record_meta(row["meta"], row["id"]),
+            "created_at": row["created_at"],
         }
         for row in rows
     ]
 
 
 def _frontiers(rows: Sequence[Mapping[str, Any]]) -> dict[str, str]:
-    latest: dict[str, Mapping[str, Any]] = {}
-    for row in rows:
-        meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
-        tags = row.get("tags") if isinstance(row.get("tags"), list) else []
-        kind = meta.get("kind") or (tags[0] if tags else "parked")
-        ts = meta.get("ts", 0)
-        current = latest.get(str(kind))
-        current_meta = current.get("meta") if current and isinstance(current.get("meta"), dict) else {}
-        if current is None or ts >= current_meta.get("ts", 0):
-            latest[str(kind)] = row
-    return {kind: str(row.get("text", "")) for kind, row in latest.items()}
+    return {row["meta"].get("kind") or (row["tags"][0] if row["tags"] else "parked"): row["text"]
+            for row in Continuity._latest_frontiers(list(rows))}
 
 
 def _checkpoint(last: Mapping[str, Any] | None, now: float) -> dict[str, Any] | None:
     if not last:
         return None
     meta = last.get("meta") if isinstance(last.get("meta"), dict) else {}
-    ts = meta.get("ts")
-    age_seconds = max(0.0, now - float(ts)) if isinstance(ts, (int, float)) else None
+    ts = meta.get("ts", last.get("created_at"))
+    valid_ts = isinstance(ts, (int, float)) and not isinstance(ts, bool) and math.isfinite(ts)
+    age_seconds = now - ts if valid_ts else None
+    proof = meta.get("proof")
     return {
         "id": last.get("id"),
-        "recorded_at": datetime.fromtimestamp(float(ts), timezone.utc).isoformat() if isinstance(ts, (int, float)) else None,
+        "recorded_at": datetime.fromtimestamp(ts, timezone.utc).isoformat() if valid_ts else None,
         "age_seconds": age_seconds,
         "summary": meta.get("summary"),
         "next_action": meta.get("next"),
-        "proof_present": bool(meta.get("proof")),
+        "proof_present": isinstance(proof, str) and bool(proof.strip()),
+        "proof_verification": "NOT_PERFORMED",
+        "lifecycle": meta.get("lifecycle", "ACTIVE"),
     }
 
 
@@ -128,7 +137,9 @@ def _sidecar_state(db_path: str) -> dict[str, int]:
     return result
 
 
-def _immutable_snapshot(db_path: str) -> dict[str, Any]:
+def _immutable_snapshot(db_path: str, *, project: str | None = None,
+                        subject: str | None = None, max_open_loops: int = 7,
+                        checkpoint_stale_hours: float = 48) -> dict[str, Any]:
     """Read one quiescent SQLite image with immutable=1 so status cannot create sidecars."""
     before_sidecars = _sidecar_state(db_path)
     if any(before_sidecars.values()):
@@ -153,10 +164,7 @@ def _immutable_snapshot(db_path: str) -> dict[str, Any]:
             {"namespace": row["namespace"], "count": row["n"]}
             for row in namespace_rows
         ]
-        canon = _dump(con, "canon")
-        frontier_rows = _dump(con, "frontier")
-        loops = _dump(con, "loop")
-        checkpoints = _dump(con, "checkpoint")
+        all_rows = _dump(con, None)
     finally:
         con.close()
 
@@ -167,48 +175,39 @@ def _immutable_snapshot(db_path: str) -> dict[str, Any]:
     if (before_stat.st_size, before_stat.st_mtime_ns) != (after_stat.st_size, after_stat.st_mtime_ns):
         raise _NonQuiescentMemory("memory database changed during immutable status read")
 
-    frontiers = _frontiers(frontier_rows)
+    now = time.time()
+    scope = {"project": _scope_value(project, "project"), "subject": _scope_value(subject, "subject")}
+    scoped_rows = [row for row in all_rows if _matches_scope(row["meta"], scope)]
+    def current(namespace: str) -> list[dict[str, Any]]:
+        return [row for row in all_rows if row["namespace"] == namespace
+                and _matches_scope(row["meta"], scope, include_global=namespace == "canon")
+                and _current_record(row["meta"], row["created_at"], now)
+                and not _unreviewed_record(row["meta"])]
+
+    canon = current("canon")
+    frontiers = _frontiers(current("frontier"))
+    loops = [row for row in current("loop") if not Continuity._closed(row)]
     last = max(
-        checkpoints,
-        key=lambda row: (row.get("meta") or {}).get("ts", 0),
+        current("checkpoint"),
+        key=lambda row: (row["meta"].get("ts", 0), row["id"]),
         default=None,
     )
-    now = time.time()
     checkpoint = _checkpoint(last, now)
-
-    checks: list[dict[str, Any]] = []
-    def chk(ok: object, name: str, detail: str) -> None:
-        checks.append({"ok": bool(ok), "check": name, "detail": detail})
-
-    chk("cash" in frontiers, "cash_frontier_set", frontiers.get("cash", "— not set"))
-    chk("trunk" in frontiers, "trunk_set", frontiers.get("trunk", "— not set"))
-    chk(len(loops) <= 7, "open_loops_bounded", f"{len(loops)} open (max 7)")
-    if checkpoint:
-        age_h = float(checkpoint.get("age_seconds") or 0.0) / 3600
-        chk(age_h <= 48, "checkpoint_fresh", f"{age_h:.1f}h old")
-        chk(checkpoint.get("proof_present"), "has_proof", "proof present" if checkpoint.get("proof_present") else "— no proof")
-    else:
-        chk(False, "checkpoint_fresh", "no checkpoint yet")
-        chk(False, "has_proof", "no checkpoint yet")
-    chk(memory_count > 0, "memory_persists", f"{memory_count} memories")
-    chk(len(canon) > 0, "identity_persists", "canon present" if canon else "— no canon")
-    chk(len(loops) > 0, "purpose_persists", f"{len(loops)} open loop(s)")
-    passed = sum(1 for check in checks if check["ok"])
+    doctor = assess_continuity_health(
+        memory_count=len(scoped_rows), canon_count=len(canon), frontiers=frontiers,
+        loops=loops, last_checkpoint=last, now=now, max_open_loops=max_open_loops,
+        checkpoint_stale_hours=checkpoint_stale_hours, scope=scope)
 
     return {
         "identity": identity,
         "memory_count": memory_count,
+        "scoped_memory_count": len(scoped_rows),
         "namespaces": namespaces,
         "canon_count": len(canon),
         "frontiers": frontiers,
         "loops": loops,
         "checkpoint": checkpoint,
-        "doctor": {
-            "healthy": passed == len(checks),
-            "passed": passed,
-            "total": len(checks),
-            "checks": checks,
-        },
+        "doctor": doctor,
     }
 
 
@@ -227,7 +226,9 @@ def _client_statuses(db_path: str) -> list[dict[str, Any]]:
     return result
 
 
-def collect(db: str | None = None) -> tuple[dict[str, Any], int]:
+def collect(db: str | None = None, *, project: str | None = None,
+            subject: str | None = None, max_open_loops: int = 7,
+            checkpoint_stale_hours: float = 48) -> tuple[dict[str, Any], int]:
     try:
         resolved = resolve_memory_db(db)
     except Exception as exc:
@@ -254,7 +255,9 @@ def collect(db: str | None = None) -> tuple[dict[str, Any], int]:
         }, 2)
 
     try:
-        snapshot = _immutable_snapshot(db_path)
+        snapshot = _immutable_snapshot(db_path, project=project, subject=subject,
+                                       max_open_loops=max_open_loops,
+                                       checkpoint_stale_hours=checkpoint_stale_hours)
         clients = _client_statuses(db_path)
     except _NonQuiescentMemory as exc:
         return ({
@@ -300,7 +303,7 @@ def collect(db: str | None = None) -> tuple[dict[str, Any], int]:
     continuity_state = "HEALTHY" if doctor.get("healthy") else "ATTENTION"
     advocate_available = importlib.util.find_spec("continuityos.advocate") is not None
     governance_state = "ARMED" if canon_count > 0 and advocate_available else "UNCONFIGURED"
-    next_action = checkpoint.get("next_action") if checkpoint else None
+    next_action = checkpoint.get("next_action") if checkpoint and doctor["lifecycle"] == "ACTIVE" else None
 
     value = {
         "schema": SCHEMA,
@@ -311,12 +314,20 @@ def collect(db: str | None = None) -> tuple[dict[str, Any], int]:
             "path": _canon_path(db_path),
             "source": resolved["source"],
             "count": snapshot["memory_count"],
+            "scoped_count": snapshot["scoped_memory_count"],
             "namespaces": snapshot["namespaces"],
             "context_sha256": snapshot["identity"].get("context_sha256"),
             "snapshot_mode": "sqlite-immutable-quiescent",
         },
         "continuity": {
             "state": continuity_state,
+            "lifecycle": doctor["lifecycle"],
+            "scope": doctor["scope"],
+            "policy": {"max_open_loops": max_open_loops,
+                       "checkpoint_stale_hours": checkpoint_stale_hours,
+                       "kind": "CALLER_POLICY_NOT_UNIVERSAL_THRESHOLD"},
+            "proof_verification": doctor["proof_verification"],
+            "authority_granted": False,
             "passed": doctor.get("passed"),
             "total": doctor.get("total"),
             "checks": doctor.get("checks", []),
@@ -380,6 +391,7 @@ def _render(value: Mapping[str, Any], *, verbose: bool = False) -> str:
     else:
         lines.append("Last state  never")
     lines.append(f"Open loops  {continuity['open_loop_count']}")
+    lines.append(f"Lifecycle   {continuity['lifecycle']}  scope={json.dumps(continuity['scope'], ensure_ascii=False, sort_keys=True)}")
     lines.append(f"Next action {continuity.get('next_action') or '—'}")
 
     client_bits = []
@@ -419,9 +431,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--db", default=None, help="existing ContinuityOS memory DB")
     parser.add_argument("--json", action="store_true", dest="as_json")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--project", default=None)
+    parser.add_argument("--subject", default=None)
+    parser.add_argument("--max-open-loops", type=int, default=7)
+    parser.add_argument("--checkpoint-stale-hours", type=float, default=48)
     args = parser.parse_args(list(argv) if argv is not None else None)
 
-    value, code = collect(args.db)
+    value, code = collect(args.db, project=args.project, subject=args.subject,
+                           max_open_loops=args.max_open_loops,
+                           checkpoint_stale_hours=args.checkpoint_stale_hours)
     if args.as_json:
         print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
     else:
