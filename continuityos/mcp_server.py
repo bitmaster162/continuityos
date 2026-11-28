@@ -27,6 +27,20 @@ from . import __version__
 PROTOCOL = "2024-11-05"
 _PRODUCT_LEDGER = _Ledger
 
+_CONTEXT_SCOPE_PROPERTIES = {
+    "project": {"type": "string", "minLength": 1,
+                "description": "Exact context project. Selects records, not access authority."},
+    "subject": {"type": "string", "minLength": 1,
+                "description": "Exact context subject. Selects records, not authenticated identity."},
+}
+_CONTEXT_SNAPSHOT_PROPERTIES = {
+    **_CONTEXT_SCOPE_PROPERTIES,
+    "max_items": {"type": "integer", "minimum": 0,
+                  "description": "Optional complete snapshot budget. Overflow returns HOLD without partial context."},
+    "max_bytes": {"type": "integer", "minimum": 0,
+                  "description": "Optional canonical UTF-8 snapshot payload budget. Overflow returns HOLD."},
+}
+
 
 def _build_windows_r15_monotonic_anchor(**kwargs):
     # Lazy import keeps ordinary R14/non-Windows product startup unchanged.
@@ -65,18 +79,18 @@ TOOLS = [
   "inputSchema":{"type":"object","properties":{"query":{"type":"string"},"k":{"type":"integer","default":6}},"required":["query"]}},
  {"name":"list_namespaces","description":"List folder-like namespaces and how many memories each holds.",
   "inputSchema":{"type":"object","properties":{}}} ,
- {"name":"checkpoint","description":"Close a session: record a delta, the next irreversible action, and a proof artifact path.",
-  "inputSchema":{"type":"object","properties":{"summary":{"type":"string"},"next_action":{"type":"string"},"proof":{"type":"string"}},"required":["summary","next_action"]}},
- {"name":"handoff","description":"Return a handoff pack (canon + frontiers + open loops + last checkpoint) to resume context in a new session/agent.",
-  "inputSchema":{"type":"object","properties":{}}},
- {"name":"doctor","description":"Anti-drift check: cash/trunk frontier set, open loops bounded, checkpoint fresh, has proof.",
-  "inputSchema":{"type":"object","properties":{}}},
+ {"name":"checkpoint","description":"Record a scoped session delta, next action, lifecycle and proof reference. A reference does not prove an external result.",
+  "inputSchema":{"type":"object","additionalProperties":False,"properties":{**_CONTEXT_SCOPE_PROPERTIES,"summary":{"type":"string"},"next_action":{"type":"string"},"proof":{"type":"string"},"lifecycle":{"type":"string","enum":["ACTIVE","PAUSED","DONE"],"default":"ACTIVE"}},"required":["summary","next_action"]}},
+ {"name":"handoff","description":"Return complete current scoped continuity and recorded closures. Global canon remains applicable. Budgets HOLD instead of silently truncating; scope and snapshot hashes grant no authority.",
+  "inputSchema":{"type":"object","additionalProperties":False,"properties":{**_CONTEXT_SNAPSHOT_PROPERTIES,"format":{"type":"string","enum":["text","json"],"default":"text"}}}},
+ {"name":"doctor","description":"Inspect scoped continuity health and lifecycle. Proof references are not verified proof; healthy is not permission to act.",
+  "inputSchema":{"type":"object","additionalProperties":False,"properties":{**_CONTEXT_SCOPE_PROPERTIES}}},
  {"name":"set_frontier","description":"Set the trunk/cash/lab/parked focus (1 trunk + 1 cash + 1 lab discipline).",
-  "inputSchema":{"type":"object","properties":{"kind":{"type":"string","enum":["trunk","cash","lab","parked"]},"item":{"type":"string"}},"required":["kind","item"]}},
- {"name":"predict","description":"Digital-twin: likely stance on a situation, grounded in recorded rules and precedent.",
-  "inputSchema":{"type":"object","properties":{"situation":{"type":"string"}},"required":["situation"]}},
- {"name":"alignment","description":"Check a proposed action against canon/rules; flags conflicts with non-negotiable rules.",
-  "inputSchema":{"type":"object","properties":{"proposed_action":{"type":"string"}},"required":["proposed_action"]}},
+  "inputSchema":{"type":"object","additionalProperties":False,"properties":{**_CONTEXT_SCOPE_PROPERTIES,"kind":{"type":"string","enum":["trunk","cash","lab","parked"]},"item":{"type":"string"}},"required":["kind","item"]}},
+ {"name":"predict","description":"Retrieve current scoped rules and precedent with source references. The legacy name does not imply a calibrated behavioral prediction.",
+  "inputSchema":{"type":"object","additionalProperties":False,"properties":{**_CONTEXT_SCOPE_PROPERTIES,"situation":{"type":"string"}},"required":["situation"]}},
+ {"name":"alignment","description":"Review current scoped canon/rules for prohibitive wording. A missing keyword flag is not semantic compatibility or permission to act.",
+  "inputSchema":{"type":"object","additionalProperties":False,"properties":{**_CONTEXT_SCOPE_PROPERTIES,"proposed_action":{"type":"string"}},"required":["proposed_action"]}},
  {"name":"preflight_action","description":"ADVISORY PREFLIGHT: returns a safety decision for a typed action. The MCP tool does not intercept other tools; the caller must enforce the result.",
   "inputSchema":{"type":"object","properties":{"tool":{"type":"string","default":"shell"},"command":{"type":"string"},"args":{"type":"array","items":{"type":"string"},"description":"Exact argument vector assessed by tool_schemas.max_args."},"paths":{"type":"array","items":{"type":"string"}},"cwd":{"type":"string","description":"Authoritative execution working directory; required for reliable relative-path decisions."}},"required":["command","args"]}},
  {"name":"preflight_exec","description":"Durably preflight one exact argv/cwd action through the ContinuityOS GateBroker.",
@@ -90,8 +104,8 @@ TOOLS = [
   "inputSchema":{"type":"object","additionalProperties":False,"properties":{
      "request_id":{"type":"string","minLength":1,"maxLength":256}},
    "required":["request_id"]}},
- {"name":"srd_status","description":"Long-session safety: interaction count vs Safe Turn Depth. When reinject_due=true, re-inject the returned canon_reminder into context - omission-rules ('never do X') decay by ~turn 10 (Security-Recall Divergence).",
-  "inputSchema":{"type":"object","properties":{}}},
+ {"name":"srd_status","description":"Local reminder cadence plus a fresh current scoped canon snapshot. The legacy interval is an uncalibrated reminder policy, not a measured safe context depth. On budget HOLD no partial reminder is emitted.",
+  "inputSchema":{"type":"object","additionalProperties":False,"properties":{**_CONTEXT_SNAPSHOT_PROPERTIES}}},
  {"name":"memory_pointer","description":"Pass-by-reference: get a lightweight {namespace,key,version} pointer to a memory value instead of its content (A2A courier-tax fix). Dereference with recall/find.",
   "inputSchema":{"type":"object","properties":{"namespace":{"type":"string","default":"facts"},"key":{"type":"string"}},"required":["key"]}},
  {"name":"memory_write_checked","description":"Optimistic-concurrency write by key: succeeds only if current version equals expected_version, else returns a conflict. Prevents lost updates when multiple agents write the same key.",
@@ -247,7 +261,7 @@ class Server:
                     )
         self._broker = None
         self.turns = 0
-        self.std = 10  # Safe Turn Depth: re-inject canon before omission-rules ("never do X") decay (long-session SRD research)
+        self.std = 10  # Legacy local reminder interval; not a calibrated safety threshold.
 
     def call(self, name, args):
         self.turns += 1
@@ -284,17 +298,27 @@ class Server:
         if name == "list_namespaces":
             return json.dumps(self.m.namespaces(), ensure_ascii=False, indent=2)
         if name == "checkpoint":
-            return f"checkpoint #{self.c.checkpoint(summary=args['summary'], next_action=args['next_action'], proof=args.get('proof',''))}"
+            scope = self._continuity_options(args, other={"summary", "next_action", "proof", "lifecycle"})
+            return f"checkpoint #{self.c.checkpoint(summary=args['summary'], next_action=args['next_action'], proof=args.get('proof',''), lifecycle=args.get('lifecycle', 'ACTIVE'), **scope)}"
         if name == "handoff":
-            return self.c.handoff()
+            options = self._continuity_options(args, budgets=True, other={"format"})
+            output_format = args.get("format", "text")
+            if output_format not in ("text", "json"):
+                raise ValueError("handoff format must be text or json")
+            if output_format == "json":
+                return json.dumps(self.c.handoff_snapshot(**options), ensure_ascii=False, indent=2)
+            return self.c.handoff(**options)
         if name == "doctor":
-            return json.dumps(self.c.doctor(), ensure_ascii=False, indent=2)
+            return json.dumps(self.c.doctor(**self._continuity_options(args)), ensure_ascii=False, indent=2)
         if name == "set_frontier":
-            return f"set {args['kind']} -> {args['item']} (#{self.c.set_frontier(args['kind'], args['item'])})"
+            scope = self._continuity_options(args, other={"kind", "item"})
+            return f"set {args['kind']} -> {args['item']} (#{self.c.set_frontier(args['kind'], args['item'], **scope)})"
         if name == "predict":
-            return json.dumps(self.t.predict(args["situation"]), ensure_ascii=False, indent=2)
+            scope = self._continuity_options(args, other={"situation"})
+            return json.dumps(self.t.predict(args["situation"], **scope), ensure_ascii=False, indent=2)
         if name == "alignment":
-            return json.dumps(self.t.alignment(args["proposed_action"]), ensure_ascii=False, indent=2)
+            scope = self._continuity_options(args, other={"proposed_action"})
+            return json.dumps(self.t.alignment(args["proposed_action"], **scope), ensure_ascii=False, indent=2)
         if name == "preflight_action":
             spec=_AS(tool=args.get("tool","shell"), command=args["command"], args=args.get("args"), paths=args.get("paths",[]), cwd=args.get("cwd",""), agent="mcp")
             governance_context_error = getattr(
@@ -347,12 +371,28 @@ class Server:
                 result = broker.execute_preflight(args["request_id"])
             return json.dumps(result, ensure_ascii=False, indent=2)
         if name == "srd_status":
+            options = self._continuity_options(args, budgets=True)
+            snapshot = self.c.handoff_snapshot(**options)
             due = self.turns >= self.std
-            canon = [r["text"] for r in self.c._dump("canon")][:8]
-            if due: self.turns = 0
+            emitted = due and snapshot["complete"]
+            canon = snapshot["payload"]["canon"] if emitted else []
+            if emitted:
+                self.turns = 0
             return json.dumps({"turns": self.turns, "safe_turn_depth": self.std, "reinject_due": due,
-                               "canon_reminder": canon if due else [],
-                               "note": "Omission-rules decay by ~turn 10 (SRD); re-inject canon_reminder when reinject_due."},
+                               "reminder_interval_calls": self.std,
+                               "interval_basis": "LEGACY_LOCAL_POLICY_NOT_CALIBRATED",
+                               "reminder_emitted": emitted,
+                               "canon_reminder": [row["text"] for row in canon],
+                               "canon_refs": [row["memory_ref"] for row in canon],
+                               "canon_returned_count": len(canon),
+                               "canon_omitted_count": snapshot["counts"]["canon"] - len(canon),
+                               "context_status": snapshot["status"], "context_complete": snapshot["complete"],
+                               "scope": snapshot["scope"], "counts": snapshot["counts"],
+                               "snapshot_sha256": snapshot["snapshot_sha256"], "observed_at": snapshot["observed_at"],
+                               "excluded_candidate_counts": snapshot["excluded_candidate_counts"],
+                               "coverage_kind": snapshot["coverage_kind"], "overflow": snapshot["overflow"],
+                               "origin_verified": False, "authority_granted": False,
+                               "note": "A complete snapshot is current local context, not permission. Re-inject only an emitted complete reminder; HOLD preserves the pending cadence."},
                               ensure_ascii=False, indent=2)
         if name == "memory_pointer":
             ptr = self.m.pointer(args.get("namespace", "facts"), args["key"])
@@ -375,6 +415,29 @@ class Server:
             from .audit import SystemAudit
             return json.dumps(SystemAudit(self.m, self.c, self.t).run(devil=bool(args.get("devil", False))), ensure_ascii=False, indent=2)
         raise ValueError(f"unknown tool {name}")
+
+    @staticmethod
+    def _continuity_options(args, *, budgets=False, other=frozenset()):
+        """Validate context selectors independently of advisory MCP JSON schemas.
+
+        These selectors neither authenticate a subject nor constrain other tools.
+        Broker and execution routes deliberately do not accept them as authority.
+        """
+        if not isinstance(args, dict):
+            raise ValueError("continuity tool arguments must be an object")
+        names = {"project", "subject"} | ({"max_items", "max_bytes"} if budgets else set())
+        if set(args) - names - set(other):
+            raise ValueError("unexpected continuity tool argument")
+        options = {}
+        for name in names & set(args):
+            value = args[name]
+            if name in ("project", "subject"):
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"{name} must be a non-empty string")
+            elif type(value) is not int or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+            options[name] = value
+        return options
 
     @staticmethod
     def _broker_initialization_hold(request_id, exc):

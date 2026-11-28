@@ -49,7 +49,9 @@ def test_extract_heuristic_types():
     cands = extract(text)
     types = {c["type"] for c in cands}
     assert "decision" in types and "preference" in types
-    assert all(c["confidence"] >= 0.5 for c in cands)
+    assert all(c["confidence"] is None for c in cands)
+    assert all(c["extraction_signal"] >= 1 for c in cands)
+    assert all(c["review_status"] == "UNREVIEWED" for c in cands)
 
 
 def test_extract_and_store_add_only_dedup(m):
